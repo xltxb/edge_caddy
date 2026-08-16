@@ -74,3 +74,20 @@ test('可以建路由；没有节点时下发如实报错', async ({ page }) => 
   await page.getByRole('button', { name: '校验并推送' }).click()
   await expect(page.getByText(/没有在线节点/)).toBeVisible()
 })
+
+// 审计页：写操作留痕、失败登录有单独提示。
+test('审计记录写操作，失败登录单独提示', async ({ page }) => {
+  // 先故意登错一次，制造一条失败记录
+  await page.goto('/login')
+  await page.getByLabel('口令').fill('definitely-wrong')
+  await page.getByRole('button', { name: '登录' }).click()
+  await expect(page.getByText(/不正确/)).toBeVisible()
+
+  await page.getByLabel('口令').fill(ADMIN_PASSWORD)
+  await page.getByRole('button', { name: '登录' }).click()
+
+  await page.getByRole('link', { name: '审计日志', exact: true }).click()
+  await expect(page.getByText(/次登录失败/)).toBeVisible()
+  // 登录本身留痕
+  await expect(page.locator('.row', { hasText: '/login' }).first()).toBeVisible()
+})

@@ -76,3 +76,16 @@ CREATE TABLE IF NOT EXISTS enroll_tokens (
   consumed_by TEXT,
   consumed_at TEXT
 );
+
+-- 审计流水。只记写操作（见 model.AuditLog）。
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  operator TEXT NOT NULL DEFAULT '',
+  action   TEXT NOT NULL,
+  target   TEXT NOT NULL DEFAULT '',
+  src_ip   TEXT NOT NULL DEFAULT '',
+  result   TEXT NOT NULL CHECK (result IN ('ok','fail','partial')),
+  detail   TEXT NOT NULL DEFAULT '',
+  at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_op ON audit_logs (operator, at DESC);

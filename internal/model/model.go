@@ -142,6 +142,21 @@ type Deploy struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
+// AuditLog 是一条审计记录。
+//
+// 只记写操作。把只读也记下来会让流水被巡检刷满——每 3 秒一次的节点轮询能在
+// 一天里产生几万条，真正重要的那几条写操作就淹没了。
+type AuditLog struct {
+	ID       int64     `json:"id"`
+	Operator string    `json:"operator"`
+	Action   string    `json:"action"` // "POST /routes"
+	Target   string    `json:"target"`
+	SrcIP    string    `json:"src_ip"`
+	Result   string    `json:"result"` // ok / fail
+	Detail   string    `json:"detail"`
+	At       time.Time `json:"at"`
+}
+
 // DeployResult 是某次下发在单个节点上的结果。
 //
 // Detail 成功时是耗时（"31ms"），失败时是原因原文。失败原文直接来自 Caddy，

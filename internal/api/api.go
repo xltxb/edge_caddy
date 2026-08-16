@@ -42,6 +42,8 @@ type Store interface {
 	ListDrafts(ctx context.Context) ([]model.Draft, error)
 	PutDraft(ctx context.Context, key string, patch map[string]any, by string, now time.Time) error
 	DeleteDrafts(ctx context.Context, keys []string) error
+	AppendAudit(ctx context.Context, a model.AuditLog) error
+	ListAudit(ctx context.Context, operator string, limit int) ([]model.AuditLog, error)
 }
 
 // Deployer 是 api 需要的下发能力。
@@ -79,13 +81,15 @@ func New(d Deps) http.Handler {
 	r.Use(gin.Recovery())
 
 	v1 := r.Group("/api/v1")
+	// 登录与登出不经**鉴权**中间件（它们正是用来获得会话的），但必须过
+	// **审计**中间件：失败登录是排查爆破的第一手线索，漏了它等于放弃了这条线索。
+	v1.Use(h.auditMiddleware())
 	{
-		// 登录与登出不经鉴权中间件——它们正是用来获得会话的
 		v1.POST("/login", h.login)
 		v1.POST("/logout", h.logout)
 	}
 	authed := r.Group("/api/v1")
-	authed.Use(h.requireSession())
+	authed.Use(h.requireSession(), h.auditMiddleware())
 	{
 		authed.GET("/me", h.me)
 		authed.GET("/nodes", h.listNodes)
@@ -104,6 +108,8 @@ func New(d Deps) http.Handler {
 		authed.GET("/drafts", h.listDrafts)
 		authed.PUT("/drafts/:key", h.putDraft)
 		authed.DELETE("/drafts", h.deleteDrafts)
+
+		authed.GET("/audit", h.listAudit)
 
 		authed.GET("/ws", h.serveWS)
 	}
@@ -188,6 +194,7 @@ func (h *handler) login(c *gin.Context) {
 		fail(c, http.StatusUnauthorized, codeUnauthorized, "尚未设置管理员口令，请用 EDGE_ADMIN_PASSWORD 初始化")
 		return
 	case errors.Is(err, auth.ErrBadCredential):
+		markAudit(c, "fail")
 		h.log.Warn("登录失败", "user", in.User, "src_ip", c.ClientIP())
 		fail(c, http.StatusUnauthorized, codeUnauthorized, "用户名或口令不正确")
 		return
@@ -200,6 +207,10 @@ func (h *handler) login(c *gin.Context) {
 	secure := c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https"
 	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(auth.CookieName, sid, int(auth.SessionTTL.Seconds()), "/", "", secure, true)
+	// 登录成功时操作人来自本次登录结果，而不是中间件里的会话——
+	// 中间件跑在登录之前，那时还没有会话。
+	c.Set(ctxUser, auth.AdminUser)
+	markAudit(c, "ok")
 	ok(c, gin.H{"user": auth.AdminUser})
 }
 
