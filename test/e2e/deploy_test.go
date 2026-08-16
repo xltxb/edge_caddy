@@ -28,6 +28,7 @@ import (
 	"github.com/xltxb/edge_caddy/internal/render"
 	"github.com/xltxb/edge_caddy/internal/store"
 	"github.com/xltxb/edge_caddy/internal/tunnel"
+	"github.com/xltxb/edge_caddy/internal/ws"
 )
 
 // 建一条路由 → 下发 → 节点上的真实 Caddy 生效 → curl 命中上游。
@@ -130,6 +131,7 @@ type master struct {
 	orch     *deploy.Orchestrator
 	enroller *enroll.Enroller
 	ca       *pki.CA
+	hub      *ws.Hub
 }
 
 func startMaster(t *testing.T, opts render.Options) *master {
@@ -145,9 +147,11 @@ func startMaster(t *testing.T, opts render.Options) *master {
 		t.Fatal(err)
 	}
 	enroller := enroll.New(st)
-	tun := tunnel.NewServer(tunnel.Deps{CA: ca, Enroll: enroller, Store: st})
+	hub := ws.NewHub()
+	tun := tunnel.NewServer(tunnel.Deps{CA: ca, Enroll: enroller, Store: st, Hub: hub})
 	orch := deploy.NewWith(st, tun, render.Options{Listen: opts.Listen}, nil)
 	tun.SetResults(orch)
+	orch.SetBroadcaster(hub)
 
 	cert, err := ca.IssueServer("master.local", time.Hour)
 	if err != nil {
@@ -172,7 +176,7 @@ func startMaster(t *testing.T, opts render.Options) *master {
 	go func() { _ = g.Serve(lis) }()
 	t.Cleanup(g.Stop)
 
-	return &master{addr: lis.Addr().String(), st: st, tun: tun, orch: orch, enroller: enroller, ca: ca}
+	return &master{addr: lis.Addr().String(), st: st, tun: tun, orch: orch, enroller: enroller, ca: ca, hub: hub}
 }
 
 func startCaddy(t *testing.T, bin, dir string, adminPort int) {

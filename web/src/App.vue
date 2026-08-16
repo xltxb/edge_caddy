@@ -3,11 +3,13 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
 import { useNodesStore } from '@/stores/nodes'
+import { useDeployStore } from '@/stores/deploys'
 import { connectWS } from '@/api/ws'
 
 const route = useRoute()
 const session = useSessionStore()
 const nodes = useNodesStore()
+const deploys = useDeployStore()
 const theme = ref<'light' | 'dark'>('light')
 let closeWS: (() => void) | null = null
 
@@ -23,7 +25,12 @@ function toggleTheme() {
 }
 
 onMounted(() => {
-  closeWS = connectWS((frame) => nodes.applyFrame(frame))
+  // 一条通道，三类帧各自分发。每个 store 只认自己那一类，
+  // 不认识的直接忽略——加新帧类型时不必改这里。
+  closeWS = connectWS((frame) => {
+    nodes.applyFrame(frame)
+    deploys.applyFrame(frame)
+  })
 })
 onUnmounted(() => closeWS?.())
 </script>
