@@ -66,3 +66,13 @@ CREATE TABLE IF NOT EXISTS settings (
   k TEXT PRIMARY KEY,
   v BLOB NOT NULL
 );
+
+-- 一次性接入 Token。存哈希而非明文：拿到库的人不该能直接拿它去接入。
+-- consumed_by 为 NULL 表示尚未使用——「用过即失效」靠这一列的条件更新保证原子性，
+-- 而不是靠先查后写（两台机器同时粘贴同一条安装命令时，先查后写会让两个都通过）。
+CREATE TABLE IF NOT EXISTS enroll_tokens (
+  token_hash  TEXT PRIMARY KEY,
+  expires_at  TEXT NOT NULL,
+  consumed_by TEXT,
+  consumed_at TEXT
+);
