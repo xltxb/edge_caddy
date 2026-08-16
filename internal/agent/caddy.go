@@ -55,6 +55,16 @@ func (c *CaddyClient) Apply(ctx context.Context, appsJSON []byte) (int, error) {
 	}
 	sort.Strings(names)
 
+	// apps 键不存在时，POST /config/apps/<name> 会失败：实测（Caddy 2.11.4）
+	// 返回 500 `invalid traversal path at: config/apps/http`——那句话既不说
+	// 是哪一步出了问题，也不提示该怎么办。
+	//
+	// 一台刚装完官方包的机器上，Caddy 跑的是 /etc/caddy/Caddyfile；只要那个
+	// 文件是空的（或被清过），apps 就不存在，而那正是干净机器最可能的状态。
+	if err := c.ensureAppsExists(ctx); err != nil {
+		return 0, err
+	}
+
 	total := 0
 	for _, name := range names {
 		ms, err := c.postApp(ctx, name, apps[name])
@@ -64,6 +74,55 @@ func (c *CaddyClient) Apply(ctx context.Context, appsJSON []byte) (int, error) {
 		}
 	}
 	return total, nil
+}
+
+// ensureAppsExists 保证 config 里有 apps 键，没有就建一个空的。
+//
+// 用 PUT 而不是 POST：POST 到已存在的键会**替换**它，把节点上其它 app 抹掉；
+// 而这里的意图恰恰是「只在缺的时候补上」。实测 PUT 到已存在的键会返回错误，
+// 因此先读一次再决定。
+func (c *CaddyClient) ensureAppsExists(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.adminAddr+"/config/", nil)
+	if err != nil {
+		return fmt.Errorf("构造请求: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("读取 caddy 当前配置: %w", err)
+	}
+	defer resp.Body.Close()
+	blob, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("读取 caddy 当前配置失败（HTTP %d）: %s",
+			resp.StatusCode, strings.TrimSpace(string(blob)))
+	}
+
+	var cur map[string]json.RawMessage
+	// 配置为 null（全新实例）时 Unmarshal 会得到 nil map，正是我们要补的情形
+	if err := json.Unmarshal(blob, &cur); err != nil {
+		return fmt.Errorf("解析 caddy 当前配置: %w", err)
+	}
+	if _, has := cur["apps"]; has {
+		return nil
+	}
+
+	put, err := http.NewRequestWithContext(ctx, http.MethodPut,
+		c.adminAddr+"/config/apps", strings.NewReader("{}"))
+	if err != nil {
+		return fmt.Errorf("构造请求: %w", err)
+	}
+	put.Header.Set("Content-Type", "application/json")
+	pr, err := c.http.Do(put)
+	if err != nil {
+		return fmt.Errorf("初始化 caddy apps: %w", err)
+	}
+	defer pr.Body.Close()
+	pb, _ := io.ReadAll(io.LimitReader(pr.Body, 4096))
+	if pr.StatusCode != http.StatusOK {
+		return fmt.Errorf("初始化 caddy apps 失败（HTTP %d）: %s",
+			pr.StatusCode, strings.TrimSpace(string(pb)))
+	}
+	return nil
 }
 
 func (c *CaddyClient) postApp(ctx context.Context, name string, body json.RawMessage) (int, error) {

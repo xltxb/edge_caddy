@@ -22,6 +22,7 @@ import (
 
 	edgev1 "github.com/xltxb/edge_caddy/gen/edge/v1"
 	"github.com/xltxb/edge_caddy/internal/agent"
+	"github.com/xltxb/edge_caddy/internal/certs"
 	"github.com/xltxb/edge_caddy/internal/deploy"
 	"github.com/xltxb/edge_caddy/internal/enroll"
 	"github.com/xltxb/edge_caddy/internal/model"
@@ -133,7 +134,11 @@ type master struct {
 	enroller *enroll.Enroller
 	ca       *pki.CA
 	hub      *ws.Hub
+	secret   []byte
 }
+
+// e2eSecret 是测试用主密钥，用于加密落库的证书私钥。
+var e2eSecret = []byte("e2e-master-key")
 
 func startMaster(t *testing.T, opts render.Options) *master {
 	t.Helper()
@@ -153,6 +158,7 @@ func startMaster(t *testing.T, opts render.Options) *master {
 	orch := deploy.NewWith(st, tun, render.Options{Listen: opts.Listen}, nil)
 	tun.SetResults(orch)
 	orch.SetBroadcaster(hub)
+	orch.SetCertSource(certs.NewSource(st, e2eSecret))
 
 	cert, err := ca.IssueServer("master.local", time.Hour)
 	if err != nil {
@@ -177,13 +183,23 @@ func startMaster(t *testing.T, opts render.Options) *master {
 	go func() { _ = g.Serve(lis) }()
 	t.Cleanup(g.Stop)
 
-	return &master{addr: lis.Addr().String(), st: st, tun: tun, orch: orch, enroller: enroller, ca: ca, hub: hub}
+	return &master{addr: lis.Addr().String(), st: st, tun: tun, orch: orch,
+		enroller: enroller, ca: ca, hub: hub, secret: e2eSecret}
 }
 
 func startCaddy(t *testing.T, bin, dir string, adminPort int) {
 	t.Helper()
+	startCaddyWithConfig(t, bin, dir, adminPort,
+		fmt.Sprintf(`{"admin":{"listen":"127.0.0.1:%d"},"apps":{}}`, adminPort))
+}
+
+// startCaddyWithConfig 用给定的初始配置起 Caddy。
+//
+// 单独抽出来是因为「apps 键存不存在」本身就是被测行为：默认的装置一直带
+// `"apps":{}`，把生产上最常见的那个初始状态整个盖住了。
+func startCaddyWithConfig(t *testing.T, bin, dir string, adminPort int, init string) {
+	t.Helper()
 	cfgPath := filepath.Join(dir, "init.json")
-	init := fmt.Sprintf(`{"admin":{"listen":"127.0.0.1:%d"},"apps":{}}`, adminPort)
 	if err := os.WriteFile(cfgPath, []byte(init), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -341,4 +357,58 @@ func jsonMarshal(v any) ([]byte, error)   { return json.Marshal(v) }
 // 供 Caddy 的 inline ca_pool 使用——它要的是 base64 主体。
 func pemEncodeCert(der []byte) string {
 	return base64.StdEncoding.EncodeToString(der)
+}
+
+// 节点上的 Caddy 配置里**没有 apps 键**时，首次下发仍要成功。
+//
+// 实测（Caddy 2.11.4）：apps 不存在时 `POST /config/apps/<name>` 返回 500，
+// 报错是 `invalid traversal path at: config/apps/http`——这句话既不说是哪一步
+// 出了问题，也不提示该怎么办。
+//
+// 测试装置一直用 `{"apps":{}}` 起 Caddy，把这个情形整个盖住了。生产上装完
+// 官方包后 Caddy 跑的是 /etc/caddy/Caddyfile，只要那个文件是空的（或被清过），
+// apps 就不存在——而那正是一台干净机器最可能的状态。
+func TestDeployWorksOnCaddyWithoutAppsKey(t *testing.T) {
+	caddyBin := findCaddy(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, "UPSTREAM")
+	}))
+	defer upstream.Close()
+
+	edgePort, adminPort := freePort(t), freePort(t)
+	// 关键：初始配置里**没有** apps 键
+	startCaddyWithConfig(t, caddyBin, t.TempDir(), adminPort,
+		fmt.Sprintf(`{"admin":{"listen":"127.0.0.1:%d"}}`, adminPort))
+
+	m := startMaster(t, render.Options{Listen: []string{fmt.Sprintf("127.0.0.1:%d", edgePort)}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	joinAgent(t, ctx, m, "node-noapps-01", adminPort)
+	if !waitFor(5*time.Second, func() bool { return len(m.tun.Connected()) == 1 }) {
+		t.Fatal("Agent 未能接入")
+	}
+
+	if err := m.st.PutRoute(ctx, model.Route{
+		Domain: "noapps.example.com", Upstream: hostPort(upstream.URL),
+		Block: model.BlockAbort, BodyMax: "1MB", Whitelist: []string{model.AllowAllCIDR},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := m.orch.Deploy(ctx, "abiu", nil)
+	if err != nil {
+		t.Fatalf("下发失败: %v", err)
+	}
+	if len(res.Rows) != 1 || res.Rows[0].State != "ok" {
+		t.Fatalf("apps 键不存在时首次下发应成功，实际 %+v", res.Rows)
+	}
+
+	if !waitFor(5*time.Second, func() bool {
+		code, body := getVia(edgePort, "noapps.example.com")
+		return code == http.StatusOK && body == "UPSTREAM"
+	}) {
+		code, body := getVia(edgePort, "noapps.example.com")
+		t.Fatalf("流量未通：HTTP %d，体 %q", code, body)
+	}
 }

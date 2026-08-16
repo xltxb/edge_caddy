@@ -100,3 +100,22 @@ CREATE TABLE IF NOT EXISTS access_rules (
   apply_to TEXT NOT NULL DEFAULT '[]',
   version  INTEGER NOT NULL DEFAULT 0
 );
+
+-- 服务端证书。主控集中签发（ADR-0001），经隧道下发到各节点。
+--
+-- cert_pem 是**明文**：证书是公开信息，加密只会让排查时看不到内容。
+-- key_pem 是**密文**（AES-GCM，主密钥来自 EDGE_SECRET_KEY）：拿到私钥就能
+-- 冒充这个域名，明文躺在库文件里，一次备份、一次误传就出去了。
+CREATE TABLE IF NOT EXISTS certificates (
+  domain    TEXT PRIMARY KEY,
+  cert_pem  BLOB NOT NULL,
+  key_pem   BLOB NOT NULL,
+  not_after TEXT NOT NULL,
+  issuer    TEXT NOT NULL DEFAULT '',
+  key_type  TEXT NOT NULL DEFAULT '',
+  serial    TEXT NOT NULL DEFAULT '',
+  -- auto=1 表示由主控自动续期；手工导入的证书为 0
+  auto      INTEGER NOT NULL DEFAULT 1 CHECK (auto IN (0,1)),
+  issued_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_certs_expiry ON certificates (not_after);

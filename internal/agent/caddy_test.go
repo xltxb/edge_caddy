@@ -27,6 +27,8 @@ type fakeCaddy struct {
 	paths  []string
 	status int // 非 0 时用它作为响应码
 	body   string
+	// appsInitialized 表示 config 里已有 apps 键。
+	appsInitialized bool
 }
 
 func newFakeCaddy(seed map[string]json.RawMessage) (*fakeCaddy, *httptest.Server) {
@@ -34,6 +36,8 @@ func newFakeCaddy(seed map[string]json.RawMessage) (*fakeCaddy, *httptest.Server
 	for k, v := range seed {
 		f.apps[k] = v
 	}
+	// seed 非 nil 表示这台 Caddy 已经有配置了；nil 表示全新实例（没有 apps 键）
+	f.appsInitialized = seed != nil
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		blob, _ := io.ReadAll(r.Body)
 		f.mu.Lock()
@@ -46,6 +50,22 @@ func newFakeCaddy(seed map[string]json.RawMessage) (*fakeCaddy, *httptest.Server
 			return
 		}
 		switch {
+		// 实测（Caddy 2.11.4）：apps 键不存在时 POST /config/apps/<name> 会
+		// 返回 500 `invalid traversal path`。Agent 因此会先 GET /config/ 看一眼，
+		// 缺了就 PUT 一个空 apps。假服务端必须复刻这一段，否则测的不是真行为。
+		case r.Method == http.MethodGet && r.URL.Path == "/config/":
+			cur := map[string]any{}
+			if f.appsInitialized {
+				cur["apps"] = f.apps
+			}
+			out, _ := json.Marshal(cur)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(out)
+			return
+		case r.Method == http.MethodPut && r.URL.Path == "/config/apps":
+			f.appsInitialized = true
+			w.WriteHeader(http.StatusOK)
+			return
 		case r.URL.Path == "/config/apps":
 			var repl map[string]json.RawMessage
 			if err := json.Unmarshal(blob, &repl); err != nil {
@@ -177,4 +197,52 @@ func contains(hay []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// 全新 Caddy（config 里没有 apps 键）时，Agent 先补一个空 apps 再下发。
+//
+// 实测：apps 不存在时 POST /config/apps/<name> 返回 500
+// `invalid traversal path at: config/apps/http`——那句话既不说哪一步出了问题，
+// 也不提示该怎么办。测试装置一直用 {"apps":{}} 起 Caddy，把这个情形整个盖住了，
+// 而它正是一台刚装完官方包、Caddyfile 为空的机器的状态。
+func TestApplyBootstrapsAppsOnFreshCaddy(t *testing.T) {
+	fake, srv := newFakeCaddy(nil) // nil 表示全新实例，没有 apps 键
+	defer srv.Close()
+
+	if _, err := agent.NewCaddyClient(srv.URL).Apply(context.Background(),
+		[]byte(`{"http":{"servers":{"edge":{"listen":[":443"]}}}}`)); err != nil {
+		t.Fatalf("全新 Caddy 上首次下发应成功: %v", err)
+	}
+	if names := fake.appNames(); len(names) != 1 || names[0] != "http" {
+		t.Fatalf("应下发了 http app，实际 %v", names)
+	}
+	// 补 apps 用 PUT 而不是 POST：POST 到已存在的键会**替换**它，
+	// 把节点上其它 app 抹掉，而这里的意图是「只在缺的时候补上」
+	var sawPut bool
+	for _, p := range fake.requestPaths() {
+		if p == "PUT /config/apps" {
+			sawPut = true
+		}
+	}
+	if !sawPut {
+		t.Errorf("应用 PUT 补 apps 键，实际请求：%v", fake.requestPaths())
+	}
+}
+
+// 已有配置的 Caddy 上不该多此一举地去动 apps 键。
+func TestApplyDoesNotTouchExistingAppsKey(t *testing.T) {
+	fake, srv := newFakeCaddy(map[string]json.RawMessage{
+		"tls": json.RawMessage(`{"certificates":{}}`),
+	})
+	defer srv.Close()
+
+	if _, err := agent.NewCaddyClient(srv.URL).Apply(context.Background(),
+		[]byte(`{"http":{"servers":{}}}`)); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range fake.requestPaths() {
+		if p == "PUT /config/apps" {
+			t.Fatal("apps 已存在时不该再去 PUT——PUT 到已存在的键会把其它 app 抹掉")
+		}
+	}
 }

@@ -36,6 +36,22 @@ type Options struct {
 	Rules []model.AccessRule
 	// VerifyAddr 是 Agent 校验端点的回环地址。
 	VerifyAddr string
+	// Certs 是要下发的服务端证书。
+	//
+	// 非空时渲染器接管节点上的 apps/tls，并给边缘 server 加上
+	// tls_connection_policies（实测：这个字段一出现，整台 server 转 TLS，
+	// 而我们的 server 只监听 :443，那正是要的效果）。
+	//
+	// 为空时**完全不渲染 tls app**：一个还没签发证书的系统去接管 apps/tls，
+	// 会把节点上外部证书平台写入的内容抹掉——那是上一版真出过的事故。
+	Certs []CertPair
+}
+
+// CertPair 是一张要下发的服务端证书。
+type CertPair struct {
+	Domain  string
+	CertPEM []byte
+	KeyPEM  []byte
 }
 
 func DefaultOptions() Options {
@@ -81,18 +97,42 @@ func CaddyWith(routes []model.Route, opts Options) ([]byte, error) {
 		httpRoutes = append(httpRoutes, hr)
 	}
 
+	edge := map[string]any{
+		"listen": opts.Listen,
+		// 证书由主控签发后经隧道下发（docs/adr/0001），节点不得自行申请：
+		// 少了这一段，节点会去 ACME 申请并可能触发速率限制。
+		"automatic_https": map[string]any{"disable": true},
+		"routes":          httpRoutes,
+	}
+
 	apps := map[string]any{
-		"http": map[string]any{
-			"servers": map[string]any{
-				"edge": map[string]any{
-					"listen": opts.Listen,
-					// 证书由主控签发后经隧道下发（docs/adr/0001），节点不得自行申请：
-					// 少了这一段，节点会去 ACME 申请并可能触发速率限制。
-					"automatic_https": map[string]any{"disable": true},
-					"routes":          httpRoutes,
-				},
-			},
-		},
+		"http": map[string]any{"servers": map[string]any{"edge": edge}},
+	}
+
+	if len(opts.Certs) > 0 {
+		loaded := make([]any, 0, len(opts.Certs))
+		for _, c := range opts.Certs {
+			if len(c.CertPEM) == 0 || len(c.KeyPEM) == 0 {
+				// 空 PEM 会让 Caddy 拒绝整份 tls 配置，而报错是「下发失败」——
+				// 跟「这个域名的证书是空的」差得很远
+				return nil, fmt.Errorf("域名 %s 的证书或私钥为空", c.Domain)
+			}
+			// 用 load_pem 内联而不是 load_files 落盘（实测两者都能加载）：
+			// 落盘要求主控渲染的路径与节点上的实际路径一致，而那是两个进程
+			// 各自持有的知识，迟早会不一致。内联让配置自带全部内容。
+			loaded = append(loaded, map[string]any{
+				"certificate": string(c.CertPEM),
+				"key":         string(c.KeyPEM),
+				"tags":        []string{"edge:" + c.Domain},
+			})
+		}
+		apps["tls"] = map[string]any{
+			"certificates": map[string]any{"load_pem": loaded},
+		}
+		// 实测（Caddy 2.11.4）：tls_connection_policies 一出现，**整台 server**
+		// 转 TLS。我们的 server 只监听 :443，那正是要的效果；但也意味着这个
+		// 字段不能在同时监听 :80 的 server 上出现。
+		edge["tls_connection_policies"] = []any{map[string]any{}}
 	}
 
 	out, err := json.MarshalIndent(apps, "", "  ")

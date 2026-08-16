@@ -18,6 +18,7 @@ import (
 	"time"
 
 	edgev1 "github.com/xltxb/edge_caddy/gen/edge/v1"
+	"github.com/xltxb/edge_caddy/internal/certs"
 	"github.com/xltxb/edge_caddy/internal/model"
 	"github.com/xltxb/edge_caddy/internal/pki"
 	"github.com/xltxb/edge_caddy/internal/render"
@@ -87,6 +88,7 @@ type Orchestrator struct {
 	st    Store
 	tun   Tunnel
 	opts  render.Options
+	certs CertSource
 	retry RetryPolicy
 	hub   Broadcaster
 	// upstream 为各节点签发回源客户端证书。为 nil 时不下发证书——
@@ -163,6 +165,9 @@ func (o *Orchestrator) Deploy(ctx context.Context, operator string, resKeys []st
 		return Result{}, fmt.Errorf("读取访问规则: %w", err)
 	}
 	opts.Rules = rules
+	if opts.Certs, err = o.certPairs(ctx); err != nil {
+		return Result{}, err
+	}
 	payload, err := render.CaddyWith(merged, opts)
 	if err != nil {
 		// 渲染失败时一个节点都不触达——这正是不装 caddy 也能守住的那道线
@@ -398,4 +403,42 @@ func newCfgVersion() (string, error) {
 		return "", fmt.Errorf("生成配置版本号: %w", err)
 	}
 	return "cfg-" + hex.EncodeToString(b[:]), nil
+}
+
+// CertSource 提供当前全部服务端证书。
+type CertSource interface {
+	Certs(ctx context.Context) ([]certs.Cert, error)
+}
+
+// SetCertSource 装上证书来源。
+//
+// 单独一个 setter 而不是构造参数：证书是后来才有的能力，而编排器已经被四处
+// 构造。没有它时下发照常，只是不带证书——那正是「还没签发过证书」的系统
+// 应有的表现。
+func (o *Orchestrator) SetCertSource(s CertSource) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.certs = s
+}
+
+// certPairs 取出要随本次下发带上的证书。
+//
+// 每次下发都带，而不是「签发那一刻推一次」：后者会让接入时间晚于签发的节点
+// 永远拿不到证书，而现象是「那台机器上的 HTTPS 不通」。
+func (o *Orchestrator) certPairs(ctx context.Context) ([]render.CertPair, error) {
+	o.mu.Lock()
+	src := o.certs
+	o.mu.Unlock()
+	if src == nil {
+		return nil, nil
+	}
+	all, err := src.Certs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("读取证书: %w", err)
+	}
+	out := make([]render.CertPair, 0, len(all))
+	for _, c := range all {
+		out = append(out, render.CertPair{Domain: c.Domain, CertPEM: c.CertPEM, KeyPEM: c.KeyPEM})
+	}
+	return out, nil
 }

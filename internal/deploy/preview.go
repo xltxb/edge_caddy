@@ -27,6 +27,11 @@ func (o *Orchestrator) Preview(ctx context.Context, resKeys []string) (current, 
 		return "", "", fmt.Errorf("读取访问规则: %w", err)
 	}
 	opts.Rules = rules
+	// 预览必须与实际下发渲染同一份东西，证书也不例外：少了它，
+	// 预览里看不到 tls 段，而用户批准的正是「预览里那份」
+	if opts.Certs, err = o.certPairs(ctx); err != nil {
+		return "", "", err
+	}
 	curBlob, err := render.CaddyWith(live, opts)
 	if err != nil {
 		return "", "", fmt.Errorf("渲染当前配置失败：%w", err)
