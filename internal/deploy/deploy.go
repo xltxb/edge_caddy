@@ -138,7 +138,13 @@ func (o *Orchestrator) Deploy(ctx context.Context, operator string, resKeys []st
 	if err != nil {
 		return Result{}, fmt.Errorf("读取路由: %w", err)
 	}
-	payload, err := render.CaddyWith(routes, o.opts)
+	// 合入本次勾选的草稿。必须与 Preview 走同一条合入逻辑，
+	// 否则用户批准的与实际下发的会是两份东西。
+	merged, err := o.mergeDrafts(ctx, routes, resKeys)
+	if err != nil {
+		return Result{}, err
+	}
+	payload, err := render.CaddyWith(merged, o.opts)
 	if err != nil {
 		// 渲染失败时一个节点都不触达——这正是不装 caddy 也能守住的那道线
 		return Result{}, fmt.Errorf("渲染配置失败：%w", err)

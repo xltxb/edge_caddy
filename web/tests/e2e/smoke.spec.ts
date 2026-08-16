@@ -52,12 +52,12 @@ test('可以建路由；没有节点时下发如实报错', async ({ page }) => 
   await page.getByRole('button', { name: '登录' }).click()
 
   await page.getByRole('link', { name: '反代路由', exact: true }).click()
-  await expect(page.getByText('还没有路由')).toBeVisible()
-
+  // 不断言「还没有路由」：整个 Playwright run 共用一个 master，库是跨用例累积的。
+  // 依赖空库会让用例的成败取决于执行顺序。
   await page.getByRole('button', { name: '新建路由' }).click()
 
   // 非法回源应即时标红并禁用保存
-  await page.getByLabel('域名').fill('api.example.com')
+  await page.getByLabel('域名').fill('smoke.example.com')
   await page.getByLabel('回源地址').fill('10.8.0.2')
   await expect(page.getByText('必须带端口')).toBeVisible()
   await expect(page.getByRole('button', { name: '保存' })).toBeDisabled()
@@ -65,8 +65,10 @@ test('可以建路由；没有节点时下发如实报错', async ({ page }) => 
   // 补上端口后可保存，且服务端确实接受——前后端校验一致才走得到这一步
   await page.getByLabel('回源地址').fill('10.8.0.2:8080')
   await page.getByRole('button', { name: '保存' }).click()
-  await expect(page.getByText('api.example.com')).toBeVisible()
-  await expect(page.getByText('未下发')).toBeVisible()
+  // 断言收窄到自己那一行：库是跨用例累积的，全局匹配会撞上别的路由
+  const row = page.locator('.row', { hasText: 'smoke.example.com' })
+  await expect(row).toBeVisible()
+  await expect(row.getByText('未下发')).toBeVisible()
 
   // 没有任何节点在线时，下发必须如实报错，而不是报告「成功推给 0 个节点」
   await page.getByRole('button', { name: '校验并推送' }).click()

@@ -197,6 +197,24 @@ func (h *handler) createDeploy(c *gin.Context) {
 	ok(c, gin.H{"deploy_id": res.DeployID, "cfg_version": res.CfgVersion, "results": res.Rows})
 }
 
+// preview 返回下发前后的两份权威渲染，供确认弹层展示真实 diff（docs/adr/0007）。
+func (h *handler) preview(c *gin.Context) {
+	if h.deps.Deploy == nil {
+		fail(c, http.StatusServiceUnavailable, codeInternal, "下发功能未装配")
+		return
+	}
+	var in deployInput
+	_ = c.ShouldBindJSON(&in)
+
+	cur, next, err := h.deps.Deploy.Preview(c.Request.Context(), in.ResKeys)
+	if err != nil {
+		// 渲染失败是可预期的拒绝（配置本身有问题），不是服务端故障
+		fail(c, http.StatusUnprocessableEntity, codeBadInput, err.Error())
+		return
+	}
+	ok(c, gin.H{"current": cur, "next": next})
+}
+
 func (h *handler) listDeploys(c *gin.Context) {
 	ds, results, err := h.deps.Store.ListDeploys(c.Request.Context(), 50)
 	if err != nil {

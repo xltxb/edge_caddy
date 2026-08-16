@@ -440,3 +440,81 @@ func TestDeployOnlyCarriesSelectedResources(t *testing.T) {
 	}
 	t.Fatalf("未勾选的草稿被吞掉了，剩余 %+v", left)
 }
+
+// 预览返回**后端权威渲染**的两侧：当前基线与勾选草稿合入后的结果。
+//
+// ADR-0007 把真相放在确认弹层：工作台右栏那份可读表示不是下发内容，只有这里
+// 返回的字节才是。两侧都由后端渲染，前端只负责比对——否则「所见即所发」
+// 这个性质在任何一侧都立不住。
+func TestPreviewReturnsAuthoritativeBothSides(t *testing.T) {
+	r := newRig(t, true)
+	c := r.login(t)
+	ctx := context.Background()
+
+	if err := r.st.PutRoute(ctx, model.Route{
+		Domain: "api.example.com", Upstream: "10.8.0.2:8080",
+		Block: model.BlockAbort, BodyMax: "5MB",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 一条改回源的草稿
+	if err := r.st.PutDraft(ctx, "route:api.example.com",
+		map[string]any{"upstream": "10.0.0.9:9090"}, auth.AdminUser, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := r.do(t, http.MethodPost, "/api/v1/config/preview",
+		map[string]any{"res_keys": []string{"route:api.example.com"}}, c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("预览应成功，实际 %d: %s", rec.Code, rec.Body.String())
+	}
+	_, data := envelope(t, rec)
+
+	cur, _ := data["current"].(string)
+	next, _ := data["next"].(string)
+	if cur == "" || next == "" {
+		t.Fatalf("应返回当前与合入草稿后的两份渲染，实际 %v", data)
+	}
+	if cur == next {
+		t.Fatal("草稿改了回源，两侧不应相同")
+	}
+	if !strings.Contains(cur, "10.8.0.2:8080") {
+		t.Errorf("当前侧应是线上值: %s", cur)
+	}
+	if !strings.Contains(next, "10.0.0.9:9090") {
+		t.Errorf("合入侧应含草稿值: %s", next)
+	}
+	// 两侧都必须是后端渲染器的产物——含它特有的 handler 结构
+	if !strings.Contains(next, "reverse_proxy") || !strings.Contains(next, "max_size") {
+		t.Errorf("预览应是真实可下发的 Caddy 配置: %s", next)
+	}
+}
+
+// 未勾选的草稿不得进入预览。
+//
+// 预览要与「点确认后真正下发的东西」逐字一致；把没勾的也算进来，
+// 用户批准的就不是他实际推出去的那份。
+func TestPreviewExcludesUnselectedDrafts(t *testing.T) {
+	r := newRig(t, true)
+	c := r.login(t)
+	ctx := context.Background()
+
+	for _, d := range []string{"a.example.com", "b.example.com"} {
+		_ = r.st.PutRoute(ctx, model.Route{
+			Domain: d, Upstream: "10.0.0.1:80", Block: model.BlockAbort, BodyMax: "1MB",
+		})
+	}
+	_ = r.st.PutDraft(ctx, "route:a.example.com", map[string]any{"upstream": "10.0.0.2:80"}, "abiu", time.Now())
+	_ = r.st.PutDraft(ctx, "route:b.example.com", map[string]any{"upstream": "10.0.0.3:80"}, "ops-bot", time.Now())
+
+	_, data := envelope(t, r.do(t, http.MethodPost, "/api/v1/config/preview",
+		map[string]any{"res_keys": []string{"route:a.example.com"}}, c))
+	next, _ := data["next"].(string)
+
+	if !strings.Contains(next, "10.0.0.2:80") {
+		t.Errorf("勾选的草稿应出现在预览里: %s", next)
+	}
+	if strings.Contains(next, "10.0.0.3:80") {
+		t.Error("未勾选的草稿不应进入预览——用户批准的必须就是他实际推出去的那份")
+	}
+}

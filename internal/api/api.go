@@ -48,6 +48,7 @@ type Store interface {
 type Deployer interface {
 	// Deploy 只携带 resKeys 指定的资源；resKeys 为空表示全部。
 	Deploy(ctx context.Context, operator string, resKeys []string) (deploy.Result, error)
+	Preview(ctx context.Context, resKeys []string) (current, next string, err error)
 }
 
 type Deps struct {
@@ -94,6 +95,7 @@ func New(d Deps) http.Handler {
 		authed.PUT("/routes/:domain", h.updateRoute)
 		authed.DELETE("/routes/:domain", h.deleteRoute)
 
+		authed.POST("/config/preview", h.preview)
 		authed.POST("/deploys", h.createDeploy)
 		authed.GET("/deploys", h.listDeploys)
 

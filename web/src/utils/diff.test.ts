@@ -52,8 +52,9 @@ describe('未变更折叠', () => {
   it('完全没有变更时折成一块', () => {
     const items = foldUnchanged(diffLines(long, long), 3)
     expect(items).toHaveLength(1)
-    expect(items[0].kind).toBe('fold')
-    expect(items[0].count).toBe(30)
+    const only = items[0]
+    if (only.kind !== 'fold') throw new Error(`应折成一块，实际是 ${only.kind}`)
+    expect(only.count).toBe(30)
   })
 
   // 折叠块小于阈值时不值得折——折起来反而多一次点击。
