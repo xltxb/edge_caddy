@@ -299,3 +299,92 @@ func TestAgentWithoutCertCannotConnect(t *testing.T) {
 		t.Fatalf("不应有节点在线，实际 %v", n)
 	}
 }
+
+// 迟到的探活回报不得交给后来的那次探活。
+//
+// 这条是变异测试暴露出来的缺口：把「按 id 配对」换成「随便挑一个等待者」，
+// 原有的用例全绿——因为从来没有两次探活同时在飞过，而配对 id 存在的唯一
+// 理由正是这个。
+//
+// 真实场景：第一次探活超时（节点卡了），运维又点了一次；这时第一次的回报姗姗
+// 来迟。不配对的话，第二次会立刻显示一份**旧的**节点状态——生效版本、Caddy
+// 可达性、日志全是几秒前的，而人正拿着它判断「现在」怎么样了。
+func TestLateProbeResultIsNotHandedToTheNextProbe(t *testing.T) {
+	h := newHarness(t)
+	issued, err := h.tunnelCA.IssueClient("node-hk-01", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream, err := edgev1.NewEdgeTunnelClient(h.dial(t, issued.CertPEM, issued.KeyPEM)).Channel(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 先发一条心跳把会话建起来
+	if err := stream.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_Hb{Hb: &edgev1.Heartbeat{}}}); err != nil {
+		t.Fatal(err)
+	}
+	if !waitUntil(2*time.Second, func() bool { return len(h.srv.Connected()) == 1 }) {
+		t.Fatal("节点未接入")
+	}
+
+	// 第一次探活：节点故意不回，等它真的超时
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := h.srv.Probe(ctx, "node-hk-01", 150*time.Millisecond)
+		firstDone <- err
+	}()
+	first, err := recvProbeID(stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-firstDone; err == nil {
+		t.Fatal("节点不回报，第一次探活应超时")
+	}
+
+	// 第二次探活正在等回报时，第一次的回报姗姗来迟
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := h.srv.Probe(ctx, "node-hk-01", 700*time.Millisecond)
+		secondDone <- err
+	}()
+	if _, err := recvProbeID(stream); err != nil {
+		t.Fatal(err) // 第二条 Probe 已发出，说明它确实在等
+	}
+	// 回的是**第一次**的 id
+	if err := stream.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_ProbeResult{
+		ProbeResult: &edgev1.ProbeResult{Id: first, CfgVersion: "cfg-stale", CaddyOk: true},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := <-secondDone; err == nil {
+		t.Fatal("第二次探活拿到了第一次的迟到回报——那是一份几秒前的旧状态，" +
+			"而人正拿它判断「现在」怎么样了")
+	}
+}
+
+// recvProbeID 等主控发来的下一条 Probe 并返回它的 id。
+func recvProbeID(stream edgev1.EdgeTunnel_ChannelClient) (string, error) {
+	for {
+		in, err := stream.Recv()
+		if err != nil {
+			return "", err
+		}
+		if p := in.GetProbe(); p != nil {
+			return p.GetId(), nil
+		}
+	}
+}
+
+func waitUntil(d time.Duration, cond func() bool) bool {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return cond()
+}

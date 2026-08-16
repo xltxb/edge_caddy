@@ -18,14 +18,16 @@ import (
 	"github.com/xltxb/edge_caddy/internal/enroll"
 	"github.com/xltxb/edge_caddy/internal/model"
 	"github.com/xltxb/edge_caddy/internal/store"
+	"github.com/xltxb/edge_caddy/internal/tunnel"
 )
 
 const testPassword = "correct horse battery staple"
 
 type rig struct {
-	h  http.Handler
-	st *store.Store
-	au *auth.Manager
+	h   http.Handler
+	st  *store.Store
+	au  *auth.Manager
+	tun *emptyTunnel
 }
 
 // newRig 起一个真实路由。withPassword=false 时不设口令，用来覆盖「鉴权未启用」那条路径。
@@ -45,16 +47,25 @@ func newRig(t *testing.T, withPassword bool) *rig {
 	}
 	// 用真的编排器配一个没有节点在线的隧道：「没有在线节点」正是要验的行为之一，
 	// 把编排器整个 mock 掉就测不到它了。
-	orch := deploy.New(st, emptyTunnel{}, nil)
-	h := api.New(api.Deps{Store: st, Auth: au, Enroll: enroll.New(st), Deploy: orch})
-	return &rig{h: h, st: st, au: au}
+	tun := &emptyTunnel{}
+	orch := deploy.New(st, tun, nil)
+	h := api.New(api.Deps{Store: st, Auth: au, Enroll: enroll.New(st), Deploy: orch, Nodes: tun})
+	return &rig{h: h, st: st, au: au, tun: tun}
 }
 
 // emptyTunnel 模拟「一个节点都没连上」。
-type emptyTunnel struct{}
+// emptyTunnel 默认「一个节点都没连上」；nodes 非空时假装那些节点在线。
+type emptyTunnel struct {
+	nodes    []string
+	report   tunnel.ProbeReport
+	probeErr error
+}
 
-func (emptyTunnel) Connected() []string                  { return nil }
-func (emptyTunnel) Send(string, *edgev1.MasterMsg) error { return nil }
+func (e *emptyTunnel) Connected() []string                  { return e.nodes }
+func (e *emptyTunnel) Send(string, *edgev1.MasterMsg) error { return nil }
+func (e *emptyTunnel) Probe(context.Context, string, time.Duration) (tunnel.ProbeReport, error) {
+	return e.report, e.probeErr
+}
 
 func (r *rig) do(t *testing.T, method, path string, body any, cookie *http.Cookie) *httptest.ResponseRecorder {
 	t.Helper()
@@ -517,4 +528,21 @@ func TestPreviewExcludesUnselectedDrafts(t *testing.T) {
 	if strings.Contains(next, "10.0.0.3:80") {
 		t.Error("未勾选的草稿不应进入预览——用户批准的必须就是他实际推出去的那份")
 	}
+}
+
+// decodeData 取出 {code,data,msg} 包裹里的 data。
+func decodeData(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var env struct {
+		Code int            `json:"code"`
+		Data map[string]any `json:"data"`
+		Msg  string         `json:"msg"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("响应不是合法 JSON: %v，原文 %s", err, w.Body.String())
+	}
+	if env.Code != 0 {
+		t.Fatalf("业务码非 0：%d %s", env.Code, env.Msg)
+	}
+	return env.Data
 }

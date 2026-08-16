@@ -6,6 +6,8 @@ import { useNodesStore } from '@/stores/nodes'
 import { useDeployStore } from '@/stores/deploys'
 import { useEventsStore } from '@/stores/events'
 import { connectWS } from '@/api/ws'
+import CommandPalette from '@/components/console/CommandPalette.vue'
+import DrainConfirm from '@/components/console/DrainConfirm.vue'
 
 const route = useRoute()
 const session = useSessionStore()
@@ -68,6 +70,9 @@ onUnmounted(() => closeWS?.())
       </header>
       <div class="body"><RouterView /></div>
     </main>
+    <!-- 全局挂载：⌘K 在任何页面都能唤起 -->
+    <CommandPalette />
+    <DrainConfirm />
   </div>
 </template>
 

@@ -2,12 +2,15 @@ package api_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xltxb/edge_caddy/internal/auth"
 	"github.com/xltxb/edge_caddy/internal/model"
+	"github.com/xltxb/edge_caddy/internal/tunnel"
 )
 
 func auditRows(t *testing.T, r *rig) []model.AuditLog {
@@ -212,5 +215,144 @@ func TestRuleInputValidation(t *testing.T) {
 		if rec := r.do(t, http.MethodPut, "/api/v1/rules/x", body, c); rec.Code != http.StatusBadRequest {
 			t.Errorf("%s 应返回 400，实际 %d: %s", name, rec.Code, rec.Body.String())
 		}
+	}
+}
+
+// ── 节点操作 ──
+
+// 对未连接的节点执行操作，必须返回**可区分**的错误。
+//
+// 「节点没连上」是 404 而不是 500：前者该等节点上线或去查节点，后者该查主控
+// 日志或重试。混成一个的话，运维每次都得先去翻日志才能知道该往哪儿看。
+func TestNodeOpsOnDisconnectedNodeReturn404(t *testing.T) {
+	r := newRig(t, true)
+	c := r.login(t)
+
+	for _, path := range []string{
+		"/api/v1/nodes/node-nope/probe",
+		"/api/v1/nodes/node-nope/push",
+		"/api/v1/nodes/node-nope/drain",
+	} {
+		rec := r.do(t, http.MethodPost, path, nil, c)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s 对未连接节点应返回 404，实际 %d: %s", path, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "未连接") {
+			t.Errorf("%s 的错误应说明是节点未连接: %s", path, rec.Body.String())
+		}
+	}
+}
+
+// 尚未发布过配置时，重推必须被拒绝。
+//
+// 此时基线是空的，重推等于把一份空配置推下去——把节点上正在跑的服务全部清掉。
+// 一次「重推」变成一次全站中断。
+func TestRepushBeforeAnyDeployIsRejected(t *testing.T) {
+	r := newRig(t, true)
+	c := r.login(t)
+	// 让节点看起来是连着的
+	r.tun.nodes = []string{"node-a"}
+
+	rec := r.do(t, http.MethodPost, "/api/v1/nodes/node-a/push", nil, c)
+	if rec.Code == http.StatusOK {
+		t.Fatal("尚无基线时重推应被拒绝——那会把节点上正在跑的配置清空")
+	}
+	if !strings.Contains(rec.Body.String(), "尚未") {
+		t.Errorf("错误应说明是还没发布过配置: %s", rec.Body.String())
+	}
+}
+
+// 节点操作要留审计——它们都是有后果的写操作。
+func TestNodeOpsAreAudited(t *testing.T) {
+	r := newRig(t, true)
+	c := r.login(t)
+	_ = r.do(t, http.MethodPost, "/api/v1/nodes/node-nope/probe", nil, c)
+
+	var found bool
+	for _, a := range auditRows(t, r) {
+		if strings.Contains(a.Action, "probe") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("节点操作应留审计")
+	}
+}
+
+// 探活返回**真实往返时延**与节点当前状态。
+//
+// 这条替换了原先那个只测到「消息进了发送队列」的实现：那个数字恒为零点几毫秒，
+// 一台断网但 TCP 尚未超时的节点照样返回它。测的必须是对面回了话。
+func TestProbeReturnsRoundTripAndNodeState(t *testing.T) {
+	r := newRig(t, false)
+	r.tun.nodes = []string{"node-hk-01"}
+	r.tun.report = tunnel.ProbeReport{
+		RTT: 42 * time.Millisecond, CfgVersion: "cfg-abc",
+		CaddyOK: true, CaddyDetail: "Admin API 正常应答",
+		Logs: []string{"2026-08-16T00:00:00Z INFO 配置已生效 cfg_version=cfg-abc"},
+	}
+
+	w := r.do(t, http.MethodPost, "/api/v1/nodes/node-hk-01/probe", nil, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("探活应成功，实际 %d：%s", w.Code, w.Body.String())
+	}
+	data := decodeData(t, w)
+	if got := data["rtt_ms"]; got != float64(42) {
+		t.Errorf("往返时延应为 42ms，实际 %v", got)
+	}
+	if got := data["cfg_version"]; got != "cfg-abc" {
+		t.Errorf("应带回节点生效版本，实际 %v", got)
+	}
+	if got := data["caddy_ok"]; got != true {
+		t.Errorf("应带回 Caddy 可达性，实际 %v", got)
+	}
+	logs, _ := data["logs"].([]any)
+	if len(logs) != 1 {
+		t.Errorf("应带回最近日志，实际 %v", data["logs"])
+	}
+	// 旧实现自称只测到发送队列。真往返之后这个免责声明不该还在，
+	// 留着会让人以为数字仍然不可信。
+	if _, stale := data["scope"]; stale {
+		t.Error("已是真实往返，不该再带 scope=master_to_queue 的免责说明")
+	}
+}
+
+// Caddy 挂了不等于探活失败：隧道是通的，如实回报即可。
+func TestProbeSucceedsWhenNodeCaddyIsDown(t *testing.T) {
+	r := newRig(t, false)
+	r.tun.nodes = []string{"node-hk-01"}
+	r.tun.report = tunnel.ProbeReport{
+		RTT: 5 * time.Millisecond, CaddyOK: false, CaddyDetail: "connection refused",
+	}
+
+	w := r.do(t, http.MethodPost, "/api/v1/nodes/node-hk-01/probe", nil, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("隧道通着，探活不该失败，实际 %d：%s", w.Code, w.Body.String())
+	}
+	data := decodeData(t, w)
+	if data["caddy_ok"] != false {
+		t.Errorf("应如实回报 Caddy 不可达，实际 %v", data["caddy_ok"])
+	}
+	if data["caddy_detail"] != "connection refused" {
+		t.Errorf("应带上不可达原因，实际 %v", data["caddy_detail"])
+	}
+}
+
+// 节点连着但不回话（比如进程卡死）时，超时要说清楚是「没回报」，
+// 不能报成「未连接」——后者会让人去查网络，而问题在那台机器上。
+func TestProbeTimeoutIsDistinctFromNotConnected(t *testing.T) {
+	r := newRig(t, false)
+	r.tun.nodes = []string{"node-hk-01"}
+	r.tun.probeErr = errors.New("节点 node-hk-01 探活超时（3s 内未回报）")
+
+	w := r.do(t, http.MethodPost, "/api/v1/nodes/node-hk-01/probe", nil, nil)
+	if w.Code == http.StatusNotFound {
+		t.Fatal("超时不是「未连接」，不该返回 404")
+	}
+	if w.Code == http.StatusOK {
+		t.Fatal("没收到回报就不算探活成功")
+	}
+	if !strings.Contains(w.Body.String(), "超时") {
+		t.Errorf("错误信息应说明是超时，实际 %s", w.Body.String())
 	}
 }

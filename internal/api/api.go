@@ -33,6 +33,7 @@ const (
 // Store 是 api 需要的存储能力。
 type Store interface {
 	ListNodes(ctx context.Context) ([]model.Node, error)
+	MarkNodeDown(ctx context.Context, id string) error
 	Baseline(ctx context.Context) (string, error)
 	ListRoutes(ctx context.Context) ([]model.Route, error)
 	GetRoute(ctx context.Context, domain string) (model.Route, error)
@@ -62,6 +63,7 @@ type Deps struct {
 	Auth   *auth.Manager
 	Enroll *enroll.Enroller
 	Deploy Deployer
+	Nodes  Nodes
 	Hub    *ws.Hub
 	Logger *slog.Logger
 }
@@ -98,6 +100,9 @@ func New(d Deps) http.Handler {
 		authed.GET("/overview", h.listOverview)
 		authed.GET("/nodes", h.listNodes)
 		authed.POST("/nodes/token", h.issueNodeToken)
+		authed.POST("/nodes/:id/probe", h.probeNode)
+		authed.POST("/nodes/:id/push", h.pushNode)
+		authed.POST("/nodes/:id/drain", h.drainNode)
 
 		authed.GET("/routes", h.listRoutes)
 		authed.POST("/routes", h.createRoute)
@@ -122,6 +127,13 @@ func New(d Deps) http.Handler {
 		authed.GET("/ws", h.serveWS)
 	}
 	return r
+}
+
+// wsEvent 构造一条事件帧。字段名与前端文档 §6 一致。
+func wsEvent(kind, node, msg string) ws.Frame {
+	return ws.Frame{Type: "event", Data: map[string]any{
+		"t": time.Now().Format("15:04:05"), "node": node, "kind": kind, "msg": msg,
+	}}
 }
 
 // ── 响应包裹 ──

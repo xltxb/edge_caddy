@@ -12,7 +12,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -137,7 +136,10 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("建立隧道: %w", err)
 	}
-	log := cfg.logger()
+	// 每个 Agent 实例一份状态。日志经环形缓冲后再落到原始 handler，
+	// 探活时能把「最近发生了什么」一起带回主控。
+	st := newState()
+	log := slog.New(&ringHandler{inner: cfg.logger().Handler(), st: st})
 	log.Info("隧道已建立", "node_id", cfg.NodeID, "master", cfg.MasterAddr)
 
 	var caddy *CaddyClient
@@ -159,7 +161,10 @@ func Run(ctx context.Context, cfg Config) error {
 				return
 			}
 			if push := in.GetPush(); push != nil {
-				handlePush(ctx, stream, caddy, verifier, push, log)
+				handlePush(ctx, stream, caddy, verifier, push, st, log)
+			}
+			if probe := in.GetProbe(); probe != nil {
+				handleProbe(ctx, stream, caddy, probe, st, log)
 			}
 		}
 	}()
@@ -170,7 +175,7 @@ func Run(ctx context.Context, cfg Config) error {
 		if err := stream.Send(&edgev1.AgentMsg{
 			M: &edgev1.AgentMsg_Hb{Hb: &edgev1.Heartbeat{
 				// 心跳里没有 node_id：身份来自客户端证书，不接受自报（见 proto 注释）
-				CfgVersion: currentCfgVersion(),
+				CfgVersion: st.currentCfgVersion(),
 			}},
 		}); err != nil {
 			return fmt.Errorf("上报心跳: %w", err)
@@ -188,7 +193,7 @@ func Run(ctx context.Context, cfg Config) error {
 // 无论成败都要回报：不回报的话主控那边只能等到超时，把一次「配置有问题」
 // 报成「节点没反应」——两者的排查方向完全不同。
 func handlePush(ctx context.Context, stream edgev1.EdgeTunnel_ChannelClient,
-	caddy *CaddyClient, verifier *Verifier, push *edgev1.PushConfig, log *slog.Logger) {
+	caddy *CaddyClient, verifier *Verifier, push *edgev1.PushConfig, st *state, log *slog.Logger) {
 
 	// 回源证书要在 Caddy 配置之前落盘：Caddy 从文件读它，配置先生效而文件
 	// 还没写好的话，那一瞬所有开了回源 mTLS 的路由都会握手失败。
@@ -226,7 +231,7 @@ func handlePush(ctx context.Context, stream edgev1.EdgeTunnel_ChannelClient,
 			log.Error("应用配置失败", "cfg_version", push.GetCfgVersion(), "err", err)
 		} else {
 			res.Ok, res.Detail = true, fmt.Sprintf("%dms", took)
-			setCfgVersion(push.GetCfgVersion())
+			st.setCfgVersion(push.GetCfgVersion())
 			log.Info("配置已生效", "cfg_version", push.GetCfgVersion(), "took_ms", took)
 		}
 	}
@@ -235,22 +240,40 @@ func handlePush(ctx context.Context, stream edgev1.EdgeTunnel_ChannelClient,
 	}
 }
 
-// 当前生效的配置版本。主控靠心跳里的这个值判断配置漂移（docs/adr/0002）。
-var (
-	cfgMu      sync.RWMutex
-	cfgVersion string
-)
+// handleProbe 回报节点当前状态：生效配置版本、本机 Caddy 是否可达、最近日志。
+//
+// 一次往返带回全部三样，而不是三个接口分别取——它们描述的是**同一时刻**的
+// 节点状态，分三次取会各自看到不同的瞬间，拼出来的画面从未真实存在过。
+//
+// Caddy 不可达**不会**让这次回报失败：那是节点上的问题，隧道本身是好的。
+// 混成一个「探活失败」会让人跑错方向——一个去查网络，一个去那台机器上
+// 把 Caddy 拉起来。
+func handleProbe(ctx context.Context, stream edgev1.EdgeTunnel_ChannelClient,
+	caddy *CaddyClient, probe *edgev1.Probe, st *state, log *slog.Logger) {
 
-func setCfgVersion(v string) {
-	cfgMu.Lock()
-	cfgVersion = v
-	cfgMu.Unlock()
-}
+	res := &edgev1.ProbeResult{
+		Id:         probe.GetId(),
+		CfgVersion: st.currentCfgVersion(),
+	}
+	switch {
+	case caddy == nil:
+		res.CaddyOk, res.CaddyDetail = false, "本节点未配置 Caddy Admin 地址"
+	default:
+		pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		err := caddy.Ping(pingCtx)
+		cancel()
+		if err != nil {
+			res.CaddyOk, res.CaddyDetail = false, err.Error()
+		} else {
+			res.CaddyOk, res.CaddyDetail = true, "Admin API 正常应答"
+		}
+	}
+	// 日志在最后取：上面那次 Ping 失败的记录也该被带回去
+	res.Logs = st.recentLogs()
 
-func currentCfgVersion() string {
-	cfgMu.RLock()
-	defer cfgMu.RUnlock()
-	return cfgVersion
+	if err := stream.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_ProbeResult{ProbeResult: res}}); err != nil {
+		log.Error("回报探活结果失败", "err", err)
+	}
 }
 
 func (c Config) rootPool() (*x509.CertPool, error) {

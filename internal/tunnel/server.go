@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -65,6 +66,21 @@ type Deps struct {
 
 type session struct {
 	send chan *edgev1.MasterMsg
+
+	// probes 把在飞的探活按 id 配对。没有配对的话，同一节点上的第二次探活
+	// 会拿到第一次的回报，时延就成了随机数。
+	pmu    sync.Mutex
+	probes map[string]chan *edgev1.ProbeResult
+}
+
+// ProbeReport 是一次探活的结果。
+type ProbeReport struct {
+	// RTT 是真实往返时延：主控发出到节点回报之间的墙钟时间。
+	RTT         time.Duration
+	CfgVersion  string
+	CaddyOK     bool
+	CaddyDetail string
+	Logs        []string
 }
 
 type Server struct {
@@ -131,7 +147,10 @@ func (s *Server) Channel(stream edgev1.EdgeTunnel_ChannelServer) error {
 		return status.Error(codes.Unauthenticated, "缺少有效的客户端证书")
 	}
 
-	sess := &session{send: make(chan *edgev1.MasterMsg, 16)}
+	sess := &session{
+		send:   make(chan *edgev1.MasterMsg, 16),
+		probes: map[string]chan *edgev1.ProbeResult{},
+	}
 	s.add(nodeID, sess)
 	defer s.remove(nodeID, sess)
 	s.log.Info("节点已连接", "node_id", nodeID)
@@ -167,6 +186,9 @@ func (s *Server) recvLoop(ctx context.Context, stream edgev1.EdgeTunnel_ChannelS
 				sink.OnPushResult(nodeID, res)
 			}
 		}
+		if pr := in.GetProbeResult(); pr != nil {
+			s.deliverProbe(nodeID, pr)
+		}
 		if hb := in.GetHb(); hb != nil {
 			if s.deps.Hub != nil {
 				// 字段名与前端文档 §6 一致，前端直接用，不做二次映射——
@@ -185,6 +207,84 @@ func (s *Server) recvLoop(ctx context.Context, stream edgev1.EdgeTunnel_ChannelS
 			}
 		}
 	}
+}
+
+// Probe 向节点发一次探活并等待它回报，返回真实往返时延。
+//
+// 「消息进了发送队列」不是往返时延——一台断网但 TCP 尚未超时的节点，
+// 那个数字依然是几微秒。只有对面回话才证明它还活着。
+func (s *Server) Probe(ctx context.Context, nodeID string, timeout time.Duration) (ProbeReport, error) {
+	s.mu.RLock()
+	sess, okSess := s.sessions[nodeID]
+	s.mu.RUnlock()
+	if !okSess {
+		// 立即失败，不等满超时——否则界面会转圈转到人以为卡死
+		return ProbeReport{}, fmt.Errorf("%w: %s", ErrNodeNotConnected, nodeID)
+	}
+
+	id := newProbeID()
+	ch := make(chan *edgev1.ProbeResult, 1)
+	sess.pmu.Lock()
+	sess.probes[id] = ch
+	sess.pmu.Unlock()
+	defer func() {
+		sess.pmu.Lock()
+		delete(sess.probes, id)
+		sess.pmu.Unlock()
+	}()
+
+	start := time.Now()
+	select {
+	case sess.send <- &edgev1.MasterMsg{M: &edgev1.MasterMsg_Probe{Probe: &edgev1.Probe{Id: id}}}:
+	default:
+		return ProbeReport{}, fmt.Errorf("节点 %s 的发送队列已满", nodeID)
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case res := <-ch:
+		return ProbeReport{
+			RTT:         time.Since(start),
+			CfgVersion:  res.GetCfgVersion(),
+			CaddyOK:     res.GetCaddyOk(),
+			CaddyDetail: res.GetCaddyDetail(),
+			Logs:        res.GetLogs(),
+		}, nil
+	case <-timer.C:
+		return ProbeReport{}, fmt.Errorf("节点 %s 探活超时（%s 内未回报）", nodeID, timeout)
+	case <-ctx.Done():
+		return ProbeReport{}, ctx.Err()
+	}
+}
+
+// deliverProbe 把回报交给等待它的那次探活。
+//
+// 找不到对应的等待者就丢弃：那说明发起方已经超时走了，
+// 把它塞给别人比丢掉更糟。
+func (s *Server) deliverProbe(nodeID string, res *edgev1.ProbeResult) {
+	s.mu.RLock()
+	sess, okSess := s.sessions[nodeID]
+	s.mu.RUnlock()
+	if !okSess {
+		return
+	}
+	sess.pmu.Lock()
+	ch, waiting := sess.probes[res.GetId()]
+	sess.pmu.Unlock()
+	if !waiting {
+		return
+	}
+	select {
+	case ch <- res:
+	default:
+	}
+}
+
+var probeSeq atomic.Uint64
+
+func newProbeID() string {
+	return fmt.Sprintf("p-%d", probeSeq.Add(1))
 }
 
 // Connected 返回当前在线的节点 ID。

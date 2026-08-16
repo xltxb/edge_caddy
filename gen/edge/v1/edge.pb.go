@@ -141,6 +141,7 @@ type AgentMsg struct {
 	//
 	//	*AgentMsg_Hb
 	//	*AgentMsg_PushResult
+	//	*AgentMsg_ProbeResult
 	M             isAgentMsg_M `protobuf_oneof:"m"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -201,6 +202,15 @@ func (x *AgentMsg) GetPushResult() *PushResult {
 	return nil
 }
 
+func (x *AgentMsg) GetProbeResult() *ProbeResult {
+	if x != nil {
+		if x, ok := x.M.(*AgentMsg_ProbeResult); ok {
+			return x.ProbeResult
+		}
+	}
+	return nil
+}
+
 type isAgentMsg_M interface {
 	isAgentMsg_M()
 }
@@ -213,15 +223,22 @@ type AgentMsg_PushResult struct {
 	PushResult *PushResult `protobuf:"bytes,2,opt,name=push_result,json=pushResult,proto3,oneof"`
 }
 
+type AgentMsg_ProbeResult struct {
+	ProbeResult *ProbeResult `protobuf:"bytes,3,opt,name=probe_result,json=probeResult,proto3,oneof"`
+}
+
 func (*AgentMsg_Hb) isAgentMsg_M() {}
 
 func (*AgentMsg_PushResult) isAgentMsg_M() {}
+
+func (*AgentMsg_ProbeResult) isAgentMsg_M() {}
 
 type MasterMsg struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to M:
 	//
 	//	*MasterMsg_Push
+	//	*MasterMsg_Probe
 	M             isMasterMsg_M `protobuf_oneof:"m"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -273,6 +290,15 @@ func (x *MasterMsg) GetPush() *PushConfig {
 	return nil
 }
 
+func (x *MasterMsg) GetProbe() *Probe {
+	if x != nil {
+		if x, ok := x.M.(*MasterMsg_Probe); ok {
+			return x.Probe
+		}
+	}
+	return nil
+}
+
 type isMasterMsg_M interface {
 	isMasterMsg_M()
 }
@@ -281,7 +307,145 @@ type MasterMsg_Push struct {
 	Push *PushConfig `protobuf:"bytes,1,opt,name=push,proto3,oneof"`
 }
 
+type MasterMsg_Probe struct {
+	Probe *Probe `protobuf:"bytes,2,opt,name=probe,proto3,oneof"`
+}
+
 func (*MasterMsg_Push) isMasterMsg_M() {}
+
+func (*MasterMsg_Probe) isMasterMsg_M() {}
+
+// Probe 是主控发起的一次往返探活。
+//
+// id 用于把回报与请求配对：同一节点上可能有多次探活在飞，
+// 没有配对的话第二次探活会拿到第一次的回报，时延就成了随机数。
+type Probe struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Probe) Reset() {
+	*x = Probe{}
+	mi := &file_edge_v1_edge_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Probe) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Probe) ProtoMessage() {}
+
+func (x *Probe) ProtoReflect() protoreflect.Message {
+	mi := &file_edge_v1_edge_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Probe.ProtoReflect.Descriptor instead.
+func (*Probe) Descriptor() ([]byte, []int) {
+	return file_edge_v1_edge_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *Probe) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+// ProbeResult 是节点对探活的回报。
+//
+// 它同时承载节点行展开要显示的三样东西。合并成一次往返而不是三个接口，
+// 是因为它们描述的是**同一时刻**的节点状态——分三次取会各自看到不同的瞬间。
+type ProbeResult struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// 节点当前生效的配置版本。与主控基线不一致即为漂移。
+	CfgVersion string `protobuf:"bytes,2,opt,name=cfg_version,json=cfgVersion,proto3" json:"cfg_version,omitempty"`
+	// 节点上的 Caddy Admin 是否可达。它与「隧道是否通」是两件事：
+	// 前者去那台机器把 Caddy 拉起来，后者去查网络。
+	CaddyOk     bool   `protobuf:"varint,3,opt,name=caddy_ok,json=caddyOk,proto3" json:"caddy_ok,omitempty"`
+	CaddyDetail string `protobuf:"bytes,4,opt,name=caddy_detail,json=caddyDetail,proto3" json:"caddy_detail,omitempty"`
+	// Agent 最近日志，最新的在最后。
+	Logs          []string `protobuf:"bytes,5,rep,name=logs,proto3" json:"logs,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProbeResult) Reset() {
+	*x = ProbeResult{}
+	mi := &file_edge_v1_edge_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProbeResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProbeResult) ProtoMessage() {}
+
+func (x *ProbeResult) ProtoReflect() protoreflect.Message {
+	mi := &file_edge_v1_edge_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProbeResult.ProtoReflect.Descriptor instead.
+func (*ProbeResult) Descriptor() ([]byte, []int) {
+	return file_edge_v1_edge_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *ProbeResult) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *ProbeResult) GetCfgVersion() string {
+	if x != nil {
+		return x.CfgVersion
+	}
+	return ""
+}
+
+func (x *ProbeResult) GetCaddyOk() bool {
+	if x != nil {
+		return x.CaddyOk
+	}
+	return false
+}
+
+func (x *ProbeResult) GetCaddyDetail() string {
+	if x != nil {
+		return x.CaddyDetail
+	}
+	return ""
+}
+
+func (x *ProbeResult) GetLogs() []string {
+	if x != nil {
+		return x.Logs
+	}
+	return nil
+}
 
 // Heartbeat 刻意**不含 node_id**。
 //
@@ -301,7 +465,7 @@ type Heartbeat struct {
 
 func (x *Heartbeat) Reset() {
 	*x = Heartbeat{}
-	mi := &file_edge_v1_edge_proto_msgTypes[4]
+	mi := &file_edge_v1_edge_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -313,7 +477,7 @@ func (x *Heartbeat) String() string {
 func (*Heartbeat) ProtoMessage() {}
 
 func (x *Heartbeat) ProtoReflect() protoreflect.Message {
-	mi := &file_edge_v1_edge_proto_msgTypes[4]
+	mi := &file_edge_v1_edge_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -326,7 +490,7 @@ func (x *Heartbeat) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Heartbeat.ProtoReflect.Descriptor instead.
 func (*Heartbeat) Descriptor() ([]byte, []int) {
-	return file_edge_v1_edge_proto_rawDescGZIP(), []int{4}
+	return file_edge_v1_edge_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Heartbeat) GetCpu() float64 {
@@ -377,7 +541,7 @@ type PushConfig struct {
 
 func (x *PushConfig) Reset() {
 	*x = PushConfig{}
-	mi := &file_edge_v1_edge_proto_msgTypes[5]
+	mi := &file_edge_v1_edge_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -389,7 +553,7 @@ func (x *PushConfig) String() string {
 func (*PushConfig) ProtoMessage() {}
 
 func (x *PushConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_edge_v1_edge_proto_msgTypes[5]
+	mi := &file_edge_v1_edge_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -402,7 +566,7 @@ func (x *PushConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PushConfig.ProtoReflect.Descriptor instead.
 func (*PushConfig) Descriptor() ([]byte, []int) {
-	return file_edge_v1_edge_proto_rawDescGZIP(), []int{5}
+	return file_edge_v1_edge_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *PushConfig) GetCfgVersion() string {
@@ -461,7 +625,7 @@ type PushResult struct {
 
 func (x *PushResult) Reset() {
 	*x = PushResult{}
-	mi := &file_edge_v1_edge_proto_msgTypes[6]
+	mi := &file_edge_v1_edge_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -473,7 +637,7 @@ func (x *PushResult) String() string {
 func (*PushResult) ProtoMessage() {}
 
 func (x *PushResult) ProtoReflect() protoreflect.Message {
-	mi := &file_edge_v1_edge_proto_msgTypes[6]
+	mi := &file_edge_v1_edge_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -486,7 +650,7 @@ func (x *PushResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PushResult.ProtoReflect.Descriptor instead.
 func (*PushResult) Descriptor() ([]byte, []int) {
-	return file_edge_v1_edge_proto_rawDescGZIP(), []int{6}
+	return file_edge_v1_edge_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *PushResult) GetCfgVersion() string {
@@ -521,15 +685,26 @@ const file_edge_v1_edge_proto_rawDesc = "" +
 	"\x0eEnrollResponse\x12\x19\n" +
 	"\bcert_pem\x18\x01 \x01(\fR\acertPem\x12\x17\n" +
 	"\akey_pem\x18\x02 \x01(\fR\x06keyPem\x12\x15\n" +
-	"\x06ca_pem\x18\x03 \x01(\fR\x05caPem\"m\n" +
+	"\x06ca_pem\x18\x03 \x01(\fR\x05caPem\"\xa8\x01\n" +
 	"\bAgentMsg\x12$\n" +
 	"\x02hb\x18\x01 \x01(\v2\x12.edge.v1.HeartbeatH\x00R\x02hb\x126\n" +
 	"\vpush_result\x18\x02 \x01(\v2\x13.edge.v1.PushResultH\x00R\n" +
-	"pushResultB\x03\n" +
-	"\x01m\";\n" +
+	"pushResult\x129\n" +
+	"\fprobe_result\x18\x03 \x01(\v2\x14.edge.v1.ProbeResultH\x00R\vprobeResultB\x03\n" +
+	"\x01m\"c\n" +
 	"\tMasterMsg\x12)\n" +
-	"\x04push\x18\x01 \x01(\v2\x13.edge.v1.PushConfigH\x00R\x04pushB\x03\n" +
-	"\x01m\"f\n" +
+	"\x04push\x18\x01 \x01(\v2\x13.edge.v1.PushConfigH\x00R\x04push\x12&\n" +
+	"\x05probe\x18\x02 \x01(\v2\x0e.edge.v1.ProbeH\x00R\x05probeB\x03\n" +
+	"\x01m\"\x17\n" +
+	"\x05Probe\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\x90\x01\n" +
+	"\vProbeResult\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
+	"\vcfg_version\x18\x02 \x01(\tR\n" +
+	"cfgVersion\x12\x19\n" +
+	"\bcaddy_ok\x18\x03 \x01(\bR\acaddyOk\x12!\n" +
+	"\fcaddy_detail\x18\x04 \x01(\tR\vcaddyDetail\x12\x12\n" +
+	"\x04logs\x18\x05 \x03(\tR\x04logs\"f\n" +
 	"\tHeartbeat\x12\x10\n" +
 	"\x03cpu\x18\x01 \x01(\x01R\x03cpu\x12\x10\n" +
 	"\x03mem\x18\x02 \x01(\x01R\x03mem\x12\x14\n" +
@@ -573,29 +748,33 @@ func file_edge_v1_edge_proto_rawDescGZIP() []byte {
 	return file_edge_v1_edge_proto_rawDescData
 }
 
-var file_edge_v1_edge_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_edge_v1_edge_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_edge_v1_edge_proto_goTypes = []any{
 	(*EnrollRequest)(nil),  // 0: edge.v1.EnrollRequest
 	(*EnrollResponse)(nil), // 1: edge.v1.EnrollResponse
 	(*AgentMsg)(nil),       // 2: edge.v1.AgentMsg
 	(*MasterMsg)(nil),      // 3: edge.v1.MasterMsg
-	(*Heartbeat)(nil),      // 4: edge.v1.Heartbeat
-	(*PushConfig)(nil),     // 5: edge.v1.PushConfig
-	(*PushResult)(nil),     // 6: edge.v1.PushResult
+	(*Probe)(nil),          // 4: edge.v1.Probe
+	(*ProbeResult)(nil),    // 5: edge.v1.ProbeResult
+	(*Heartbeat)(nil),      // 6: edge.v1.Heartbeat
+	(*PushConfig)(nil),     // 7: edge.v1.PushConfig
+	(*PushResult)(nil),     // 8: edge.v1.PushResult
 }
 var file_edge_v1_edge_proto_depIdxs = []int32{
-	4, // 0: edge.v1.AgentMsg.hb:type_name -> edge.v1.Heartbeat
-	6, // 1: edge.v1.AgentMsg.push_result:type_name -> edge.v1.PushResult
-	5, // 2: edge.v1.MasterMsg.push:type_name -> edge.v1.PushConfig
-	0, // 3: edge.v1.EdgeEnroll.Enroll:input_type -> edge.v1.EnrollRequest
-	2, // 4: edge.v1.EdgeTunnel.Channel:input_type -> edge.v1.AgentMsg
-	1, // 5: edge.v1.EdgeEnroll.Enroll:output_type -> edge.v1.EnrollResponse
-	3, // 6: edge.v1.EdgeTunnel.Channel:output_type -> edge.v1.MasterMsg
-	5, // [5:7] is the sub-list for method output_type
-	3, // [3:5] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	6, // 0: edge.v1.AgentMsg.hb:type_name -> edge.v1.Heartbeat
+	8, // 1: edge.v1.AgentMsg.push_result:type_name -> edge.v1.PushResult
+	5, // 2: edge.v1.AgentMsg.probe_result:type_name -> edge.v1.ProbeResult
+	7, // 3: edge.v1.MasterMsg.push:type_name -> edge.v1.PushConfig
+	4, // 4: edge.v1.MasterMsg.probe:type_name -> edge.v1.Probe
+	0, // 5: edge.v1.EdgeEnroll.Enroll:input_type -> edge.v1.EnrollRequest
+	2, // 6: edge.v1.EdgeTunnel.Channel:input_type -> edge.v1.AgentMsg
+	1, // 7: edge.v1.EdgeEnroll.Enroll:output_type -> edge.v1.EnrollResponse
+	3, // 8: edge.v1.EdgeTunnel.Channel:output_type -> edge.v1.MasterMsg
+	7, // [7:9] is the sub-list for method output_type
+	5, // [5:7] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_edge_v1_edge_proto_init() }
@@ -606,9 +785,11 @@ func file_edge_v1_edge_proto_init() {
 	file_edge_v1_edge_proto_msgTypes[2].OneofWrappers = []any{
 		(*AgentMsg_Hb)(nil),
 		(*AgentMsg_PushResult)(nil),
+		(*AgentMsg_ProbeResult)(nil),
 	}
 	file_edge_v1_edge_proto_msgTypes[3].OneofWrappers = []any{
 		(*MasterMsg_Push)(nil),
+		(*MasterMsg_Probe)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -616,7 +797,7 @@ func file_edge_v1_edge_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_edge_v1_edge_proto_rawDesc), len(file_edge_v1_edge_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   7,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   2,
 		},
