@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/xltxb/edge_caddy/internal/alert"
 	"github.com/xltxb/edge_caddy/internal/auth"
 	"github.com/xltxb/edge_caddy/internal/deploy"
 	"github.com/xltxb/edge_caddy/internal/enroll"
@@ -48,6 +49,8 @@ type Store interface {
 	ListRules(ctx context.Context) ([]model.AccessRule, error)
 	PutRule(ctx context.Context, r model.AccessRule) error
 	DeleteRule(ctx context.Context, id string) error
+	GetSetting(ctx context.Context, key string) ([]byte, error)
+	PutSetting(ctx context.Context, key string, val []byte) error
 }
 
 // Deployer 是 api 需要的下发能力。
@@ -65,6 +68,10 @@ type Deps struct {
 	Deploy Deployer
 	Nodes  Nodes
 	Hub    *ws.Hub
+	// Alerts 是告警通知器。为空时告警接口返回「未装配」。
+	Alerts *alert.Notifier
+	// Secret 是主密钥，用于加解密落库的渠道凭据。
+	Secret []byte
 	Logger *slog.Logger
 }
 
@@ -121,6 +128,10 @@ func New(d Deps) http.Handler {
 		authed.GET("/rules", h.listRules)
 		authed.PUT("/rules/:id", h.putRule)
 		authed.DELETE("/rules/:id", h.deleteRule)
+
+		authed.GET("/alerts", h.getAlerts)
+		authed.PUT("/alerts", h.putAlerts)
+		authed.POST("/alerts/test", h.testAlerts)
 
 		authed.GET("/audit", h.listAudit)
 

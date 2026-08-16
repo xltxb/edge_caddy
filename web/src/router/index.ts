@@ -18,7 +18,7 @@ export const routes: RouteRecordRaw[] = [
   { path: '/certs', name: 'certs', component: () => import('@/views/PlaceholderView.vue'), meta: { title: '证书', issue: 14 } },
   { path: '/deploys', name: 'deploys', component: () => import('@/views/DeploysView.vue'), meta: { title: '下发记录' } },
   { path: '/audit', name: 'audit', component: () => import('@/views/AuditView.vue'), meta: { title: '审计日志' } },
-  { path: '/alerts', name: 'alerts', component: () => import('@/views/PlaceholderView.vue'), meta: { title: '告警通知', issue: 12 } },
+  { path: '/alerts', name: 'alerts', component: () => import('@/views/AlertsView.vue'), meta: { title: '告警通知' } },
   { path: '/settings', name: 'settings', component: () => import('@/views/PlaceholderView.vue'), meta: { title: '系统设置', issue: 0 } },
 ]
 

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	edgev1 "github.com/xltxb/edge_caddy/gen/edge/v1"
+	"github.com/xltxb/edge_caddy/internal/alert"
 	"github.com/xltxb/edge_caddy/internal/api"
 	"github.com/xltxb/edge_caddy/internal/auth"
 	"github.com/xltxb/edge_caddy/internal/deploy"
@@ -49,7 +50,12 @@ func newRig(t *testing.T, withPassword bool) *rig {
 	// 把编排器整个 mock 掉就测不到它了。
 	tun := &emptyTunnel{}
 	orch := deploy.New(st, tun, nil)
-	h := api.New(api.Deps{Store: st, Auth: au, Enroll: enroll.New(st), Deploy: orch, Nodes: tun})
+	notifier := alert.New(alert.Deps{})
+	t.Cleanup(notifier.Close)
+	h := api.New(api.Deps{
+		Store: st, Auth: au, Enroll: enroll.New(st), Deploy: orch, Nodes: tun,
+		Alerts: notifier, Secret: []byte("test-master-key"),
+	})
 	return &rig{h: h, st: st, au: au, tun: tun}
 }
 

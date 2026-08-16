@@ -2,16 +2,13 @@ package pki
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"crypto/sha256"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
+
+	secretpkg "github.com/xltxb/edge_caddy/internal/secret"
 )
 
 // Store 是 pki 需要的存储能力。
@@ -58,7 +55,7 @@ func LoadOrCreate(ctx context.Context, st Store, key string, secret []byte, name
 	if err != nil {
 		return nil, err
 	}
-	sealed, err := seal(raw, secret)
+	sealed, err := secretpkg.Seal(raw, secret)
 	if err != nil {
 		return nil, fmt.Errorf("加密 %s 私钥: %w", name, err)
 	}
@@ -69,7 +66,7 @@ func LoadOrCreate(ctx context.Context, st Store, key string, secret []byte, name
 }
 
 func decodeCA(blob, secret []byte, name string) (*CA, error) {
-	raw, err := open(blob, secret)
+	raw, err := secretpkg.Open(blob, secret)
 	if err != nil {
 		// 主密钥不对时必须报错，不能悄悄新建一套 CA——那会让所有已接入的节点
 		// 在下次重连时集体失效，而现象是「节点莫名其妙全掉了」。
@@ -102,36 +99,3 @@ const (
 	KeyTunnelCA   = "pki.tunnel_ca"
 	KeyUpstreamCA = "pki.upstream_ca"
 )
-
-func aead(secret []byte) (cipher.AEAD, error) {
-	// 主密钥可以是任意长度的口令，先归一成 32 字节
-	sum := sha256.Sum256(secret)
-	block, err := aes.NewCipher(sum[:])
-	if err != nil {
-		return nil, err
-	}
-	return cipher.NewGCM(block)
-}
-
-func seal(plain, secret []byte) ([]byte, error) {
-	gcm, err := aead(secret)
-	if err != nil {
-		return nil, err
-	}
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
-	}
-	return gcm.Seal(nonce, nonce, plain, nil), nil
-}
-
-func open(sealed, secret []byte) ([]byte, error) {
-	gcm, err := aead(secret)
-	if err != nil {
-		return nil, err
-	}
-	if len(sealed) < gcm.NonceSize() {
-		return nil, errors.New("密文过短")
-	}
-	return gcm.Open(nil, sealed[:gcm.NonceSize()], sealed[gcm.NonceSize():], nil)
-}

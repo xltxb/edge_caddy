@@ -1,29 +1,19 @@
 // Command master 是主控：HTTP 控制台接口 + 节点 gRPC 隧道。
+//
+// 这里只做「读配置、装配、监听」三件事。装配本身在 internal/master，
+// 因为它需要被测试走一遍——内联在这里的时候，装配漏接组件是没人发现的
+// （见 internal/master 的包注释）。
 package main
 
 import (
 	"context"
-	"crypto/tls"
 	"flag"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
-	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-
-	edgev1 "github.com/xltxb/edge_caddy/gen/edge/v1"
-	"github.com/xltxb/edge_caddy/internal/api"
-	"github.com/xltxb/edge_caddy/internal/auth"
-	"github.com/xltxb/edge_caddy/internal/deploy"
-	"github.com/xltxb/edge_caddy/internal/enroll"
-	"github.com/xltxb/edge_caddy/internal/health"
-	"github.com/xltxb/edge_caddy/internal/pki"
-	"github.com/xltxb/edge_caddy/internal/store"
-	"github.com/xltxb/edge_caddy/internal/tunnel"
-	"github.com/xltxb/edge_caddy/internal/ws"
+	"github.com/xltxb/edge_caddy/internal/master"
 )
 
 func main() {
@@ -38,81 +28,31 @@ func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	ctx := context.Background()
 
-	st, err := store.Open(*dbPath)
-	if err != nil {
-		log.Error("打开数据库失败", "err", err)
-		os.Exit(1)
-	}
-	defer st.Close()
-
-	// 主密钥用于加密 CA 私钥。没有它就拒绝启动——CA 私钥能为任意节点签发凭据，
-	// 明文躺在库里是不会有任何东西提醒你的（见 internal/pki）。
 	secret := []byte(os.Getenv("EDGE_SECRET_KEY"))
 	if len(secret) == 0 {
-		log.Error("必须设置 EDGE_SECRET_KEY（用于加密 CA 私钥）",
+		log.Error("必须设置 EDGE_SECRET_KEY（用于加密 CA 私钥与告警渠道凭据）",
 			"生成方式", "head -c 32 /dev/urandom | base64")
 		os.Exit(1)
 	}
 
-	tunnelCA, err := pki.LoadOrCreate(ctx, st, pki.KeyTunnelCA, secret, "Edge Tunnel CA")
+	m, err := master.Assemble(ctx, master.Options{
+		DBPath:        *dbPath,
+		Hostname:      *hostname,
+		Secret:        secret,
+		AdminPassword: os.Getenv("EDGE_ADMIN_PASSWORD"),
+		Logger:        log,
+	})
 	if err != nil {
-		log.Error("准备隧道 CA 失败", "err", err)
+		log.Error("装配主控失败", "err", err)
 		os.Exit(1)
 	}
-	upstreamCA, err := pki.LoadOrCreate(ctx, st, pki.KeyUpstreamCA, secret, "Edge Upstream CA")
-	if err != nil {
-		log.Error("准备回源 CA 失败", "err", err)
-		os.Exit(1)
-	}
+	defer m.Close()
 
-	authMgr := auth.New(st)
-	if pw := os.Getenv("EDGE_ADMIN_PASSWORD"); pw != "" && !authMgr.Enabled(ctx) {
-		if err := authMgr.SetPassword(ctx, pw); err != nil {
-			log.Error("初始化管理员口令失败", "err", err)
-			os.Exit(1)
-		}
-		log.Info("已用 EDGE_ADMIN_PASSWORD 初始化管理员口令", "user", auth.AdminUser)
-	}
-	if !authMgr.Enabled(ctx) {
+	if !m.AuthEnabled(ctx) {
 		log.Warn("控制台接口当前无鉴权：任何能访问 " + *httpAddr + " 的人都可以改配置、签发接入凭据。设置 EDGE_ADMIN_PASSWORD 后重启即可启用")
 	}
 
-	enroller := enroll.New(st)
-	hub := ws.NewHub()
-	tun := tunnel.NewServer(tunnel.Deps{CA: tunnelCA, Enroll: enroller, Store: st, Hub: hub, Logger: log})
-	orch := deploy.New(st, tun, log)
-	// 隧道要把节点回报的结果转交给编排器；编排器又要用隧道发送。
-	// 用 setter 打破这个环，比引入一个中间事件总线简单。
-	tun.SetResults(orch)
-	orch.SetBroadcaster(hub)
-	orch.SetUpstreamIssuer(pki.NewUpstreamIssuer(upstreamCA, nil))
-
-	// 健康巡检：心跳连续超时即判离线并发事件。判离线不做补救动作
-	// （摘 DNS 属工单 #15），只更新状态让人看得见。
-	checker := health.New(st, hub, health.Config{Logger: log})
-	go checker.Run(context.Background())
-
-	serverCert, err := tunnelCA.IssueServer(*hostname, 365*24*time.Hour)
-	if err != nil {
-		log.Error("签发主控服务端证书失败", "err", err)
-		os.Exit(1)
-	}
-	pair, err := tls.X509KeyPair(serverCert.CertPEM, serverCert.KeyPEM)
-	if err != nil {
-		log.Error("加载主控服务端证书失败", "err", err)
-		os.Exit(1)
-	}
-	// VerifyClientCertIfGiven：接入时节点还没有证书，必须放行；
-	// Channel 自己要求必须有已验证的证书链（见 internal/tunnel）。
-	creds := credentials.NewTLS(&tls.Config{
-		Certificates: []tls.Certificate{pair},
-		ClientAuth:   tls.VerifyClientCertIfGiven,
-		ClientCAs:    tunnelCA.Pool(),
-		MinVersion:   tls.VersionTLS12,
-	})
-	g := grpc.NewServer(grpc.Creds(creds))
-	edgev1.RegisterEdgeEnrollServer(g, tun)
-	edgev1.RegisterEdgeTunnelServer(g, tun)
+	go m.Checker.Run(ctx)
 
 	lis, err := net.Listen("tcp", *grpcAddr)
 	if err != nil {
@@ -121,14 +61,13 @@ func main() {
 	}
 	go func() {
 		log.Info("gRPC 监听", "addr", *grpcAddr, "hostname", *hostname)
-		if err := g.Serve(lis); err != nil {
+		if err := m.GRPC.Serve(lis); err != nil {
 			log.Error("gRPC 服务退出", "err", err)
 		}
 	}()
 
-	h := api.New(api.Deps{Store: st, Auth: authMgr, Enroll: enroller, Deploy: orch, Hub: hub, Logger: log})
 	log.Info("HTTP 监听", "addr", *httpAddr)
-	if err := http.ListenAndServe(*httpAddr, h); err != nil {
+	if err := http.ListenAndServe(*httpAddr, m.HTTP); err != nil {
 		log.Error("HTTP 服务退出", "err", err)
 		os.Exit(1)
 	}
