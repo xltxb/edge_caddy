@@ -148,3 +148,69 @@ func TestAuditFilterByOperator(t *testing.T) {
 		t.Fatalf("筛选不存在的操作人应为空，实际 %d 条", len(logs2))
 	}
 }
+
+// ── 访问规则 ──
+
+// 共享密钥**只写入不回显**。
+//
+// 接口返回它等于把凭据发给每一个能读列表的人，而列表页会被旁人看到、会进截图。
+func TestRuleSecretIsNeverReturned(t *testing.T) {
+	r := newRig(t, true)
+	c := r.login(t)
+	const secret = "s3cr3t-shared-value"
+
+	rec := r.do(t, http.MethodPut, "/api/v1/rules/partner", map[string]any{
+		"name": "合作方", "type": "service_secret", "enabled": true,
+		"spec":     map[string]any{"header": "X-Service-Secret", "secret": secret, "ttl": 300},
+		"apply_to": []string{"api.example.com"},
+	}, c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("写规则应成功，实际 %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), secret) {
+		t.Error("写入响应里不应回显密钥")
+	}
+
+	list := r.do(t, http.MethodGet, "/api/v1/rules", nil, c)
+	if strings.Contains(list.Body.String(), secret) {
+		t.Fatalf("列表里不应回显密钥: %s", list.Body.String())
+	}
+	// 但要能看出「已设置」，否则用户分不清是没配还是配了没显示
+	if !strings.Contains(list.Body.String(), "secret_set") {
+		t.Errorf("应能看出密钥是否已设置: %s", list.Body.String())
+	}
+}
+
+// 未绑定域名的规则不生效，接口要如实标出来。
+func TestUnboundRuleIsFlagged(t *testing.T) {
+	r := newRig(t, true)
+	c := r.login(t)
+	_ = r.do(t, http.MethodPut, "/api/v1/rules/lonely", map[string]any{
+		"name": "没绑域名", "type": "jwt_bearer", "enabled": true,
+		"spec": map[string]any{"jwks": "https://idp.test/jwks"}, "apply_to": []string{},
+	}, c)
+
+	_, data := envelope(t, r.do(t, http.MethodGet, "/api/v1/rules", nil, c))
+	rules, _ := data["rules"].([]any)
+	if len(rules) != 1 {
+		t.Fatalf("应有 1 条规则，实际 %v", data)
+	}
+	if rules[0].(map[string]any)["effective"] != false {
+		t.Error("未绑定域名的规则应标为不生效——那是半成品状态，不是「对所有域名生效」")
+	}
+}
+
+func TestRuleInputValidation(t *testing.T) {
+	r := newRig(t, true)
+	c := r.login(t)
+	for name, body := range map[string]map[string]any{
+		"未知类型":       {"type": "telepathy"},
+		"JWT 缺 JWKS": {"type": "jwt_bearer", "spec": map[string]any{}},
+		"密钥规则缺密钥":    {"type": "service_secret", "spec": map[string]any{"header": "X-A"}},
+		"白名单非法 IP":   {"type": "ip_whitelist", "spec": map[string]any{"ips": []string{"不是IP"}}},
+	} {
+		if rec := r.do(t, http.MethodPut, "/api/v1/rules/x", body, c); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s 应返回 400，实际 %d: %s", name, rec.Code, rec.Body.String())
+		}
+	}
+}

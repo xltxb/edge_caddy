@@ -60,6 +60,7 @@ type Store interface {
 	CreateDeploy(ctx context.Context, d model.Deploy) (int64, error)
 	PutDeployResult(ctx context.Context, r model.DeployResult) error
 	BumpRouteVersions(ctx context.Context, domains []string) error
+	ListRules(ctx context.Context) ([]model.AccessRule, error)
 	ListDrafts(ctx context.Context) ([]model.Draft, error)
 	DeleteDrafts(ctx context.Context, keys []string) error
 	PutDraft(ctx context.Context, key string, patch map[string]any, by string, now time.Time) error
@@ -148,7 +149,13 @@ func (o *Orchestrator) Deploy(ctx context.Context, operator string, resKeys []st
 	if err != nil {
 		return Result{}, err
 	}
-	payload, err := render.CaddyWith(merged, o.opts)
+	opts := o.opts
+	rules, err := o.st.ListRules(ctx)
+	if err != nil {
+		return Result{}, fmt.Errorf("读取访问规则: %w", err)
+	}
+	opts.Rules = rules
+	payload, err := render.CaddyWith(merged, opts)
 	if err != nil {
 		// 渲染失败时一个节点都不触达——这正是不装 caddy 也能守住的那道线
 		return Result{}, fmt.Errorf("渲染配置失败：%w", err)
@@ -183,7 +190,11 @@ func (o *Orchestrator) Deploy(ctx context.Context, operator string, resKeys []st
 		return Result{}, err
 	}
 
-	rows := o.broadcast(ctx, deployID, cfgVersion, payload, targets)
+	rulesJSON, err := json.Marshal(rules)
+	if err != nil {
+		return Result{}, fmt.Errorf("序列化访问规则: %w", err)
+	}
+	rows := o.broadcast(ctx, deployID, cfgVersion, payload, rulesJSON, targets)
 
 	// 至少有一个节点成功才清掉本次勾选的草稿。失败时留着，人改完能接着推。
 	if anyOK(rows) && len(resKeys) > 0 {
@@ -204,12 +215,13 @@ func (o *Orchestrator) Deploy(ctx context.Context, operator string, resKeys []st
 }
 
 func (o *Orchestrator) broadcast(ctx context.Context, deployID int64, cfgVersion string,
-	payload []byte, targets []string) []model.DeployResult {
+	payload, rulesJSON []byte, targets []string) []model.DeployResult {
 
 	msg := &edgev1.MasterMsg{M: &edgev1.MasterMsg_Push{Push: &edgev1.PushConfig{
-		CfgVersion: cfgVersion,
-		CaddyJson:  payload,
-		DeadlineMs: uint32(DefaultDeadline.Milliseconds()),
+		CfgVersion:  cfgVersion,
+		CaddyJson:   payload,
+		AccessRules: rulesJSON,
+		DeadlineMs:  uint32(DefaultDeadline.Milliseconds()),
 	}}}
 
 	rows := make([]model.DeployResult, 0, len(targets))

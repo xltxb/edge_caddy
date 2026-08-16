@@ -360,6 +360,9 @@ func (x *Heartbeat) GetCfgVersion() string {
 type PushConfig struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
 	CfgVersion string                 `protobuf:"bytes,1,opt,name=cfg_version,json=cfgVersion,proto3" json:"cfg_version,omitempty"`
+	// access_rules 是访问规则的 JSON。它不在 caddy_json 里——官方 Caddy 不认识
+	// 这些规则，真正的验签发生在 Agent 的校验端点上（docs/adr/0003）。
+	AccessRules []byte `protobuf:"bytes,4,opt,name=access_rules,json=accessRules,proto3" json:"access_rules,omitempty"`
 	// apps 子树的渲染产物。Agent 遍历顶层每个 app 逐个 POST 到
 	// /config/apps/<name>，而不是整体 POST /config/apps。
 	CaddyJson     []byte `protobuf:"bytes,2,opt,name=caddy_json,json=caddyJson,proto3" json:"caddy_json,omitempty"`
@@ -403,6 +406,13 @@ func (x *PushConfig) GetCfgVersion() string {
 		return x.CfgVersion
 	}
 	return ""
+}
+
+func (x *PushConfig) GetAccessRules() []byte {
+	if x != nil {
+		return x.AccessRules
+	}
+	return nil
 }
 
 func (x *PushConfig) GetCaddyJson() []byte {
@@ -507,11 +517,12 @@ const file_edge_v1_edge_proto_rawDesc = "" +
 	"\x03mem\x18\x02 \x01(\x01R\x03mem\x12\x14\n" +
 	"\x05conns\x18\x03 \x01(\rR\x05conns\x12\x1f\n" +
 	"\vcfg_version\x18\x04 \x01(\tR\n" +
-	"cfgVersion\"m\n" +
+	"cfgVersion\"\x90\x01\n" +
 	"\n" +
 	"PushConfig\x12\x1f\n" +
 	"\vcfg_version\x18\x01 \x01(\tR\n" +
-	"cfgVersion\x12\x1d\n" +
+	"cfgVersion\x12!\n" +
+	"\faccess_rules\x18\x04 \x01(\fR\vaccessRules\x12\x1d\n" +
 	"\n" +
 	"caddy_json\x18\x02 \x01(\fR\tcaddyJson\x12\x1f\n" +
 	"\vdeadline_ms\x18\x03 \x01(\rR\n" +

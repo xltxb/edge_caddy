@@ -59,6 +59,9 @@ message Heartbeat {
 
 message PushConfig {
   string cfg_version = 1;
+  // access_rules 是访问规则的 JSON。它不在 caddy_json 里——官方 Caddy 不认识
+  // 这些规则，真正的验签发生在 Agent 的校验端点上（docs/adr/0003）。
+  bytes access_rules = 4;
   // apps 子树的渲染产物。Agent 遍历顶层每个 app 逐个 POST 到
   // /config/apps/<name>，而不是整体 POST /config/apps。
   bytes caddy_json = 2;

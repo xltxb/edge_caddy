@@ -44,6 +44,9 @@ type Store interface {
 	DeleteDrafts(ctx context.Context, keys []string) error
 	AppendAudit(ctx context.Context, a model.AuditLog) error
 	ListAudit(ctx context.Context, operator string, limit int) ([]model.AuditLog, error)
+	ListRules(ctx context.Context) ([]model.AccessRule, error)
+	PutRule(ctx context.Context, r model.AccessRule) error
+	DeleteRule(ctx context.Context, id string) error
 }
 
 // Deployer 是 api 需要的下发能力。
@@ -108,6 +111,10 @@ func New(d Deps) http.Handler {
 		authed.GET("/drafts", h.listDrafts)
 		authed.PUT("/drafts/:key", h.putDraft)
 		authed.DELETE("/drafts", h.deleteDrafts)
+
+		authed.GET("/rules", h.listRules)
+		authed.PUT("/rules/:id", h.putRule)
+		authed.DELETE("/rules/:id", h.deleteRule)
 
 		authed.GET("/audit", h.listAudit)
 

@@ -89,3 +89,14 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   at       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_op ON audit_logs (operator, at DESC);
+
+-- 访问规则。spec 里可能含共享密钥，因此该列**不回显**给接口调用方（见 api/rules.go）。
+CREATE TABLE IF NOT EXISTS access_rules (
+  id       TEXT PRIMARY KEY,
+  name     TEXT NOT NULL DEFAULT '',
+  type     TEXT NOT NULL CHECK (type IN ('ip_whitelist','service_secret','jwt_bearer')),
+  enabled  INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+  spec     TEXT NOT NULL DEFAULT '{}',
+  apply_to TEXT NOT NULL DEFAULT '[]',
+  version  INTEGER NOT NULL DEFAULT 0
+);

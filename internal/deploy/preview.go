@@ -21,7 +21,13 @@ func (o *Orchestrator) Preview(ctx context.Context, resKeys []string) (current, 
 	if err != nil {
 		return "", "", fmt.Errorf("读取路由: %w", err)
 	}
-	curBlob, err := render.CaddyWith(live, o.opts)
+	opts := o.opts
+	rules, err := o.st.ListRules(ctx)
+	if err != nil {
+		return "", "", fmt.Errorf("读取访问规则: %w", err)
+	}
+	opts.Rules = rules
+	curBlob, err := render.CaddyWith(live, opts)
 	if err != nil {
 		return "", "", fmt.Errorf("渲染当前配置失败：%w", err)
 	}
@@ -30,7 +36,7 @@ func (o *Orchestrator) Preview(ctx context.Context, resKeys []string) (current, 
 	if err != nil {
 		return "", "", err
 	}
-	nextBlob, err := render.CaddyWith(merged, o.opts)
+	nextBlob, err := render.CaddyWith(merged, opts)
 	if err != nil {
 		return "", "", fmt.Errorf("渲染合入草稿后的配置失败：%w", err)
 	}

@@ -69,6 +69,9 @@ type RuleSpec struct {
 	IPs []string `json:"ips,omitempty"`
 
 	Header string `json:"header,omitempty"`
+	// Secret 是 HMAC 签名用的共享密钥。只写入不回显——接口返回它等于把凭据
+	// 发给每一个能读列表的人。
+	Secret string `json:"secret,omitempty"`
 	Algo   string `json:"algo,omitempty"`
 	TTLSec int    `json:"ttl,omitempty"`
 	Replay bool   `json:"replay,omitempty"`

@@ -237,3 +237,49 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+// 受保护的域名要接到 forward_auth 上；未受保护的不接。
+//
+// 「未受保护的不接」同样重要：接上去意味着那些域名的可用性平白绑上了
+// Agent 的存活（fail-closed），而它们本不需要鉴权。
+func TestProtectedHostGetsForwardAuth(t *testing.T) {
+	r := route("api.example.com")
+	open := route("open.example.com")
+	rules := []model.AccessRule{{
+		ID: "jwt", Type: model.RuleJWTBearer, Enabled: true,
+		ApplyTo: []string{"api.example.com"},
+	}}
+
+	out, err := render.CaddyWith([]model.Route{r, open},
+		render.Options{Rules: rules, VerifyAddr: "127.0.0.1:19999"})
+	if err != nil {
+		t.Fatalf("渲染失败: %v", err)
+	}
+	s := string(out)
+	if !bytesContains(out, "19999") {
+		t.Fatalf("受保护域名应接到校验端点:\n%s", s)
+	}
+	// handle_response 是 forward_auth 在 JSON 里的形态
+	if !bytesContains(out, "handle_response") {
+		t.Errorf("应使用 handle_response 委托鉴权:\n%s", s)
+	}
+
+	// 未受保护的域名不该出现校验端点
+	only, _ := render.CaddyWith([]model.Route{open}, render.Options{Rules: rules, VerifyAddr: "127.0.0.1:19999"})
+	if bytesContains(only, "19999") {
+		t.Error("未绑定规则的域名不应接到校验端点——那会把它的可用性绑上 Agent")
+	}
+}
+
+// 停用的规则不产生任何鉴权配置。
+func TestDisabledRuleRendersNoAuth(t *testing.T) {
+	rules := []model.AccessRule{{
+		ID: "jwt", Type: model.RuleJWTBearer, Enabled: false,
+		ApplyTo: []string{"api.example.com"},
+	}}
+	out, _ := render.CaddyWith([]model.Route{route("api.example.com")},
+		render.Options{Rules: rules, VerifyAddr: "127.0.0.1:19999"})
+	if bytesContains(out, "19999") {
+		t.Error("停用的规则不应产生鉴权配置")
+	}
+}

@@ -32,6 +32,10 @@ type Options struct {
 	// 非特权端口，因此它是配置而不是常量——写死会让「能不能跑通」这件事
 	// 只能靠特权用户验证。
 	Listen []string
+	// Rules 是访问规则。绑定到某域名的启用规则会让该域名接上 forward_auth。
+	Rules []model.AccessRule
+	// VerifyAddr 是 Agent 校验端点的回环地址。
+	VerifyAddr string
 }
 
 func DefaultOptions() Options { return Options{Listen: []string{":443"}} }
@@ -51,9 +55,11 @@ func CaddyWith(routes []model.Route, opts Options) ([]byte, error) {
 		}
 	}
 
+	protected := protectedHosts(opts)
+
 	httpRoutes := make([]any, 0, len(sorted))
 	for _, r := range sorted {
-		hr, err := renderRoute(r)
+		hr, err := renderRoute(r, protected[r.Domain], opts.VerifyAddr)
 		if err != nil {
 			return nil, err
 		}
@@ -81,7 +87,7 @@ func CaddyWith(routes []model.Route, opts Options) ([]byte, error) {
 	return out, nil
 }
 
-func renderRoute(r model.Route) (map[string]any, error) {
+func renderRoute(r model.Route, needsAuth bool, verifyAddr string) (map[string]any, error) {
 	if r.Domain == "" {
 		return nil, fmt.Errorf("路由的域名为空")
 	}
@@ -110,6 +116,12 @@ func renderRoute(r model.Route) (map[string]any, error) {
 		return nil, err
 	}
 	handlers = append(handlers, map[string]any{"handler": "request_body", "max_size": size})
+	// 鉴权在业务 handler **之前**：官方 Caddy 不会验 JWT/HMAC，委托给 Agent 的
+	// 校验端点（docs/adr/0003）。Agent 挂掉时这里 fail-closed——安全姿态正确，
+	// 代价是受保护域名的可用性绑上了 Agent 的存活。
+	if needsAuth && verifyAddr != "" {
+		handlers = append(handlers, renderForwardAuth(verifyAddr))
+	}
 	handlers = append(handlers, renderProxy(r))
 
 	branches = append(branches, map[string]any{"handle": handlers})
@@ -198,6 +210,58 @@ func denyHandler(b model.BlockAction) map[string]any {
 		return map[string]any{"handler": "static_response", "status_code": 404}
 	default:
 		return map[string]any{"handler": "static_response", "abort": true}
+	}
+}
+
+// protectedHosts 返回哪些域名绑了启用的访问规则。
+func protectedHosts(opts Options) map[string]bool {
+	out := map[string]bool{}
+	for _, rule := range opts.Rules {
+		if !rule.Enabled {
+			continue // 停用必须真的不生效
+		}
+		for _, d := range rule.ApplyTo {
+			out[d] = true
+		}
+	}
+	return out
+}
+
+// renderForwardAuth 把请求先委托给 Agent 的校验端点。
+//
+// 这是 forward_auth 在 JSON 里的形态：reverse_proxy + handle_response。
+// 校验端点回 2xx 就继续走业务 handler，并把它回传的声明透传给源站；
+// 其余状态码一律拒绝（实测已验证，见 docs/adr/0003）。
+func renderForwardAuth(addr string) map[string]any {
+	return map[string]any{
+		"handler":   "reverse_proxy",
+		"upstreams": []any{map[string]any{"dial": addr}},
+		"headers": map[string]any{
+			"request": map[string]any{"set": map[string]any{
+				"X-Forwarded-For":    []string{"{http.request.remote.host}"},
+				"X-Forwarded-Method": []string{"{http.request.method}"},
+				"X-Forwarded-Uri":    []string{"{http.request.uri}"},
+			}},
+		},
+		"handle_response": []any{
+			map[string]any{
+				"match": map[string]any{"status_code": []any{2}},
+				"routes": []any{map[string]any{"handle": []any{map[string]any{
+					"handler": "headers",
+					"request": map[string]any{"set": map[string]any{
+						"X-Verified-Sub":    []string{"{http.reverse_proxy.header.X-Verified-Sub}"},
+						"X-Verified-Issuer": []string{"{http.reverse_proxy.header.X-Verified-Issuer}"},
+						"X-Verified-Client": []string{"{http.reverse_proxy.header.X-Verified-Client}"},
+					}},
+				}}}},
+			},
+			map[string]any{
+				"match": map[string]any{"status_code": []any{4, 5}},
+				"routes": []any{map[string]any{"handle": []any{map[string]any{
+					"handler": "static_response", "status_code": 403,
+				}}}},
+			},
+		},
 	}
 }
 

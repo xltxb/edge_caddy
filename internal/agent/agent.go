@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"google.golang.org/grpc/credentials"
 
 	edgev1 "github.com/xltxb/edge_caddy/gen/edge/v1"
+	"github.com/xltxb/edge_caddy/internal/model"
 )
 
 const (
@@ -39,6 +41,8 @@ type Config struct {
 	StateDir string
 	// CaddyAdmin 是本机 Caddy Admin API 地址，形如 http://127.0.0.1:2019。
 	CaddyAdmin string
+	// VerifyAddr 是校验端点的监听地址（只监听回环）。为空则不起。
+	VerifyAddr string
 	// MasterCA 是主控 CA 的根证书。
 	//
 	// 为空时用系统信任库——此时主控的 gRPC 端点必须持有公开可信证书。
@@ -140,6 +144,14 @@ func Run(ctx context.Context, cfg Config) error {
 	if cfg.CaddyAdmin != "" {
 		caddy = NewCaddyClient(cfg.CaddyAdmin)
 	}
+	verifier := NewVerifier(log)
+	if cfg.VerifyAddr != "" {
+		srv, err := verifier.Serve(cfg.VerifyAddr)
+		if err != nil {
+			return err
+		}
+		defer srv.Close()
+	}
 	go func() {
 		for {
 			in, err := stream.Recv()
@@ -147,7 +159,7 @@ func Run(ctx context.Context, cfg Config) error {
 				return
 			}
 			if push := in.GetPush(); push != nil {
-				handlePush(ctx, stream, caddy, push, log)
+				handlePush(ctx, stream, caddy, verifier, push, log)
 			}
 		}
 	}()
@@ -176,8 +188,18 @@ func Run(ctx context.Context, cfg Config) error {
 // 无论成败都要回报：不回报的话主控那边只能等到超时，把一次「配置有问题」
 // 报成「节点没反应」——两者的排查方向完全不同。
 func handlePush(ctx context.Context, stream edgev1.EdgeTunnel_ChannelClient,
-	caddy *CaddyClient, push *edgev1.PushConfig, log *slog.Logger) {
+	caddy *CaddyClient, verifier *Verifier, push *edgev1.PushConfig, log *slog.Logger) {
 
+	// 规则先于 Caddy 配置更新：反过来的话，Caddy 已经把请求转给校验端点，
+	// 而端点手里还是旧规则——那一瞬新受保护的域名是敞开的。
+	if blob := push.GetAccessRules(); len(blob) > 0 && verifier != nil {
+		var rules []model.AccessRule
+		if err := json.Unmarshal(blob, &rules); err != nil {
+			log.Error("解析访问规则失败", "err", err)
+		} else {
+			verifier.SetRules(rules)
+		}
+	}
 	res := &edgev1.PushResult{CfgVersion: push.GetCfgVersion()}
 	switch {
 	case caddy == nil:
