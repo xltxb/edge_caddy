@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia, type Pinia } from 'pinia'
 import { createRouter, createMemoryHistory, type Router } from 'vue-router'
@@ -6,6 +6,7 @@ import CommandPalette from './CommandPalette.vue'
 import DrainConfirm from './DrainConfirm.vue'
 import NodesView from '@/views/NodesView.vue'
 import { useNodesStore } from '@/stores/nodes'
+import { useRoutesStore } from '@/stores/routes'
 import { routes } from '@/router'
 import type { NodesResponse } from '@/api/types'
 
@@ -33,6 +34,8 @@ async function ready() {
     return { detail: '3ms' }
   })
   await s.load()
+  // 面板唤起时会补拉路由列表；这里堵上网络边界，免得测试去打真端口
+  vi.spyOn(useRoutesStore(), 'load').mockResolvedValue(undefined)
   return s
 }
 
@@ -216,5 +219,39 @@ describe('下线确认', () => {
     expect(s.opLog).toHaveLength(0)
     await dlg.vm.$nextTick()
     expect(dlg.find('[data-testid="drain-confirm"]').exists()).toBe(true)
+  })
+})
+
+describe('候选分组', () => {
+  beforeEach(async () => {
+    pinia = createPinia()
+    setActivePinia(pinia)
+    router = createRouter({ history: createMemoryHistory(), routes })
+    router.push('/nodes')
+    await router.isReady()
+  })
+
+  // 三类候选混在一列里，↓↓Enter 很容易点到隔壁那条——而隔壁可能是 drain。
+  // 分组标题是最低成本的区分。
+  it('空输入时三类候选带分组标题', async () => {
+    await ready()
+    useRoutesStore().routes = [
+      { domain: 'api.example.com', upstream: '10.0.0.1:80', block: 'abort', mtls: false,
+        compress: false, body_max: '1MB', wl: [], ver: 1 },
+    ]
+    const palette = await openPalette()
+
+    const groups = palette.findAll('[data-group]').map((g) => g.attributes('data-group'))
+    expect(groups).toEqual(['op', 'nav', 'route'])
+    expect(palette.text()).toContain('节点操作')
+    expect(palette.text()).toContain('配置路由')
+  })
+
+  it('只有一类候选时不摆一个孤零零的分组标题', async () => {
+    await ready()
+    const palette = await openPalette()
+    await palette.find('input').setValue('probe')
+
+    expect(palette.findAll('[data-group]')).toHaveLength(0)
   })
 })

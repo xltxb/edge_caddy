@@ -18,36 +18,44 @@ test('工作台：草稿、可读 diff、改回原值即归零', async ({ page }
   // 先建一条路由
   await page.getByRole('link', { name: '反代路由', exact: true }).click()
   await page.getByRole('button', { name: '新建路由' }).click()
-  await page.getByLabel('域名').fill(`wb-${Date.now()}.example.com`)
+  const domain = `wb-${Date.now()}.example.com`
+  await page.getByLabel('域名').fill(domain)
   await page.getByLabel('回源地址').fill('10.8.0.2:8080')
   await page.getByRole('button', { name: '保存' }).click()
-  await expect(page.getByText(/wb-\d+\.example\.com/)).toBeVisible()
+  await expect(page.locator('.row', { hasText: domain })).toBeVisible()
 
   await page.getByRole('link', { name: '配置工作台', exact: true }).click()
-  await expect(page.getByText('没有待推送的变更')).toBeVisible()
+  // 显式选中自己那条，并把断言收窄到它——底栏计数是**全局**的，
+  // 别的用例留下的草稿会让这里时对时错
+  await page.locator('.ti', { hasText: domain }).click()
+  const pill = page.locator('.form .ch .pill')
+  await expect(pill).toHaveText('与线上一致')
 
-  // 改回源：右栏出现变更、底栏计数
+  // 改回源：右栏出现变更、该资源标记为未推送
   const upstream = page.getByLabel('回源地址')
   await upstream.fill('10.0.0.9:9090')
-  await expect(page.getByText(/1 个资源共 1 处未推送/)).toBeVisible()
+  await expect(pill).toHaveText('1 处未推送')
   await expect(page.locator('.dl.add')).toContainText('10.0.0.9:9090')
 
   // 改回原值：草稿键被删掉，一切归零
   await upstream.fill('10.8.0.2:8080')
-  await expect(page.getByText('没有待推送的变更')).toBeVisible()
+  await expect(pill).toHaveText('与线上一致')
   await expect(page.locator('.dl.add')).toHaveCount(0)
 })
 
 // 确认弹层展示的是后端权威渲染，与右栏的可读表示**不是**同一份东西。
 test('确认弹层给出后端权威 diff', async ({ page }) => {
   await login(page)
+  const domain = `auth-${Date.now()}.example.com`
   await page.getByRole('link', { name: '反代路由', exact: true }).click()
   await page.getByRole('button', { name: '新建路由' }).click()
-  await page.getByLabel('域名').fill(`auth-${Date.now()}.example.com`)
+  await page.getByLabel('域名').fill(domain)
   await page.getByLabel('回源地址').fill('10.8.0.2:8080')
   await page.getByRole('button', { name: '保存' }).click()
 
   await page.getByRole('link', { name: '配置工作台', exact: true }).click()
+  // 显式选中自己那条：库里有别的用例建的路由时，默认选中的未必是它
+  await page.locator('.ti', { hasText: domain }).click()
   await page.getByLabel('回源地址').fill('10.0.0.9:9090')
   await page.getByRole('button', { name: '校验并推送' }).click()
 
@@ -93,7 +101,9 @@ test('有未推送草稿时离开需确认，下发记录页可达', async ({ pa
   // 选中刚建的资源，改回源制造草稿
   await page.locator('.ti', { hasText: domain }).click()
   await page.getByLabel('回源地址').fill('10.0.0.9:9090')
-  await expect(page.getByText(/1 处未推送/)).toBeVisible()
+  // 断言收窄到选中资源那一栏：/1 处未推送/ 会同时命中底栏的全局计数，
+  // 而全局计数取决于别的用例留下了多少草稿
+  await expect(page.locator('.form .ch .pill')).toHaveText('1 处未推送')
 
   // 离开工作台时应确认（有未推送草稿）
   page.once('dialog', (d) => d.accept())

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { onBeforeRouteLeave } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import StatusPill from '@/components/base/StatusPill.vue'
 import { useDraftsStore, routeKey } from '@/stores/drafts'
 import { useDeployStore } from '@/stores/deploys'
@@ -12,16 +12,50 @@ import type { DeployResponse, Route } from '@/api/types'
 
 const drafts = useDraftsStore()
 const deploys = useDeployStore()
+const route = useRoute()
+const router = useRouter()
 const sel = ref('')
 const modal = ref<{ current: string; next: string; keys: string[] } | null>(null)
 const modalErr = ref('')
 const busy = ref(false)
 const checked = ref<Record<string, boolean>>({})
 
+/** keyFromURL 取出 URL 里的资源键。为空表示没指定。 */
+const keyFromURL = computed(() => {
+  const k = route.params.key
+  return typeof k === 'string' ? k : ''
+})
+
+/**
+ * 选中项跟着 URL 走。
+ *
+ * 不读这个参数的话，命令面板敲域名跳过来会落在列表第一条上——
+ * 人以为自己打开了 shop，改的却是 api。
+ */
+function syncFromURL() {
+  const k = keyFromURL.value
+  if (k) {
+    sel.value = k
+    return
+  }
+  if (!sel.value && drafts.live.length) sel.value = routeKey(drafts.live[0].domain)
+}
+
+/** 指定了资源键却找不到对应路由——不能装作选中了第一条。 */
+const missing = computed(() => keyFromURL.value !== '' && !drafts.liveOf(keyFromURL.value))
+
 onMounted(async () => {
   await drafts.load()
-  if (!sel.value && drafts.live.length) sel.value = routeKey(drafts.live[0].domain)
+  syncFromURL()
 })
+
+// URL 变了就换选中项：面板可以在工作台页面里再敲一次域名跳到另一条
+watch(keyFromURL, syncFromURL)
+
+/** pick 点树上的条目时同步 URL，让地址栏可分享、可后退。 */
+function pick(domain: string) {
+  void router.replace(`/workbench/${encodeURIComponent(routeKey(domain))}`)
+}
 
 // 离开且有未推送草稿时确认（前端文档 §3）
 onBeforeRouteLeave(() => {
@@ -104,7 +138,7 @@ defineExpose({ resetChecks })
     <aside class="col tree">
       <div class="ch">配置资源</div>
       <button v-for="r in drafts.live" :key="r.domain" class="ti"
-              :class="{ on: sel === routeKey(r.domain) }" @click="sel = routeKey(r.domain)">
+              :class="{ on: sel === routeKey(r.domain) }" @click="pick(r.domain)">
         <span class="mono n">{{ r.domain }}</span>
         <span class="mono v">v{{ r.ver }}</span>
         <span v-if="drafts.isDirty(routeKey(r.domain))" class="dot" title="有未推送改动" />
@@ -114,8 +148,11 @@ defineExpose({ resetChecks })
 
     <!-- 中：类型化表单 -->
     <section class="col form">
+      <div v-if="missing" class="gone">
+        找不到路由 <b class="mono">{{ keyFromURL.replace(/^route:/, '') }}</b>——它可能已被删除。
+      </div>
       <div class="ch">
-        <span class="mono">{{ cur?.domain ?? '—' }}</span>
+        <span class="mono" data-testid="current-domain">{{ cur?.domain ?? (missing ? keyFromURL.replace(/^route:/, '') : '—') }}</span>
         <StatusPill v-if="drafts.isDirty(sel)" tone="warn" :text="`${drafts.changeCount(sel)} 处未推送`" />
         <StatusPill v-else tone="muted" text="与线上一致" />
       </div>
@@ -225,6 +262,7 @@ defineExpose({ resetChecks })
 .ti .n { font-size: 12px; flex: 1; overflow: hidden; text-overflow: ellipsis; }
 .ti .v { font-size: 10px; color: var(--text-faint); }
 .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
+.gone { margin: 10px 12px 0; padding: 9px 12px; border-radius: 9px; background: var(--surface-sunken); border: 1px solid var(--border-subtle); font-size: 12px; color: var(--danger-text); }
 .empty { padding: 14px; font-size: 12.5px; color: var(--text-muted); }
 .fb { padding: 14px; display: flex; flex-wrap: wrap; gap: 12px; }
 .f { display: flex; flex-direction: column; gap: 5px; flex: 1 1 200px; }

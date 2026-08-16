@@ -17,6 +17,11 @@ export interface OpSuggestion {
   destructive: boolean
 }
 
+/** 命令面板可跳转的路由（反代路由，不是前端路由）。 */
+export interface PaletteRoute {
+  domain: string
+}
+
 /** 页面跳转候选。to 必须是 router 里真实存在的路径。 */
 export interface NavSuggestion {
   kind: 'nav'
@@ -25,7 +30,21 @@ export interface NavSuggestion {
   destructive: false
 }
 
-export type Suggestion = OpSuggestion | NavSuggestion
+/**
+ * 路由跳转候选：敲域名，去那条路由的配置工作台。
+ *
+ * 与 NavSuggestion 分成两种，是为了让面板能把它们分组显示——混在一起的话
+ * ↓↓Enter 很容易点到隔壁那条。
+ */
+export interface RouteSuggestion {
+  kind: 'route'
+  domain: string
+  to: string
+  label: string
+  destructive: false
+}
+
+export type Suggestion = OpSuggestion | NavSuggestion | RouteSuggestion
 
 const VERBS: { verb: NodeVerb; label: string; destructive: boolean }[] = [
   { verb: 'push', label: '重推配置', destructive: false },
@@ -51,22 +70,29 @@ const PAGES: { to: string; label: string }[] = [
  * 节点操作支持按节点名、城市、IP、线路模糊匹配——运维记得住「香港那台」，
  * 未必记得住 node-hk-01 这个 ID。
  */
-export function suggest(input: string, nodes: PaletteNode[]): Suggestion[] {
+export function suggest(input: string, nodes: PaletteNode[], routes: PaletteRoute[] = []): Suggestion[] {
   const q = input.trim().toLowerCase()
 
   // 空输入给全集而不是示例：面板刚打开时，人要的是「我能做什么」的完整清单
   if (q === '') {
-    return [...allOps(nodes), ...PAGES.map(nav)]
+    return [...allOps(nodes), ...PAGES.map(nav), ...routes.map(routeJump)]
   }
 
   const [head, ...rest] = q.split(/\s+/)
   const v = VERBS.find((x) => x.verb === head)
   if (v) {
+    // 动词开头就只解析节点操作：`push api.example.com` 是「把配置推给某节点」，
+    // 不该顺带冒出一条「前往路由」
     const needle = rest.join(' ')
     const hits = needle === '' ? nodes : nodes.filter((n) => matches(n, needle))
     return hits.map((n) => op(v, n))
   }
-  return PAGES.filter((p) => p.label.toLowerCase().includes(q) || p.to.includes(q)).map(nav)
+  return [
+    ...PAGES.filter((p) => p.label.toLowerCase().includes(q) || p.to.includes(q)).map(nav),
+    // 域名匹配到的是**路由**，不是节点：域名全网下发，每台节点都承载全部域名，
+    // 按域名筛节点永远筛出全部
+    ...routes.filter((r) => r.domain.toLowerCase().includes(q)).map(routeJump),
+  ]
 }
 
 function allOps(nodes: PaletteNode[]): OpSuggestion[] {
@@ -79,6 +105,17 @@ function matches(n: PaletteNode, needle: string): boolean {
 
 function op(v: (typeof VERBS)[number], n: PaletteNode): OpSuggestion {
   return { kind: 'op', verb: v.verb, node: n.id, label: `${v.label} ${n.id}`, destructive: v.destructive }
+}
+
+/** routeKey 与 stores/drafts 的资源键一致：换了这里就跳不到工作台的那一条。 */
+const routeKey = (domain: string) => `route:${domain}`
+
+function routeJump(r: PaletteRoute): RouteSuggestion {
+  return {
+    kind: 'route', domain: r.domain,
+    to: `/workbench/${encodeURIComponent(routeKey(r.domain))}`,
+    label: `前往路由 ${r.domain}`, destructive: false,
+  }
 }
 
 function nav(p: { to: string; label: string }): NavSuggestion {
