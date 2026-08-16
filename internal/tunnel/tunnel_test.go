@@ -5,7 +5,9 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"net"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	edgev1 "github.com/xltxb/edge_caddy/gen/edge/v1"
+	"github.com/xltxb/edge_caddy/internal/agent"
 	"github.com/xltxb/edge_caddy/internal/enroll"
 	"github.com/xltxb/edge_caddy/internal/pki"
 	"github.com/xltxb/edge_caddy/internal/store"
@@ -218,42 +221,44 @@ func waitFor(d time.Duration, cond func() bool) bool {
 	return false
 }
 
-// 完整往返：用一次性 Token 换到隧道证书，再用该证书接入隧道。
+// 完整往返，客户端是**真的 Agent**：接入换证 → 用该证书建隧道 → 心跳被主控看到。
 //
-// 这是 ADR-0009 那条「先有鸡先有蛋」流程的可执行版本——首连无客户端证书走 Enroll，
-// 拿到证书后才进 Channel。拆开测两半都会漏掉真正的风险：换来的证书到底能不能用。
-func TestEnrollThenConnectRoundTrip(t *testing.T) {
+// 用真 Agent 而不是手写客户端，是因为「换来的证书到底能不能用」这个风险恰恰
+// 藏在客户端那侧：证书落盘的格式、TLS 配置怎么拼、连的是哪个服务。手写一份
+// 只会验证「我手写的这份能用」。
+func TestAgentEnrollsThenConnects(t *testing.T) {
 	h := newHarness(t)
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	tok, _, err := h.enroller.Issue(ctx, 30*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// 第一步：不带客户端证书调 Enroll
-	resp, err := edgev1.NewEdgeEnrollClient(h.dial(t, nil, nil)).
-		Enroll(ctx, &edgev1.EnrollRequest{NodeId: "node-hk-01", Token: tok})
-	if err != nil {
-		t.Fatalf("持有效 Token 的接入应成功: %v", err)
-	}
-	if len(resp.GetCertPem()) == 0 || len(resp.GetKeyPem()) == 0 || len(resp.GetCaPem()) == 0 {
-		t.Fatal("接入响应应同时含证书、私钥与 CA 根证书")
+	cfg := agent.Config{
+		NodeID:            "node-hk-01",
+		MasterAddr:        h.addr,
+		ServerName:        "master.local",
+		StateDir:          t.TempDir(),
+		MasterCA:          h.tunnelCA.RootPEM(),
+		HeartbeatInterval: 50 * time.Millisecond,
 	}
 
-	// 第二步：用换来的证书进隧道
-	cc := h.dial(t, resp.GetCertPem(), resp.GetKeyPem())
-	sctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	stream, err := edgev1.NewEdgeTunnelClient(cc).Channel(sctx)
+	if err := agent.Enroll(ctx, cfg, tok); err != nil {
+		t.Fatalf("Agent 接入应成功: %v", err)
+	}
+	// 私钥必须落盘为 0600：同机其他用户不该能读到它
+	info, err := os.Stat(filepath.Join(cfg.StateDir, "tunnel.key"))
 	if err != nil {
-		t.Fatalf("用接入得到的证书应能进入隧道: %v", err)
+		t.Fatalf("隧道私钥应已落盘: %v", err)
 	}
-	if err := stream.Send(&edgev1.AgentMsg{
-		M: &edgev1.AgentMsg_Hb{Hb: &edgev1.Heartbeat{CfgVersion: "cfg-init"}},
-	}); err != nil {
-		t.Fatalf("发送心跳: %v", err)
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("隧道私钥权限应为 0600，实际 %o", perm)
 	}
+
+	go func() { _ = agent.Run(ctx, cfg) }()
+
 	if !waitFor(3*time.Second, func() bool {
 		for _, n := range h.srv.Connected() {
 			if n == "node-hk-01" {
@@ -262,16 +267,35 @@ func TestEnrollThenConnectRoundTrip(t *testing.T) {
 		}
 		return false
 	}) {
-		t.Fatalf("接入后的节点应出现在在线列表，实际 %v", h.srv.Connected())
+		t.Fatalf("Agent 应出现在在线列表，实际 %v", h.srv.Connected())
 	}
 
-	// 第三步：同一个 Token 不能再换一张证书
-	_, err = edgev1.NewEdgeEnrollClient(h.dial(t, nil, nil)).
-		Enroll(ctx, &edgev1.EnrollRequest{NodeId: "node-evil", Token: tok})
-	if err == nil {
+	// 同一个 Token 不能再换一张证书
+	cfg2 := cfg
+	cfg2.NodeID = "node-evil"
+	cfg2.StateDir = t.TempDir()
+	if err := agent.Enroll(ctx, cfg2, tok); err == nil {
 		t.Fatal("已使用过的 Token 不应能再换到证书")
 	}
-	if got := status.Code(err); got != codes.PermissionDenied {
-		t.Fatalf("应返回 PermissionDenied，实际 %v", got)
+}
+
+// 没有隧道证书就想建连接的 Agent 必须失败，且错误要说清是没接入。
+func TestAgentWithoutCertCannotConnect(t *testing.T) {
+	h := newHarness(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	err := agent.Run(ctx, agent.Config{
+		NodeID: "node-hk-01", MasterAddr: h.addr, ServerName: "master.local",
+		StateDir: t.TempDir(), MasterCA: h.tunnelCA.RootPEM(),
+	})
+	if err == nil {
+		t.Fatal("没有隧道证书不应能建立连接")
+	}
+	if !strings.Contains(err.Error(), "接入") {
+		t.Errorf("错误应提示尚未接入，实际: %v", err)
+	}
+	if n := h.srv.Connected(); len(n) != 0 {
+		t.Fatalf("不应有节点在线，实际 %v", n)
 	}
 }

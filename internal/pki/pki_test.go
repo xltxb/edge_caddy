@@ -1,10 +1,14 @@
 package pki_test
 
 import (
+	"context"
+	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/xltxb/edge_caddy/internal/pki"
+	"github.com/xltxb/edge_caddy/internal/store"
 )
 
 // 隧道 CA 与回源 CA 必须互不认可。
@@ -62,4 +66,66 @@ func mustIssue(t *testing.T, ca *pki.CA, subject string, ttl time.Duration) pki.
 		t.Fatalf("签发 %q: %v", subject, err)
 	}
 	return is
+}
+
+// CA 必须能用同一个主密钥重新加载出来，且**根证书不变**。
+//
+// 根变了等于所有已签发的凭据集体作废：节点全部失联、源站的信任库全部要换。
+func TestCAReloadsWithSameRoot(t *testing.T) {
+	st, ctx := newPKIStore(t), context.Background()
+	secret := []byte("test-master-secret")
+
+	first, err := pki.LoadOrCreate(ctx, st, pki.KeyTunnelCA, secret, "Edge Tunnel CA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := pki.LoadOrCreate(ctx, st, pki.KeyTunnelCA, secret, "Edge Tunnel CA")
+	if err != nil {
+		t.Fatalf("同一主密钥应能重新加载: %v", err)
+	}
+	if string(first.RootPEM()) != string(again.RootPEM()) {
+		t.Fatal("重新加载后根证书变了——所有已签发凭据会集体作废")
+	}
+	// 重载出来的 CA 必须真的能签，也就是私钥确实被还原了
+	if _, err := again.IssueClient("node-hk-01", time.Hour); err != nil {
+		t.Fatalf("重载后的 CA 应能签发: %v", err)
+	}
+}
+
+// 主密钥不对时必须**报错**，绝不能悄悄新建一套 CA。
+//
+// 悄悄新建的现象是「节点莫名其妙全掉线了」——最难排查的那一类故障，
+// 因为启动日志一切正常，看不出根已经换了。
+func TestWrongSecretFailsLoudlyInsteadOfCreatingNewCA(t *testing.T) {
+	st, ctx := newPKIStore(t), context.Background()
+	original, err := pki.LoadOrCreate(ctx, st, pki.KeyTunnelCA, []byte("right-secret"), "Edge Tunnel CA")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := pki.LoadOrCreate(ctx, st, pki.KeyTunnelCA, []byte("wrong-secret"), "Edge Tunnel CA")
+	if err == nil {
+		if string(got.RootPEM()) == string(original.RootPEM()) {
+			t.Fatal("不可能：错误的主密钥解出了原来的 CA")
+		}
+		t.Fatal("主密钥不对时悄悄新建了一套 CA——所有节点会莫名其妙集体失联")
+	}
+}
+
+// 没有主密钥时拒绝启动，不做「先明文存着以后再加密」。
+func TestRefusesToPersistWithoutSecret(t *testing.T) {
+	st, ctx := newPKIStore(t), context.Background()
+	if _, err := pki.LoadOrCreate(ctx, st, pki.KeyTunnelCA, nil, "Edge Tunnel CA"); !errors.Is(err, pki.ErrNoSecretKey) {
+		t.Fatalf("无主密钥时应返回 ErrNoSecretKey，实际 %v", err)
+	}
+}
+
+func newPKIStore(t *testing.T) *store.Store {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "pki.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return st
 }
