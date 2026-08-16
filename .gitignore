@@ -1,0 +1,19 @@
+# 构建产物
+/bin/
+/dist/
+web/dist/
+web/node_modules/
+
+# 本地数据与凭据
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.pem
+*.key
+/data/
+
+# 编辑器
+.idea/
+.vscode/
+.DS_Store
+/tools/
