@@ -17,3 +17,5 @@ web/node_modules/
 .vscode/
 .DS_Store
 /tools/
+web/test-results/
+web/playwright-report/

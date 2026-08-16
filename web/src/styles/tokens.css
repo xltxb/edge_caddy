@@ -1,0 +1,57 @@
+/* Vela 设计令牌 —— 取自设计系统 _ds/vela-design-system/tokens/colors.css。
+   组件里一律用**语义**令牌（--surface-card 等），不要硬编码色值，
+   也不要直接用原始色阶（--slate-700 那类）——那会让暗色主题漏掉一处就花掉。 */
+:root {
+  --azure-50:#eef3ff; --azure-100:#dce6ff; --azure-200:#b9cdff; --azure-300:#8facff;
+  --azure-400:#5e83fb; --azure-500:#3b6ef6; --azure-600:#2553e0; --azure-700:#1c41b8;
+  --cyan-400:#2dcde6;
+  --slate-0:#ffffff; --slate-50:#f6f8fb; --slate-100:#edf1f7; --slate-200:#dde3ec;
+  --slate-300:#c4ccda; --slate-400:#97a1b5; --slate-500:#69748b; --slate-600:#4b5468;
+  --slate-700:#353c4d; --slate-800:#232838; --slate-900:#161a27; --slate-950:#0c0e17;
+  --success-50:#e7f9f0; --success-500:#18b368; --success-700:#0c7344;
+  --warning-50:#fff5e3; --warning-500:#f5a524; --warning-700:#a96606;
+  --danger-50:#fdecec; --danger-500:#f0473e; --danger-700:#ac1f18;
+
+  --surface-page:var(--slate-50); --surface-card:var(--slate-0);
+  --surface-sunken:var(--slate-100); --surface-raised:var(--slate-0);
+  --surface-overlay:rgba(12,14,23,.45);
+  --border-subtle:var(--slate-200); --border-default:var(--slate-300); --border-strong:var(--slate-400);
+  --text-strong:var(--slate-900); --text-body:var(--slate-700);
+  --text-muted:var(--slate-500); --text-faint:var(--slate-400); --text-on-accent:#fff;
+  --accent:var(--azure-500); --accent-hover:var(--azure-600); --accent-subtle:var(--azure-50);
+  --accent-subtle-border:var(--azure-200); --accent-text:var(--azure-600);
+  --success:var(--success-500); --success-text:var(--success-700); --success-subtle:var(--success-50);
+  --warning:var(--warning-500); --warning-text:var(--warning-700); --warning-subtle:var(--warning-50);
+  --danger:var(--danger-500); --danger-text:var(--danger-700); --danger-subtle:var(--danger-50);
+  --selection-bg:var(--azure-100);
+
+  --font-sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB",
+    "Microsoft YaHei",system-ui,sans-serif;
+  --font-mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+}
+
+[data-theme="dark"] {
+  --surface-page:#0a0c14; --surface-card:#141826; --surface-sunken:#0c0e17;
+  --surface-raised:#1b2030; --surface-overlay:rgba(4,6,12,.66);
+  --border-subtle:rgba(255,255,255,.07); --border-default:rgba(255,255,255,.13);
+  --border-strong:rgba(255,255,255,.22);
+  --text-strong:#f4f7fc; --text-body:#c4ccda; --text-muted:#8893a8; --text-faint:#5b6478;
+  --accent:var(--azure-400); --accent-hover:var(--azure-300);
+  --accent-subtle:rgba(59,110,246,.16); --accent-subtle-border:rgba(94,131,251,.36);
+  --accent-text:var(--azure-300);
+  --success:#2ad07e; --success-text:#7be8b3; --success-subtle:rgba(24,179,104,.16);
+  --warning:#ffb648; --warning-text:#ffd391; --warning-subtle:rgba(245,165,36,.16);
+  --danger:#ff6259; --danger-text:#ff9d97; --danger-subtle:rgba(240,71,62,.18);
+  --selection-bg:rgba(59,110,246,.34);
+}
+
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--surface-page);color:var(--text-body);
+  font-family:var(--font-sans);font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased}
+a{color:var(--accent-text)} a:hover{color:var(--accent-hover)}
+button{font:inherit;white-space:nowrap} button:disabled{opacity:.5;cursor:not-allowed}
+input{font:inherit}
+input:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+::selection{background:var(--selection-bg)}
+.mono{font-family:var(--font-mono)}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
