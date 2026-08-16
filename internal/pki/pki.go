@@ -116,6 +116,48 @@ func (c *CA) IssueClient(subject string, ttl time.Duration) (Issued, error) {
 	}, nil
 }
 
+// IssueServer 为主控自身签发服务端证书。
+//
+// 与客户端证书分开是因为用途扩展不同：TLS 会拒绝拿客户端证书当服务端证书用，
+// 反之亦然。合成一个「两用」证书能省几行代码，但也就等于放弃了这层区分。
+func (c *CA) IssueServer(host string, ttl time.Duration) (Issued, error) {
+	if host == "" {
+		return Issued{}, fmt.Errorf("签发服务端证书时缺少主机名")
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return Issued{}, fmt.Errorf("生成 %s 的私钥: %w", host, err)
+	}
+	serial, err := randomSerial()
+	if err != nil {
+		return Issued{}, err
+	}
+	notAfter := time.Now().Add(ttl)
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: host},
+		DNSNames:     []string{host},
+		NotBefore:    time.Now().Add(-5 * time.Minute),
+		NotAfter:     notAfter,
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, c.cert, &key.PublicKey, c.key)
+	if err != nil {
+		return Issued{}, fmt.Errorf("签发 %s 的服务端证书: %w", host, err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return Issued{}, fmt.Errorf("序列化 %s 的私钥: %w", host, err)
+	}
+	return Issued{
+		Subject:  host,
+		CertPEM:  pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		KeyPEM:   pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
+		NotAfter: notAfter,
+	}, nil
+}
+
 // Verify 校验一张证书是否由本 CA 签发且仍在有效期内。
 func (c *CA) Verify(certPEM []byte) error {
 	block, _ := pem.Decode(certPEM)

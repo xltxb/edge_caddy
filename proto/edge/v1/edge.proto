@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package edge.v1;
+
+// EdgeEnroll 是接入用的一次性通道。
+//
+// 节点首连时还没有隧道证书，因此不能用 mTLS 客户端认证（docs/adr/0009）。
+// 这个服务跑在服务端单向 TLS 上，用一次性 Token 换取隧道客户端证书；
+// 之后该节点的所有连接都走 mTLS，不再触碰这个服务。
+service EdgeEnroll {
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
+}
+
+message EnrollRequest {
+  string node_id = 1;
+  string token = 2;
+}
+
+message EnrollResponse {
+  // 隧道客户端证书与私钥。私钥只在这一次传输，主控不保留。
+  bytes cert_pem = 1;
+  bytes key_pem = 2;
+  // 主控的隧道 CA 根证书，节点用它校验主控。
+  bytes ca_pem = 3;
+}
+
+// EdgeTunnel 是节点与主控之间的长连接。Agent 主动外连，穿透 NAT。
+//
+// 这个服务**要求 mTLS**：调用方必须出示由隧道 CA 签发的客户端证书。
+service EdgeTunnel {
+  rpc Channel(stream AgentMsg) returns (stream MasterMsg);
+}
+
+message AgentMsg {
+  oneof m {
+    Heartbeat hb = 1;
+    PushResult push_result = 2;
+  }
+}
+
+message MasterMsg {
+  oneof m {
+    PushConfig push = 1;
+  }
+}
+
+// Heartbeat 刻意**不含 node_id**。
+//
+// 后端开发文档 §5 的草案里有这个字段，但在 mTLS 之上它是危险的冗余：身份应当
+// 只有一个来源——客户端证书的主体。留一个可自报的 node_id 字段，等于给出第二个
+// 来源，而两个来源迟早会不一致，届时「以哪个为准」就成了一个能被利用的问题。
+message Heartbeat {
+  double cpu = 1;
+  double mem = 2;
+  uint32 conns = 3;
+  // 节点当前生效的配置版本。主控据此判断配置漂移（只比版本号，docs/adr/0002）。
+  string cfg_version = 4;
+}
+
+message PushConfig {
+  string cfg_version = 1;
+  // apps 子树的渲染产物。Agent 遍历顶层每个 app 逐个 POST 到
+  // /config/apps/<name>，而不是整体 POST /config/apps。
+  bytes caddy_json = 2;
+  uint32 deadline_ms = 3;
+}
+
+message PushResult {
+  string cfg_version = 1;
+  bool ok = 2;
+  // 成功时是耗时（"31ms"），失败时是 Caddy 的原文报错。
+  // 不做归类：实测 Caddy 对语法错误、未知 handler、字段类型错、端口占用一律
+  // 返回 500，任何基于状态码的归类都是错的（docs/adr/0005）。
+  string detail = 3;
+}

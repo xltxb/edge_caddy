@@ -1,0 +1,14 @@
+version: v2
+modules:
+  - path: proto
+lint:
+  use: [STANDARD]
+  # 后端开发文档 §5 定死了 EdgeTunnel / AgentMsg / MasterMsg 这几个名字，
+  # 它们是需求的一部分。STANDARD 想要 XxxService / ChannelRequest 那套后缀，
+  # 与文档冲突时以文档为准，因此排除这三条规则而不是改名。
+  except:
+    - SERVICE_SUFFIX
+    - RPC_REQUEST_STANDARD_NAME
+    - RPC_RESPONSE_STANDARD_NAME
+breaking:
+  use: [FILE]
