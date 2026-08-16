@@ -32,3 +32,29 @@ export interface Frame {
   type: string
   data: Record<string, unknown>
 }
+
+export interface Route {
+  domain: string
+  upstream: string
+  block: 'abort' | '403' | '404'
+  mtls: boolean
+  compress: boolean
+  body_max: string
+  wl: string[]
+  /** 0 表示尚未下发到任何节点 */
+  ver: number
+}
+
+export interface DeployResultRow {
+  node: string
+  /** ok / fail */
+  state: string
+  /** 成功时是耗时（"31ms"），失败时是 Caddy 的原文报错 */
+  res: string
+}
+
+export interface DeployResponse {
+  deploy_id: number
+  cfg_version: string
+  results: DeployResultRow[]
+}
