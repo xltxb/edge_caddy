@@ -113,7 +113,7 @@ func TestDeployCountsAreRecomputedNotAccumulated(t *testing.T) {
 	id, err := st.CreateDeploy(ctx, model.Deploy{
 		CfgVersion: "cfg-aaa111", Operator: "abiu",
 		ResKeys:   []string{"route:api.example.com"},
-		Snapshot:  map[string]any{"http": map[string]any{}},
+		Snapshot:  model.Snapshot{Rendered: map[string]any{"http": map[string]any{}}},
 		CreatedAt: time.Now(),
 	})
 	if err != nil {
@@ -154,7 +154,7 @@ func TestBaselineIsLatestDeploy(t *testing.T) {
 	for _, v := range []string{"cfg-111111", "cfg-222222"} {
 		if _, err := st.CreateDeploy(ctx, model.Deploy{
 			CfgVersion: v, Operator: "abiu", CreatedAt: time.Now(),
-			Snapshot: map[string]any{},
+			Snapshot: model.Snapshot{},
 		}); err != nil {
 			t.Fatal(err)
 		}

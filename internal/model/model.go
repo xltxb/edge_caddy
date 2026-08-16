@@ -117,16 +117,29 @@ type Draft struct {
 	UpdatedAt time.Time      `json:"updated_at"`
 }
 
-// Deploy 是一次下发的记录。Snapshot 是当次的全量渲染快照，回滚以它为源。
+// Snapshot 是一次下发固化下来的两份东西。
+//
+// Routes 是**资源模型**，回滚以它为源；Rendered 是当次实际发给节点的字节，
+// 用于「当时到底发了什么」的取证。
+//
+// 必须同时存：渲染是**有损**的，从产物反推不回资源模型——白名单
+// ["0.0.0.0/0"] 与 [] 渲染出的配置完全一样，body_max "5MB" 渲染成 5000000
+// 之后也拿不回用户原本敲的那个字符串。只存渲染产物就回滚不了。
+type Snapshot struct {
+	Routes   []Route        `json:"routes"`
+	Rendered map[string]any `json:"rendered"`
+}
+
+// Deploy 是一次下发的记录。
 type Deploy struct {
-	ID         int64          `json:"id"`
-	CfgVersion string         `json:"cfg_version"`
-	Operator   string         `json:"operator"`
-	ResKeys    []string       `json:"res_keys"`
-	Snapshot   map[string]any `json:"snapshot"`
-	OKCount    int            `json:"ok_count"`
-	FailCount  int            `json:"fail_count"`
-	CreatedAt  time.Time      `json:"created_at"`
+	ID         int64     `json:"id"`
+	CfgVersion string    `json:"cfg_version"`
+	Operator   string    `json:"operator"`
+	ResKeys    []string  `json:"res_keys"`
+	Snapshot   Snapshot  `json:"snapshot"`
+	OKCount    int       `json:"ok_count"`
+	FailCount  int       `json:"fail_count"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // DeployResult 是某次下发在单个节点上的结果。

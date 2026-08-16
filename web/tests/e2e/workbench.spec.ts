@@ -67,3 +67,37 @@ test('确认弹层给出后端权威 diff', async ({ page }) => {
   await modal.getByRole('button', { name: /推送选中的/ }).click()
   await expect(modal.getByText(/没有在线节点/)).toBeVisible()
 })
+
+// 未推送草稿的离开守卫，以及下发记录页可达。
+//
+// **注意这条不验证回滚**。回滚需要先有一条下发记录，而下发在没有在线节点时
+// 会在创建记录之前就失败——Playwright 环境里起不了真节点。回滚本身的行为
+// （写回草稿而非直接推送、只写有差异的、不改线上值）由 internal/deploy 的
+// 四条 Go 测试覆盖，并做了三次变异验证。
+//
+// 这里刻意不把测试名写成「回滚…」：名字承诺了没验证的东西，比没有测试更糟。
+test('有未推送草稿时离开需确认，下发记录页可达', async ({ page }) => {
+  await login(page)
+  const domain = `rb-${Date.now()}.example.com`
+
+  // 建路由并推一版（没有节点，下发会失败，但记录仍会写下来）
+  await page.getByRole('link', { name: '反代路由', exact: true }).click()
+  await page.getByRole('button', { name: '新建路由' }).click()
+  await page.getByLabel('域名').fill(domain)
+  await page.getByLabel('回源地址').fill('10.8.0.2:8080')
+  await page.getByRole('button', { name: '保存' }).click()
+  await expect(page.locator('.row', { hasText: domain })).toBeVisible()
+
+  await page.getByRole('link', { name: '配置工作台', exact: true }).click()
+
+  // 选中刚建的资源，改回源制造草稿
+  await page.locator('.ti', { hasText: domain }).click()
+  await page.getByLabel('回源地址').fill('10.0.0.9:9090')
+  await expect(page.getByText(/1 处未推送/)).toBeVisible()
+
+  // 离开工作台时应确认（有未推送草稿）
+  page.once('dialog', (d) => d.accept())
+  await page.getByRole('link', { name: '下发记录', exact: true }).click()
+  await expect(page).toHaveURL(/\/deploys$/)
+  await expect(page.getByText('回滚只把该版本写回草稿')).toBeVisible()
+})

@@ -49,6 +49,7 @@ type Deployer interface {
 	// Deploy 只携带 resKeys 指定的资源；resKeys 为空表示全部。
 	Deploy(ctx context.Context, operator string, resKeys []string) (deploy.Result, error)
 	Preview(ctx context.Context, resKeys []string) (current, next string, err error)
+	Rollback(ctx context.Context, cfgVersion, operator string) ([]string, error)
 }
 
 type Deps struct {
@@ -98,6 +99,7 @@ func New(d Deps) http.Handler {
 		authed.POST("/config/preview", h.preview)
 		authed.POST("/deploys", h.createDeploy)
 		authed.GET("/deploys", h.listDeploys)
+		authed.POST("/deploys/:cfg/rollback", h.rollbackDeploy)
 
 		authed.GET("/drafts", h.listDrafts)
 		authed.PUT("/drafts/:key", h.putDraft)

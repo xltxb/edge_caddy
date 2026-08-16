@@ -62,6 +62,10 @@ type Store interface {
 	BumpRouteVersions(ctx context.Context, domains []string) error
 	ListDrafts(ctx context.Context) ([]model.Draft, error)
 	DeleteDrafts(ctx context.Context, keys []string) error
+	PutDraft(ctx context.Context, key string, patch map[string]any, by string, now time.Time) error
+	Baseline(ctx context.Context) (string, error)
+	GetDeployByVersion(ctx context.Context, cfg string) (model.Deploy, error)
+	GetRoute(ctx context.Context, domain string) (model.Route, error)
 }
 
 // Tunnel 是 deploy 需要的下发通道能力。
@@ -160,10 +164,12 @@ func (o *Orchestrator) Deploy(ctx context.Context, operator string, resKeys []st
 	if err != nil {
 		return Result{}, err
 	}
-	var snapshot map[string]any
-	if err := json.Unmarshal(payload, &snapshot); err != nil {
+	var rendered map[string]any
+	if err := json.Unmarshal(payload, &rendered); err != nil {
 		return Result{}, fmt.Errorf("快照序列化: %w", err)
 	}
+	// 资源模型与渲染产物都存：渲染有损，只存产物就回滚不了（见 model.Snapshot）
+	snapshot := model.Snapshot{Routes: merged, Rendered: rendered}
 
 	keys := resKeys
 	if len(keys) == 0 {

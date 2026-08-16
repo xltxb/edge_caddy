@@ -215,10 +215,31 @@ func (h *handler) preview(c *gin.Context) {
 	ok(c, gin.H{"current": cur, "next": next})
 }
 
+// rollbackDeploy 把某版本写回草稿。**不直接推送**（PRD §6.3）——
+// 回滚往往发生在出事的时候，正是最需要有人看一眼 diff 的时刻。
+func (h *handler) rollbackDeploy(c *gin.Context) {
+	if h.deps.Deploy == nil {
+		fail(c, http.StatusServiceUnavailable, codeInternal, "下发功能未装配")
+		return
+	}
+	keys, err := h.deps.Deploy.Rollback(c.Request.Context(), c.Param("cfg"), operatorOf(c))
+	if err != nil {
+		fail(c, http.StatusUnprocessableEntity, codeBadInput, err.Error())
+		return
+	}
+	h.log.Info("回滚写回草稿", "operator", operatorOf(c), "cfg_version", c.Param("cfg"), "resources", len(keys))
+	ok(c, gin.H{"res_keys": keys, "note": "已写回草稿，请在工作台检查 diff 后推送"})
+}
+
 func (h *handler) listDeploys(c *gin.Context) {
 	ds, results, err := h.deps.Store.ListDeploys(c.Request.Context(), 50)
 	if err != nil {
 		h.failErr(c, err, "读取下发记录失败")
+		return
+	}
+	baseline, err := h.deps.Store.Baseline(c.Request.Context())
+	if err != nil {
+		h.failErr(c, err, "读取基线失败")
 		return
 	}
 	out := make([]gin.H, 0, len(ds))
@@ -231,7 +252,9 @@ func (h *handler) listDeploys(c *gin.Context) {
 			"id": d.ID, "cfg_version": d.CfgVersion, "operator": d.Operator,
 			"res_keys": d.ResKeys, "ok_count": d.OKCount, "fail_count": d.FailCount,
 			"created_at": d.CreatedAt, "results": rows,
+			// 当前基线不提供「回滚到自己」——那是个空操作
+			"is_baseline": d.CfgVersion == baseline,
 		})
 	}
-	ok(c, gin.H{"deploys": out})
+	ok(c, gin.H{"deploys": out, "baseline": baseline})
 }
