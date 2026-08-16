@@ -17,6 +17,7 @@ import (
 	"github.com/xltxb/edge_caddy/internal/deploy"
 	"github.com/xltxb/edge_caddy/internal/enroll"
 	"github.com/xltxb/edge_caddy/internal/model"
+	"github.com/xltxb/edge_caddy/internal/ws"
 )
 
 // 业务错误码。0 表示成功；其余按类别分段，便于前端按段处理。
@@ -50,6 +51,7 @@ type Deps struct {
 	Auth   *auth.Manager
 	Enroll *enroll.Enroller
 	Deploy Deployer
+	Hub    *ws.Hub
 	Logger *slog.Logger
 }
 
@@ -90,6 +92,8 @@ func New(d Deps) http.Handler {
 
 		authed.POST("/deploys", h.createDeploy)
 		authed.GET("/deploys", h.listDeploys)
+
+		authed.GET("/ws", h.serveWS)
 	}
 	return r
 }

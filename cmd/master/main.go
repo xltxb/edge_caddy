@@ -22,6 +22,7 @@ import (
 	"github.com/xltxb/edge_caddy/internal/pki"
 	"github.com/xltxb/edge_caddy/internal/store"
 	"github.com/xltxb/edge_caddy/internal/tunnel"
+	"github.com/xltxb/edge_caddy/internal/ws"
 )
 
 func main() {
@@ -75,11 +76,13 @@ func main() {
 	}
 
 	enroller := enroll.New(st)
-	tun := tunnel.NewServer(tunnel.Deps{CA: tunnelCA, Enroll: enroller, Store: st, Logger: log})
+	hub := ws.NewHub()
+	tun := tunnel.NewServer(tunnel.Deps{CA: tunnelCA, Enroll: enroller, Store: st, Hub: hub, Logger: log})
 	orch := deploy.New(st, tun, log)
 	// 隧道要把节点回报的结果转交给编排器；编排器又要用隧道发送。
 	// 用 setter 打破这个环，比引入一个中间事件总线简单。
 	tun.SetResults(orch)
+	orch.SetBroadcaster(hub)
 
 	serverCert, err := tunnelCA.IssueServer(*hostname, 365*24*time.Hour)
 	if err != nil {
@@ -115,7 +118,7 @@ func main() {
 		}
 	}()
 
-	h := api.New(api.Deps{Store: st, Auth: authMgr, Enroll: enroller, Deploy: orch, Logger: log})
+	h := api.New(api.Deps{Store: st, Auth: authMgr, Enroll: enroller, Deploy: orch, Hub: hub, Logger: log})
 	log.Info("HTTP 监听", "addr", *httpAddr)
 	if err := http.ListenAndServe(*httpAddr, h); err != nil {
 		log.Error("HTTP 服务退出", "err", err)

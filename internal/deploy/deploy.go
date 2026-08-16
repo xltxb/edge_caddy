@@ -20,16 +20,46 @@ import (
 	edgev1 "github.com/xltxb/edge_caddy/gen/edge/v1"
 	"github.com/xltxb/edge_caddy/internal/model"
 	"github.com/xltxb/edge_caddy/internal/render"
+	"github.com/xltxb/edge_caddy/internal/ws"
 )
 
 // DefaultDeadline 是单个节点应用配置的超时（后端文档 §5 默认 5000ms）。
 const DefaultDeadline = 5 * time.Second
+
+// RetryPolicy 决定失败后重试几次、隔多久。
+//
+// **只对传输层失败生效**（docs/adr/0005）：节点没回应才重试。节点回应了但
+// Caddy 拒绝配置时一次都不重试——同一份字节喂给同一个 Caddy 必然得到同一个
+// 拒绝，重试只会在日志里刷 N 遍一模一样的报错，把真正的原因埋进噪声里。
+type RetryPolicy struct {
+	// Max 是总尝试次数（含首次）。
+	Max int
+	// Backoff 是首次重试前的等待，之后按 2 的幂增长。
+	Backoff time.Duration
+	// Deadline 是单次尝试等待节点回应的时长；为 0 时用 DefaultDeadline。
+	Deadline time.Duration
+}
+
+func DefaultRetryPolicy() RetryPolicy {
+	return RetryPolicy{Max: 5, Backoff: 500 * time.Millisecond, Deadline: DefaultDeadline}
+}
+
+func (p RetryPolicy) normalized() RetryPolicy {
+	if p.Max <= 0 {
+		p.Max = 1
+	}
+	if p.Deadline <= 0 {
+		p.Deadline = DefaultDeadline
+	}
+	return p
+}
 
 // Store 是 deploy 需要的存储能力。
 type Store interface {
 	ListRoutes(ctx context.Context) ([]model.Route, error)
 	CreateDeploy(ctx context.Context, d model.Deploy) (int64, error)
 	PutDeployResult(ctx context.Context, r model.DeployResult) error
+	BumpRouteVersions(ctx context.Context, domains []string) error
 }
 
 // Tunnel 是 deploy 需要的下发通道能力。
@@ -38,13 +68,22 @@ type Tunnel interface {
 	Send(nodeID string, msg *edgev1.MasterMsg) error
 }
 
+// Broadcaster 把下发进度推给控制台。
+//
+// 进度必须逐节点可见，不允许「整体成功/失败」的黑盒（PRD §7）。
+type Broadcaster interface {
+	Broadcast(f ws.Frame)
+}
+
 type Orchestrator struct {
-	st   Store
-	tun  Tunnel
-	opts render.Options
-	log  *slog.Logger
-	mu   sync.Mutex
-	wait map[string]chan *edgev1.PushResult // key: nodeID|cfgVersion
+	st    Store
+	tun   Tunnel
+	opts  render.Options
+	retry RetryPolicy
+	hub   Broadcaster
+	log   *slog.Logger
+	mu    sync.Mutex
+	wait  map[string]chan *edgev1.PushResult // key: nodeID|cfgVersion
 }
 
 func New(st Store, tun Tunnel, log *slog.Logger) *Orchestrator {
@@ -54,10 +93,30 @@ func New(st Store, tun Tunnel, log *slog.Logger) *Orchestrator {
 // NewWith 指定渲染配置。监听地址是配置项而非常量——测试与本地调试跑在
 // 非特权端口上，写死 :443 会让「能不能跑通」只能靠特权用户验证。
 func NewWith(st Store, tun Tunnel, opts render.Options, log *slog.Logger) *Orchestrator {
+	o := NewWithRetry(st, tun, DefaultRetryPolicy(), log)
+	o.opts = opts
+	return o
+}
+
+// NewWithRetry 指定重试策略。
+func NewWithRetry(st Store, tun Tunnel, retry RetryPolicy, log *slog.Logger) *Orchestrator {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Orchestrator{st: st, tun: tun, opts: opts, log: log, wait: map[string]chan *edgev1.PushResult{}}
+	return &Orchestrator{
+		st: st, tun: tun, opts: render.DefaultOptions(), retry: retry.normalized(),
+		log: log, wait: map[string]chan *edgev1.PushResult{},
+	}
+}
+
+// SetBroadcaster 装上进度广播。单独 setter 而非构造参数：hub 在装配顺序上
+// 晚于编排器，且没有它时下发照样应当能跑（只是界面看不到实时进度）。
+func (o *Orchestrator) SetBroadcaster(b Broadcaster) { o.hub = b }
+
+func (o *Orchestrator) emit(t string, data map[string]any) {
+	if o.hub != nil {
+		o.hub.Broadcast(ws.Frame{Type: t, Data: data})
+	}
 }
 
 // Result 是一次下发的整体结果。
@@ -103,6 +162,15 @@ func (o *Orchestrator) Deploy(ctx context.Context, operator string) (Result, err
 	}
 
 	rows := o.broadcast(ctx, deployID, cfgVersion, payload, targets)
+
+	// 至少有一个节点成功才推进资源版本。版本号是「这条路由已经在节点上生效过」
+	// 的唯一凭据：无一成功却推进，等于宣称已生效；成功了却不推进，界面永远显示
+	// 「未下发」，用户会反复推同一份配置。
+	if anyOK(rows) {
+		if err := o.st.BumpRouteVersions(ctx, domainsOf(routes)); err != nil {
+			o.log.Error("推进资源版本失败", "err", err)
+		}
+	}
 	return Result{DeployID: deployID, CfgVersion: cfgVersion, Rows: rows}, nil
 }
 
@@ -123,27 +191,11 @@ func (o *Orchestrator) broadcast(ctx context.Context, deployID int64, cfgVersion
 		wg.Add(1)
 		go func(node string) {
 			defer wg.Done()
-			row := model.DeployResult{DeployID: deployID, NodeID: node}
-
-			ch := o.register(node, cfgVersion)
-			defer o.unregister(node, cfgVersion)
-
-			if err := o.tun.Send(node, msg); err != nil {
-				row.State, row.Detail = "fail", err.Error()
-			} else {
-				select {
-				case res := <-ch:
-					if res.GetOk() {
-						row.State, row.Detail = "ok", res.GetDetail()
-					} else {
-						row.State, row.Detail = "fail", res.GetDetail()
-					}
-				case <-time.After(DefaultDeadline):
-					row.State, row.Detail = "fail", "deadline exceeded"
-				case <-ctx.Done():
-					row.State, row.Detail = "fail", "已取消"
-				}
-			}
+			row := o.pushWithRetry(ctx, deployID, node, cfgVersion, msg)
+			o.emit("deploy_progress", map[string]any{
+				"deploy_id": deployID, "node": row.NodeID,
+				"state": row.State, "res": row.Detail,
+			})
 
 			if err := o.st.PutDeployResult(ctx, row); err != nil {
 				o.log.Error("写入下发结果失败", "node_id", node, "err", err)
@@ -155,6 +207,62 @@ func (o *Orchestrator) broadcast(ctx context.Context, deployID int64, cfgVersion
 	}
 	wg.Wait()
 	return rows
+}
+
+// pushWithRetry 向单个节点下发，按策略重试传输层失败。
+func (o *Orchestrator) pushWithRetry(ctx context.Context, deployID int64, node, cfgVersion string,
+	msg *edgev1.MasterMsg) model.DeployResult {
+
+	row := model.DeployResult{DeployID: deployID, NodeID: node}
+	backoff := o.retry.Backoff
+
+	for attempt := 1; attempt <= o.retry.Max; attempt++ {
+		// 登记必须在 Send **之前**：反过来的话，节点回报得足够快时结果会在
+		// 登记完成前到达，于是没人接收，等待方一直等到超时——一次成功的下发
+		// 被报成 deadline exceeded。
+		o.emit("deploy_progress", map[string]any{
+			"deploy_id": deployID, "node": node,
+			"state": "pushing", "res": phaseText(attempt),
+		})
+		ch := o.register(node, cfgVersion)
+		err := o.tun.Send(node, msg)
+
+		if err == nil {
+			select {
+			case res := <-ch:
+				o.unregister(node, cfgVersion)
+				if res.GetOk() {
+					row.State, row.Detail = "ok", res.GetDetail()
+					return row
+				}
+				// 节点回应了，只是 Caddy 拒绝了配置——**不重试**（docs/adr/0005）。
+				// 原文原样带走，排查时唯一有用的就是它。
+				row.State, row.Detail = "fail", res.GetDetail()
+				return row
+			case <-time.After(o.retry.Deadline):
+				row.State, row.Detail = "fail", "deadline exceeded"
+			case <-ctx.Done():
+				o.unregister(node, cfgVersion)
+				row.State, row.Detail = "fail", "已取消"
+				return row
+			}
+		} else {
+			row.State, row.Detail = "fail", err.Error()
+		}
+		o.unregister(node, cfgVersion)
+
+		if attempt < o.retry.Max {
+			o.log.Warn("节点未回应，准备重试", "node_id", node, "attempt", attempt, "backoff", backoff)
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				row.Detail = "已取消"
+				return row
+			}
+			backoff *= 2
+		}
+	}
+	return row
 }
 
 // OnPushResult 由隧道在收到节点回报时调用。
@@ -191,6 +299,31 @@ func (o *Orchestrator) unregister(nodeID, cfgVersion string) {
 }
 
 func key(nodeID, cfgVersion string) string { return nodeID + "|" + cfgVersion }
+
+// phaseText 给进度帧一个人能看懂的阶段说明。
+func phaseText(attempt int) string {
+	if attempt == 1 {
+		return "热重载中"
+	}
+	return fmt.Sprintf("重试中（第 %d 次）", attempt)
+}
+
+func anyOK(rows []model.DeployResult) bool {
+	for _, r := range rows {
+		if r.State == "ok" {
+			return true
+		}
+	}
+	return false
+}
+
+func domainsOf(routes []model.Route) []string {
+	out := make([]string, 0, len(routes))
+	for _, r := range routes {
+		out = append(out, r.Domain)
+	}
+	return out
+}
 
 func resKeysOf(routes []model.Route) []string {
 	out := make([]string, 0, len(routes))

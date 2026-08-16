@@ -110,10 +110,10 @@ func (s *Store) DeleteRoute(ctx context.Context, domain string) error {
 	return nil
 }
 
-// BumpVersions 把指定域名的版本号 +1，用于下发成功后推进资源版本。
-func (s *Store) BumpVersions(ctx context.Context, tx *sql.Tx, domains []string) error {
+// BumpRouteVersions 把指定域名的版本号 +1，用于下发成功后推进资源版本。
+func (s *Store) BumpRouteVersions(ctx context.Context, domains []string) error {
 	for _, d := range domains {
-		if _, err := tx.ExecContext(ctx,
+		if _, err := s.db.ExecContext(ctx,
 			`UPDATE proxy_routes SET version = version + 1 WHERE domain = ?`, d); err != nil {
 			return fmt.Errorf("推进 %s 的版本号: %w", d, err)
 		}

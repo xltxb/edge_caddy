@@ -25,6 +25,7 @@ import (
 	edgev1 "github.com/xltxb/edge_caddy/gen/edge/v1"
 	"github.com/xltxb/edge_caddy/internal/enroll"
 	"github.com/xltxb/edge_caddy/internal/pki"
+	"github.com/xltxb/edge_caddy/internal/ws"
 )
 
 // ErrNodeNotConnected 表示目标节点当前没有活跃连接。
@@ -48,9 +49,15 @@ type ResultSink interface {
 	OnPushResult(nodeID string, res *edgev1.PushResult)
 }
 
+// Broadcaster 把节点状态推给控制台。
+type Broadcaster interface {
+	Broadcast(f ws.Frame)
+}
+
 type Deps struct {
 	CA      *pki.CA
 	Results ResultSink
+	Hub     Broadcaster
 	Enroll  *enroll.Enroller
 	Store   Store
 	Logger  *slog.Logger
@@ -161,6 +168,14 @@ func (s *Server) recvLoop(ctx context.Context, stream edgev1.EdgeTunnel_ChannelS
 			}
 		}
 		if hb := in.GetHb(); hb != nil {
+			if s.deps.Hub != nil {
+				// 字段名与前端文档 §6 一致，前端直接用，不做二次映射——
+				// 映射层是契约悄悄漂开的常见入口。
+				s.deps.Hub.Broadcast(ws.Frame{Type: "heartbeat", Data: map[string]any{
+					"id": nodeID, "cpu": hb.GetCpu(), "mem": hb.GetMem(),
+					"conns": hb.GetConns(),
+				}})
+			}
 			if s.deps.Store != nil {
 				if err := s.deps.Store.UpsertNodeSeen(ctx, nodeID, hb.GetCfgVersion(), time.Now()); err != nil {
 					// 心跳落库失败不该断开连接：连接本身是好的，只是记录没写上。
