@@ -59,7 +59,8 @@ func main() {
 		log.Error("准备隧道 CA 失败", "err", err)
 		os.Exit(1)
 	}
-	if _, err := pki.LoadOrCreate(ctx, st, pki.KeyUpstreamCA, secret, "Edge Upstream CA"); err != nil {
+	upstreamCA, err := pki.LoadOrCreate(ctx, st, pki.KeyUpstreamCA, secret, "Edge Upstream CA")
+	if err != nil {
 		log.Error("准备回源 CA 失败", "err", err)
 		os.Exit(1)
 	}
@@ -84,6 +85,7 @@ func main() {
 	// 用 setter 打破这个环，比引入一个中间事件总线简单。
 	tun.SetResults(orch)
 	orch.SetBroadcaster(hub)
+	orch.SetUpstreamIssuer(pki.NewUpstreamIssuer(upstreamCA, nil))
 
 	// 健康巡检：心跳连续超时即判离线并发事件。判离线不做补救动作
 	// （摘 DNS 属工单 #15），只更新状态让人看得见。

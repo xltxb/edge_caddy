@@ -365,8 +365,12 @@ type PushConfig struct {
 	AccessRules []byte `protobuf:"bytes,4,opt,name=access_rules,json=accessRules,proto3" json:"access_rules,omitempty"`
 	// apps 子树的渲染产物。Agent 遍历顶层每个 app 逐个 POST 到
 	// /config/apps/<name>，而不是整体 POST /config/apps。
-	CaddyJson     []byte `protobuf:"bytes,2,opt,name=caddy_json,json=caddyJson,proto3" json:"caddy_json,omitempty"`
-	DeadlineMs    uint32 `protobuf:"varint,3,opt,name=deadline_ms,json=deadlineMs,proto3" json:"deadline_ms,omitempty"`
+	CaddyJson  []byte `protobuf:"bytes,2,opt,name=caddy_json,json=caddyJson,proto3" json:"caddy_json,omitempty"`
+	DeadlineMs uint32 `protobuf:"varint,3,opt,name=deadline_ms,json=deadlineMs,proto3" json:"deadline_ms,omitempty"`
+	// 回源客户端证书。主控签发、24 小时有效，节点上不存在 CA 私钥
+	// （docs/adr/0009）。随每次下发带上，Agent 落盘后 Caddy 从文件读。
+	UpstreamCert  []byte `protobuf:"bytes,5,opt,name=upstream_cert,json=upstreamCert,proto3" json:"upstream_cert,omitempty"`
+	UpstreamKey   []byte `protobuf:"bytes,6,opt,name=upstream_key,json=upstreamKey,proto3" json:"upstream_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -427,6 +431,20 @@ func (x *PushConfig) GetDeadlineMs() uint32 {
 		return x.DeadlineMs
 	}
 	return 0
+}
+
+func (x *PushConfig) GetUpstreamCert() []byte {
+	if x != nil {
+		return x.UpstreamCert
+	}
+	return nil
+}
+
+func (x *PushConfig) GetUpstreamKey() []byte {
+	if x != nil {
+		return x.UpstreamKey
+	}
+	return nil
 }
 
 type PushResult struct {
@@ -517,7 +535,7 @@ const file_edge_v1_edge_proto_rawDesc = "" +
 	"\x03mem\x18\x02 \x01(\x01R\x03mem\x12\x14\n" +
 	"\x05conns\x18\x03 \x01(\rR\x05conns\x12\x1f\n" +
 	"\vcfg_version\x18\x04 \x01(\tR\n" +
-	"cfgVersion\"\x90\x01\n" +
+	"cfgVersion\"\xd8\x01\n" +
 	"\n" +
 	"PushConfig\x12\x1f\n" +
 	"\vcfg_version\x18\x01 \x01(\tR\n" +
@@ -526,7 +544,9 @@ const file_edge_v1_edge_proto_rawDesc = "" +
 	"\n" +
 	"caddy_json\x18\x02 \x01(\fR\tcaddyJson\x12\x1f\n" +
 	"\vdeadline_ms\x18\x03 \x01(\rR\n" +
-	"deadlineMs\"U\n" +
+	"deadlineMs\x12#\n" +
+	"\rupstream_cert\x18\x05 \x01(\fR\fupstreamCert\x12!\n" +
+	"\fupstream_key\x18\x06 \x01(\fR\vupstreamKey\"U\n" +
 	"\n" +
 	"PushResult\x12\x1f\n" +
 	"\vcfg_version\x18\x01 \x01(\tR\n" +

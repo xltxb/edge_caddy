@@ -301,7 +301,8 @@ func renderProxy(r model.Route) map[string]any {
 }
 
 // 回源客户端证书在节点上的落盘位置，由 Agent 写入并保持续期。
-const (
+// 与 agent 包里的同名变量必须一致——Caddy 按这个路径去读。
+var (
 	UpstreamCertPath = "/etc/edge-agent/pki/upstream.crt"
 	UpstreamKeyPath  = "/etc/edge-agent/pki/upstream.key"
 )

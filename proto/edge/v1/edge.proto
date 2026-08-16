@@ -66,6 +66,10 @@ message PushConfig {
   // /config/apps/<name>，而不是整体 POST /config/apps。
   bytes caddy_json = 2;
   uint32 deadline_ms = 3;
+  // 回源客户端证书。主控签发、24 小时有效，节点上不存在 CA 私钥
+  // （docs/adr/0009）。随每次下发带上，Agent 落盘后 Caddy 从文件读。
+  bytes upstream_cert = 5;
+  bytes upstream_key = 6;
 }
 
 message PushResult {

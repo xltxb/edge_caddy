@@ -14,6 +14,8 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -347,4 +349,27 @@ func (v *Verifier) Serve(addr string) (*http.Server, error) {
 	go func() { _ = srv.Serve(lis) }()
 	v.log.Info("校验端点已启动", "addr", addr)
 	return srv, nil
+}
+
+// UpstreamCertPath / UpstreamKeyPath 是回源客户端证书在节点上的落盘位置。
+// 与 render 包里的常量必须一致——Caddy 按那个路径去读。
+var (
+	UpstreamCertPath = "/etc/edge-agent/pki/upstream.crt"
+	UpstreamKeyPath  = "/etc/edge-agent/pki/upstream.key"
+)
+
+// writeUpstreamCert 把主控签发的回源证书落盘。
+//
+// 私钥 0600：同机其他用户读到它就能冒充这台节点去连源站。
+func writeUpstreamCert(cert, key []byte) error {
+	if err := os.MkdirAll(filepath.Dir(UpstreamCertPath), 0o700); err != nil {
+		return fmt.Errorf("创建证书目录: %w", err)
+	}
+	if err := os.WriteFile(UpstreamCertPath, cert, 0o600); err != nil {
+		return fmt.Errorf("写入回源证书: %w", err)
+	}
+	if err := os.WriteFile(UpstreamKeyPath, key, 0o600); err != nil {
+		return fmt.Errorf("写入回源私钥: %w", err)
+	}
+	return nil
 }

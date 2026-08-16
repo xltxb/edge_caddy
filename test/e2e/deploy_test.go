@@ -4,6 +4,7 @@ package e2e
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -329,4 +330,15 @@ func (r *sr) Read(p []byte) (int, error) {
 	n := copy(p, r.s[r.i:])
 	r.i += n
 	return n, nil
+}
+
+// ── 小工具 ──
+
+func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
+func jsonMarshal(v any) ([]byte, error)   { return json.Marshal(v) }
+
+// pemEncodeCert 把 DER 证书转成 PEM 主体（不含头尾行），
+// 供 Caddy 的 inline ca_pool 使用——它要的是 base64 主体。
+func pemEncodeCert(der []byte) string {
+	return base64.StdEncoding.EncodeToString(der)
 }

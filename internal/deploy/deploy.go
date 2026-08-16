@@ -19,6 +19,7 @@ import (
 
 	edgev1 "github.com/xltxb/edge_caddy/gen/edge/v1"
 	"github.com/xltxb/edge_caddy/internal/model"
+	"github.com/xltxb/edge_caddy/internal/pki"
 	"github.com/xltxb/edge_caddy/internal/render"
 	"github.com/xltxb/edge_caddy/internal/ws"
 )
@@ -88,9 +89,13 @@ type Orchestrator struct {
 	opts  render.Options
 	retry RetryPolicy
 	hub   Broadcaster
-	log   *slog.Logger
-	mu    sync.Mutex
-	wait  map[string]chan *edgev1.PushResult // key: nodeID|cfgVersion
+	// upstream 为各节点签发回源客户端证书。为 nil 时不下发证书——
+	// 此时开了 mTLS 的路由会因为读不到证书文件而失败，那是显式的失败，
+	// 好过悄悄用一张不存在的证书去连源站。
+	upstream *pki.UpstreamIssuer
+	log      *slog.Logger
+	mu       sync.Mutex
+	wait     map[string]chan *edgev1.PushResult // key: nodeID|cfgVersion
 }
 
 func New(st Store, tun Tunnel, log *slog.Logger) *Orchestrator {
@@ -115,6 +120,9 @@ func NewWithRetry(st Store, tun Tunnel, retry RetryPolicy, log *slog.Logger) *Or
 		log: log, wait: map[string]chan *edgev1.PushResult{},
 	}
 }
+
+// SetUpstreamIssuer 装上回源证书签发器。
+func (o *Orchestrator) SetUpstreamIssuer(u *pki.UpstreamIssuer) { o.upstream = u }
 
 // SetBroadcaster 装上进度广播。单独 setter 而非构造参数：hub 在装配顺序上
 // 晚于编排器，且没有它时下发照样应当能跑（只是界面看不到实时进度）。
@@ -217,13 +225,6 @@ func (o *Orchestrator) Deploy(ctx context.Context, operator string, resKeys []st
 func (o *Orchestrator) broadcast(ctx context.Context, deployID int64, cfgVersion string,
 	payload, rulesJSON []byte, targets []string) []model.DeployResult {
 
-	msg := &edgev1.MasterMsg{M: &edgev1.MasterMsg_Push{Push: &edgev1.PushConfig{
-		CfgVersion:  cfgVersion,
-		CaddyJson:   payload,
-		AccessRules: rulesJSON,
-		DeadlineMs:  uint32(DefaultDeadline.Milliseconds()),
-	}}}
-
 	rows := make([]model.DeployResult, 0, len(targets))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -232,6 +233,23 @@ func (o *Orchestrator) broadcast(ctx context.Context, deployID int64, cfgVersion
 		wg.Add(1)
 		go func(node string) {
 			defer wg.Done()
+			// 每个节点拿自己的回源证书：混用会让吊销一个等于吊销全部
+			msg := &edgev1.MasterMsg{M: &edgev1.MasterMsg_Push{Push: &edgev1.PushConfig{
+				CfgVersion:  cfgVersion,
+				CaddyJson:   payload,
+				AccessRules: rulesJSON,
+				DeadlineMs:  uint32(DefaultDeadline.Milliseconds()),
+			}}}
+			if o.upstream != nil {
+				if leaf, err := o.upstream.EnsureFor(ctx, node); err != nil {
+					// 签不出证书就不下发它，但配置照下——开了 mTLS 的路由会
+					// 显式失败，好过悄悄用一张过期证书去连源站。
+					o.log.Error("签发回源证书失败", "node_id", node, "err", err)
+				} else {
+					msg.GetPush().UpstreamCert = leaf.CertPEM
+					msg.GetPush().UpstreamKey = leaf.KeyPEM
+				}
+			}
 			row := o.pushWithRetry(ctx, deployID, node, cfgVersion, msg)
 			o.emit("deploy_progress", map[string]any{
 				"deploy_id": deployID, "node": row.NodeID,

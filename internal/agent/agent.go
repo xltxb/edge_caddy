@@ -190,6 +190,14 @@ func Run(ctx context.Context, cfg Config) error {
 func handlePush(ctx context.Context, stream edgev1.EdgeTunnel_ChannelClient,
 	caddy *CaddyClient, verifier *Verifier, push *edgev1.PushConfig, log *slog.Logger) {
 
+	// 回源证书要在 Caddy 配置之前落盘：Caddy 从文件读它，配置先生效而文件
+	// 还没写好的话，那一瞬所有开了回源 mTLS 的路由都会握手失败。
+	if cert, key := push.GetUpstreamCert(), push.GetUpstreamKey(); len(cert) > 0 && len(key) > 0 {
+		if err := writeUpstreamCert(cert, key); err != nil {
+			log.Error("写入回源证书失败", "err", err)
+		}
+	}
+
 	// 规则先于 Caddy 配置更新：反过来的话，Caddy 已经把请求转给校验端点，
 	// 而端点手里还是旧规则——那一瞬新受保护的域名是敞开的。
 	if blob := push.GetAccessRules(); len(blob) > 0 && verifier != nil {
