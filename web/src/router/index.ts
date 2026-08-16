@@ -11,15 +11,15 @@ export const routes: RouteRecordRaw[] = [
   { path: '/login', name: 'login', component: () => import('@/views/LoginView.vue'), meta: { public: true } },
   { path: '/overview', name: 'overview', component: () => import('@/views/OverviewView.vue') },
   { path: '/nodes', name: 'nodes', component: () => import('@/views/NodesView.vue') },
-  { path: '/dns', name: 'dns', component: () => import('@/views/PlaceholderView.vue'), meta: { title: 'DNS 调度', issue: 15 } },
+  { path: '/dns', name: 'dns', component: () => import('@/views/DnsView.vue'), meta: { title: 'DNS 调度' } },
   { path: '/workbench/:key?', name: 'workbench', component: () => import('@/views/WorkbenchView.vue'), meta: { title: '配置工作台' } },
   { path: '/routes', name: 'routes', component: () => import('@/views/RoutesView.vue'), meta: { title: '反代路由' } },
   { path: '/acl', name: 'acl', component: () => import('@/views/AclView.vue'), meta: { title: '访问控制' } },
-  { path: '/certs', name: 'certs', component: () => import('@/views/PlaceholderView.vue'), meta: { title: '证书', issue: 14 } },
+  { path: '/certs', name: 'certs', component: () => import('@/views/CertsView.vue'), meta: { title: '证书' } },
   { path: '/deploys', name: 'deploys', component: () => import('@/views/DeploysView.vue'), meta: { title: '下发记录' } },
   { path: '/audit', name: 'audit', component: () => import('@/views/AuditView.vue'), meta: { title: '审计日志' } },
   { path: '/alerts', name: 'alerts', component: () => import('@/views/AlertsView.vue'), meta: { title: '告警通知' } },
-  { path: '/settings', name: 'settings', component: () => import('@/views/PlaceholderView.vue'), meta: { title: '系统设置', issue: 0 } },
+  { path: '/settings', name: 'settings', component: () => import('@/views/SettingsView.vue'), meta: { title: '系统设置' } },
 ]
 
 /** installGuard 装上登录守卫。抽出来是为了让测试能装到自己的路由器上。 */

@@ -129,6 +129,16 @@ func TestNoCertsLeavesNodeTLSAppAlone(t *testing.T) {
 	if names := appNames(t, adminPort); !hasName(names, "tls") {
 		t.Fatalf("没有证书时不该动节点上的 tls app，现存 %v", names)
 	}
+	// 只查「tls 键还在」是不够的：把它换成一份空的 load_pem，键照样在，
+	// 而外部平台写入的证书已经没了。断言那份**内容**还在。
+	// 这是变异测试暴露出来的——原来的断言用 `if true` 替掉条件也照样绿。
+	blob := appConfig(t, adminPort, "tls")
+	if !strings.Contains(blob, "load_files") {
+		t.Errorf("外部平台写入的 tls 配置被换掉了：%s", blob)
+	}
+	if strings.Contains(blob, "load_pem") {
+		t.Errorf("没有证书时不该写入我们自己的 load_pem：%s", blob)
+	}
 }
 
 // 新节点接入后能拿到已有域名的证书，不需要人工干预。

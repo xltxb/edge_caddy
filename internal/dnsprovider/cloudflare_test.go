@@ -27,6 +27,8 @@ type cfServer struct {
 	nextID  int
 	// zoneErr 非空时，查 zone 返回这个错误码
 	zoneErr int
+	// ignoreContentFilter 让服务端无视 content 过滤，用来验客户端那道保险
+	ignoreContentFilter bool
 }
 
 type cfReq struct {
@@ -90,6 +92,9 @@ func newCFServer(t *testing.T) *cfServer {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/dns_records"):
 			name := r.URL.Query().Get("name")
 			content := r.URL.Query().Get("content")
+			if s.ignoreContentFilter {
+				content = ""
+			}
 			var hits []cfRecord
 			s.mu.Lock()
 			for _, rec := range s.records {
@@ -205,6 +210,44 @@ func TestCloudflareRemoveTXTMatchesByValue(t *testing.T) {
 	}
 	if s.recordCount() != 1 {
 		t.Fatalf("只该删掉一条，实际剩 %d 条", s.recordCount())
+	}
+
+	// 请求里要真的带上按值过滤的条件：不带的话，服务商会把同名的全部返回，
+	// 而我们只能靠客户端再筛一遍（下一条测试验的正是那道保险）
+	var sawFilter bool
+	for _, r := range s.requests() {
+		if r.method == http.MethodGet && strings.Contains(r.query, "content=value-A") {
+			sawFilter = true
+		}
+	}
+	if !sawFilter {
+		t.Error("查询记录时应带上 content 过滤条件")
+	}
+}
+
+// 服务商**返回了比我们要的更多**时，仍然只删匹配的那条。
+//
+// 这是一道保险：Cloudflare 支持 content 过滤，但依赖对端正确执行过滤，
+// 等于把「删对了没有」交给别人。上一轮变异验证暴露了这一点——把客户端的
+// 值比对去掉，测试照样绿，因为假服务端替它做了过滤。
+func TestCloudflareRemoveTXTIgnoresUnaskedRecords(t *testing.T) {
+	s := newCFServer(t)
+	// 让服务端**无视** content 过滤，返回同名的全部记录
+	s.ignoreContentFilter = true
+	cf := newCF(t, s)
+	ctx := context.Background()
+
+	if err := cf.SetTXT(ctx, "_acme-challenge.example.com", "value-A"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cf.SetTXT(ctx, "_acme-challenge.example.com", "value-B"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cf.RemoveTXT(ctx, "_acme-challenge.example.com", "value-A"); err != nil {
+		t.Fatal(err)
+	}
+	if s.recordCount() != 1 {
+		t.Fatalf("对端多返回了记录时也只该删匹配的那条，实际剩 %d 条", s.recordCount())
 	}
 }
 
