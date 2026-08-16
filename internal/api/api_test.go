@@ -11,9 +11,12 @@ import (
 	"testing"
 	"time"
 
+	edgev1 "github.com/xltxb/edge_caddy/gen/edge/v1"
 	"github.com/xltxb/edge_caddy/internal/api"
 	"github.com/xltxb/edge_caddy/internal/auth"
+	"github.com/xltxb/edge_caddy/internal/deploy"
 	"github.com/xltxb/edge_caddy/internal/enroll"
+	"github.com/xltxb/edge_caddy/internal/model"
 	"github.com/xltxb/edge_caddy/internal/store"
 )
 
@@ -40,9 +43,18 @@ func newRig(t *testing.T, withPassword bool) *rig {
 			t.Fatal(err)
 		}
 	}
-	h := api.New(api.Deps{Store: st, Auth: au, Enroll: enroll.New(st)})
+	// 用真的编排器配一个没有节点在线的隧道：「没有在线节点」正是要验的行为之一，
+	// 把编排器整个 mock 掉就测不到它了。
+	orch := deploy.New(st, emptyTunnel{}, nil)
+	h := api.New(api.Deps{Store: st, Auth: au, Enroll: enroll.New(st), Deploy: orch})
 	return &rig{h: h, st: st, au: au}
 }
+
+// emptyTunnel 模拟「一个节点都没连上」。
+type emptyTunnel struct{}
+
+func (emptyTunnel) Connected() []string                  { return nil }
+func (emptyTunnel) Send(string, *edgev1.MasterMsg) error { return nil }
 
 func (r *rig) do(t *testing.T, method, path string, body any, cookie *http.Cookie) *httptest.ResponseRecorder {
 	t.Helper()
@@ -225,3 +237,119 @@ func TestIssuedTokenIsActuallyUsable(t *testing.T) {
 }
 
 func nowUTC() time.Time { return time.Now() }
+
+// ── 路由 CRUD ──
+
+func TestRouteCRUD(t *testing.T) {
+	r := newRig(t, true)
+	c := r.login(t)
+
+	// 建
+	rec := r.do(t, http.MethodPost, "/api/v1/routes", map[string]any{
+		"domain": "api.example.com", "upstream": "10.8.0.2:8080",
+		"block": "403", "body_max": "5MB", "compress": true,
+		"wl": []string{"203.0.113.7"},
+	}, c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("建路由应成功，实际 %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 列
+	_, data := envelope(t, r.do(t, http.MethodGet, "/api/v1/routes", nil, c))
+	routes, _ := data["routes"].([]any)
+	if len(routes) != 1 {
+		t.Fatalf("应有 1 条路由，实际 %v", data)
+	}
+
+	// 改
+	rec = r.do(t, http.MethodPut, "/api/v1/routes/api.example.com", map[string]any{
+		"domain": "api.example.com", "upstream": "10.8.0.9:9090",
+		"block": "abort", "body_max": "1MB",
+	}, c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("改路由应成功，实际 %d: %s", rec.Code, rec.Body.String())
+	}
+	_, data = envelope(t, r.do(t, http.MethodGet, "/api/v1/routes", nil, c))
+	got := data["routes"].([]any)[0].(map[string]any)
+	if got["upstream"] != "10.8.0.9:9090" {
+		t.Errorf("回源地址未更新: %v", got)
+	}
+
+	// 删
+	if rec := r.do(t, http.MethodDelete, "/api/v1/routes/api.example.com", nil, c); rec.Code != http.StatusOK {
+		t.Fatalf("删路由应成功，实际 %d", rec.Code)
+	}
+	if rec := r.do(t, http.MethodDelete, "/api/v1/routes/api.example.com", nil, c); rec.Code != http.StatusNotFound {
+		t.Fatalf("删不存在的路由应 404，实际 %d", rec.Code)
+	}
+}
+
+// 非法输入必须在入口拒绝。
+//
+// 非法值一旦入库，**每一次**下发都会失败，而错误出现在与那次配置操作完全
+// 无关的时刻——排查时很难联想到是几天前某条路由填错了。
+func TestRouteInputValidation(t *testing.T) {
+	r := newRig(t, true)
+	c := r.login(t)
+
+	for name, body := range map[string]map[string]any{
+		"域名为空":    {"domain": "", "upstream": "10.0.0.1:80"},
+		"回源为空":    {"domain": "a.example.com", "upstream": ""},
+		"回源缺端口":   {"domain": "a.example.com", "upstream": "10.0.0.1"},
+		"未知处置方式":  {"domain": "a.example.com", "upstream": "10.0.0.1:80", "block": "reject"},
+		"非法请求体上限": {"domain": "a.example.com", "upstream": "10.0.0.1:80", "body_max": "不是大小"},
+		"非法白名单":   {"domain": "a.example.com", "upstream": "10.0.0.1:80", "wl": []string{"不是IP"}},
+	} {
+		if rec := r.do(t, http.MethodPost, "/api/v1/routes", body, c); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s 应返回 400，实际 %d: %s", name, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestDuplicateDomainRejected(t *testing.T) {
+	r := newRig(t, true)
+	c := r.login(t)
+	body := map[string]any{"domain": "api.example.com", "upstream": "10.0.0.1:80"}
+	if rec := r.do(t, http.MethodPost, "/api/v1/routes", body, c); rec.Code != http.StatusOK {
+		t.Fatalf("首次建应成功: %s", rec.Body.String())
+	}
+	if rec := r.do(t, http.MethodPost, "/api/v1/routes", body, c); rec.Code != http.StatusConflict {
+		t.Fatalf("重名应返回 409，实际 %d", rec.Code)
+	}
+}
+
+// 没有任何节点在线时，下发必须失败而不是「成功推给 0 个节点」。
+//
+// 报告「成功」会让人以为配置已经生效了，而实际上一个节点都没收到——
+// 这类假成功比失败危险得多。
+func TestDeployWithNoNodesFails(t *testing.T) {
+	r := newRig(t, true)
+	c := r.login(t)
+	_ = r.do(t, http.MethodPost, "/api/v1/routes",
+		map[string]any{"domain": "api.example.com", "upstream": "10.0.0.1:80"}, c)
+
+	rec := r.do(t, http.MethodPost, "/api/v1/deploys", map[string]any{"note": "试试"}, c)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("没有在线节点时不应报告下发成功: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "节点") {
+		t.Errorf("错误应说明是没有可下发的节点: %s", rec.Body.String())
+	}
+}
+
+// 渲染不出来的配置不得触达节点。
+func TestDeployRejectsUnrenderableConfig(t *testing.T) {
+	r := newRig(t, true)
+	c := r.login(t)
+	// 绕过入口校验直接写一条坏数据，模拟「历史遗留的非法值」
+	if err := r.st.PutRoute(context.Background(), model.Route{
+		Domain: "bad.example.com", Upstream: "10.0.0.1:80",
+		Block: model.BlockAbort, BodyMax: "不是大小",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := r.do(t, http.MethodPost, "/api/v1/deploys", nil, c)
+	if rec.Code == http.StatusOK {
+		t.Fatal("渲染失败时不应报告下发成功")
+	}
+}

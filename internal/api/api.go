@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/xltxb/edge_caddy/internal/auth"
+	"github.com/xltxb/edge_caddy/internal/deploy"
 	"github.com/xltxb/edge_caddy/internal/enroll"
 	"github.com/xltxb/edge_caddy/internal/model"
 )
@@ -23,6 +24,7 @@ const (
 	codeOK           = 0
 	codeBadInput     = 1001
 	codeNotFound     = 1004
+	codeConflict     = 1009
 	codeUnauthorized = 1401
 	codeInternal     = 1500
 )
@@ -31,12 +33,23 @@ const (
 type Store interface {
 	ListNodes(ctx context.Context) ([]model.Node, error)
 	Baseline(ctx context.Context) (string, error)
+	ListRoutes(ctx context.Context) ([]model.Route, error)
+	GetRoute(ctx context.Context, domain string) (model.Route, error)
+	PutRoute(ctx context.Context, r model.Route) error
+	DeleteRoute(ctx context.Context, domain string) error
+	ListDeploys(ctx context.Context, limit int) ([]model.Deploy, map[int64][]model.DeployResult, error)
+}
+
+// Deployer 是 api 需要的下发能力。
+type Deployer interface {
+	Deploy(ctx context.Context, operator string) (deploy.Result, error)
 }
 
 type Deps struct {
 	Store  Store
 	Auth   *auth.Manager
 	Enroll *enroll.Enroller
+	Deploy Deployer
 	Logger *slog.Logger
 }
 
@@ -69,6 +82,14 @@ func New(d Deps) http.Handler {
 		authed.GET("/me", h.me)
 		authed.GET("/nodes", h.listNodes)
 		authed.POST("/nodes/token", h.issueNodeToken)
+
+		authed.GET("/routes", h.listRoutes)
+		authed.POST("/routes", h.createRoute)
+		authed.PUT("/routes/:domain", h.updateRoute)
+		authed.DELETE("/routes/:domain", h.deleteRoute)
+
+		authed.POST("/deploys", h.createDeploy)
+		authed.GET("/deploys", h.listDeploys)
 	}
 	return r
 }

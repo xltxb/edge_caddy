@@ -118,12 +118,12 @@ func openChannel(t *testing.T, cc *grpc.ClientConn) error {
 	if err != nil {
 		return err
 	}
-	if err := stream.Send(&edgev1.AgentMsg{
+	// Send 的错误要忽略：服务端在流建立时就可能已经拒绝并返回状态，
+	// 此时 Send 会拿到一个 EOF——那是连接被关的副作用，不是真正的原因。
+	// gRPC 流的权威状态只能从 Recv 取。
+	_ = stream.Send(&edgev1.AgentMsg{
 		M: &edgev1.AgentMsg_Hb{Hb: &edgev1.Heartbeat{Cpu: 1, Mem: 2, CfgVersion: "cfg-aaa"}},
-	}); err != nil {
-		return err
-	}
-	// 服务端拒绝时，错误在这里浮现
+	})
 	_, err = stream.Recv()
 	return err
 }

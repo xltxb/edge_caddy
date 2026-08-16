@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -36,6 +37,8 @@ type Config struct {
 	ServerName string
 	// StateDir 存放隧道证书与主控 CA。
 	StateDir string
+	// CaddyAdmin 是本机 Caddy Admin API 地址，形如 http://127.0.0.1:2019。
+	CaddyAdmin string
 	// MasterCA 是主控 CA 的根证书。
 	//
 	// 为空时用系统信任库——此时主控的 gRPC 端点必须持有公开可信证书。
@@ -133,12 +136,19 @@ func Run(ctx context.Context, cfg Config) error {
 	log := cfg.logger()
 	log.Info("隧道已建立", "node_id", cfg.NodeID, "master", cfg.MasterAddr)
 
+	var caddy *CaddyClient
+	if cfg.CaddyAdmin != "" {
+		caddy = NewCaddyClient(cfg.CaddyAdmin)
+	}
 	go func() {
 		for {
-			if _, err := stream.Recv(); err != nil {
+			in, err := stream.Recv()
+			if err != nil {
 				return
 			}
-			// 首切片只需保活；下发消息的处理在 issue #2
+			if push := in.GetPush(); push != nil {
+				handlePush(ctx, stream, caddy, push, log)
+			}
 		}
 	}()
 
@@ -161,9 +171,57 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 }
 
-// currentCfgVersion 返回节点当前生效的配置版本。
-// 首切片尚未应用过任何配置，返回空串；issue #2 接上真实版本。
-func currentCfgVersion() string { return "" }
+// handlePush 把下发的配置应用到本机 Caddy 并回报结果。
+//
+// 无论成败都要回报：不回报的话主控那边只能等到超时，把一次「配置有问题」
+// 报成「节点没反应」——两者的排查方向完全不同。
+func handlePush(ctx context.Context, stream edgev1.EdgeTunnel_ChannelClient,
+	caddy *CaddyClient, push *edgev1.PushConfig, log *slog.Logger) {
+
+	res := &edgev1.PushResult{CfgVersion: push.GetCfgVersion()}
+	switch {
+	case caddy == nil:
+		res.Ok, res.Detail = false, "本节点未配置 Caddy Admin 地址"
+	default:
+		applyCtx := ctx
+		if ms := push.GetDeadlineMs(); ms > 0 {
+			var cancel context.CancelFunc
+			applyCtx, cancel = context.WithTimeout(ctx, time.Duration(ms)*time.Millisecond)
+			defer cancel()
+		}
+		took, err := caddy.Apply(applyCtx, push.GetCaddyJson())
+		if err != nil {
+			// Caddy 的原文原样回报，不做归类（docs/adr/0005）
+			res.Ok, res.Detail = false, err.Error()
+			log.Error("应用配置失败", "cfg_version", push.GetCfgVersion(), "err", err)
+		} else {
+			res.Ok, res.Detail = true, fmt.Sprintf("%dms", took)
+			setCfgVersion(push.GetCfgVersion())
+			log.Info("配置已生效", "cfg_version", push.GetCfgVersion(), "took_ms", took)
+		}
+	}
+	if err := stream.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_PushResult{PushResult: res}}); err != nil {
+		log.Error("回报下发结果失败", "err", err)
+	}
+}
+
+// 当前生效的配置版本。主控靠心跳里的这个值判断配置漂移（docs/adr/0002）。
+var (
+	cfgMu      sync.RWMutex
+	cfgVersion string
+)
+
+func setCfgVersion(v string) {
+	cfgMu.Lock()
+	cfgVersion = v
+	cfgMu.Unlock()
+}
+
+func currentCfgVersion() string {
+	cfgMu.RLock()
+	defer cfgMu.RUnlock()
+	return cfgVersion
+}
 
 func (c Config) rootPool() (*x509.CertPool, error) {
 	ca := c.MasterCA

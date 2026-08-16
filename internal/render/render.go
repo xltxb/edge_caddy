@@ -23,6 +23,24 @@ import (
 // 产物是 apps 的**值**（形如 {"http":{...}}），不是外面再包一层 {"apps":...}。
 // Agent 会遍历这一层的每个 app 逐个 POST 到 /config/apps/<name>。
 func Caddy(routes []model.Route) ([]byte, error) {
+	return CaddyWith(routes, DefaultOptions())
+}
+
+// Options 是渲染的配置项。
+type Options struct {
+	// Listen 是边缘 server 的监听地址。生产是 :443；测试与本地调试需要
+	// 非特权端口，因此它是配置而不是常量——写死会让「能不能跑通」这件事
+	// 只能靠特权用户验证。
+	Listen []string
+}
+
+func DefaultOptions() Options { return Options{Listen: []string{":443"}} }
+
+// CaddyWith 用给定配置渲染。
+func CaddyWith(routes []model.Route, opts Options) ([]byte, error) {
+	if len(opts.Listen) == 0 {
+		opts.Listen = DefaultOptions().Listen
+	}
 	sorted := make([]model.Route, len(routes))
 	copy(sorted, routes)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Domain < sorted[j].Domain })
@@ -46,7 +64,7 @@ func Caddy(routes []model.Route) ([]byte, error) {
 		"http": map[string]any{
 			"servers": map[string]any{
 				"edge": map[string]any{
-					"listen": []string{":443"},
+					"listen": opts.Listen,
 					// 证书由主控签发后经隧道下发（docs/adr/0001），节点不得自行申请：
 					// 少了这一段，节点会去 ACME 申请并可能触发速率限制。
 					"automatic_https": map[string]any{"disable": true},

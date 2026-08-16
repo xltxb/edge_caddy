@@ -43,11 +43,17 @@ type Store interface {
 	MarkNodeDown(ctx context.Context, id string) error
 }
 
+// ResultSink 接收节点回报的下发结果。
+type ResultSink interface {
+	OnPushResult(nodeID string, res *edgev1.PushResult)
+}
+
 type Deps struct {
-	CA     *pki.CA
-	Enroll *enroll.Enroller
-	Store  Store
-	Logger *slog.Logger
+	CA      *pki.CA
+	Results ResultSink
+	Enroll  *enroll.Enroller
+	Store   Store
+	Logger  *slog.Logger
 }
 
 type session struct {
@@ -63,6 +69,16 @@ type Server struct {
 
 	mu       sync.RWMutex
 	sessions map[string]*session
+}
+
+// SetResults 装上下发结果的接收方。
+//
+// 单独一个 setter 而不是构造参数：编排器需要隧道来发送，隧道需要编排器来
+// 转交结果，两者互相依赖。用 setter 打破这个环，比引入一个中间事件总线简单。
+func (s *Server) SetResults(r ResultSink) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deps.Results = r
 }
 
 func NewServer(d Deps) *Server {
@@ -135,6 +151,14 @@ func (s *Server) recvLoop(ctx context.Context, stream edgev1.EdgeTunnel_ChannelS
 		in, err := stream.Recv()
 		if err != nil {
 			return err
+		}
+		if res := in.GetPushResult(); res != nil {
+			s.mu.RLock()
+			sink := s.deps.Results
+			s.mu.RUnlock()
+			if sink != nil {
+				sink.OnPushResult(nodeID, res)
+			}
 		}
 		if hb := in.GetHb(); hb != nil {
 			if s.deps.Store != nil {

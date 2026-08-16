@@ -34,6 +34,7 @@ func main() {
 		serverName = fs.String("server-name", "", "校验主控证书用的域名，默认取 master 的主机名")
 		stateDir   = fs.String("state-dir", "/etc/edge-agent/pki", "证书落盘目录")
 		caPath     = fs.String("master-ca", "", "主控 CA 根证书路径；不给则用系统信任库")
+		caddyAdmin = fs.String("caddy-admin", "http://127.0.0.1:2019", "本机 Caddy Admin API 地址")
 	)
 	_ = fs.Parse(os.Args[2:])
 
@@ -49,7 +50,7 @@ func main() {
 
 	cfg := agent.Config{
 		NodeID: *nodeID, MasterAddr: *master, ServerName: name,
-		StateDir: *stateDir, Logger: log,
+		StateDir: *stateDir, CaddyAdmin: *caddyAdmin, Logger: log,
 	}
 	if *caPath != "" {
 		blob, err := os.ReadFile(*caPath)
