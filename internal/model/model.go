@@ -32,6 +32,18 @@ func (b BlockAction) Valid() bool {
 // 但前者的产出干净得多，也让 diff 里看不到无意义的噪声。
 const AllowAllCIDR = "0.0.0.0/0"
 
+// DefaultVerifyAddr 是 Agent 校验端点的默认地址。
+//
+// 主控渲染 forward_auth 时把它写进 dial，Agent 在同一个地址上监听——两侧必须
+// 一致，因此常量放在共享的领域词汇里，而不是各写各的字面量。
+//
+// **只能是回环**：校验端点没有任何鉴权，对外监听等于把「这个请求算不算通过
+// 鉴权」的决策权交给任何能连上这个端口的人。
+//
+// 端口取 2021 而不是 Caddy Admin 的 2019：两者都在回环上，但混用会让「谁在
+// 2019 上」变成一个要靠猜的问题，而 Admin 端口是防火墙规则里点名拒绝的那个。
+const DefaultVerifyAddr = "127.0.0.1:2021"
+
 // Route 是一个对外域名到一个回源地址的映射。
 //
 // 域名是主键（后端文档 §3 的 proxy_routes.domain PRIMARY KEY）。这意味着

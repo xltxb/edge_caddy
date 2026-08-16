@@ -52,6 +52,8 @@ type Config struct {
 	// 一并放到节点上。两者都不做的话，接入这一步就是 TOFU，中间人可在首次
 	// 接入时冒充主控并骗走 Token。
 	MasterCA []byte
+	// MasterCAPath 是主控 CA 根证书的路径。MasterCA 非空时以它为准。
+	MasterCAPath string
 
 	HeartbeatInterval time.Duration
 	Logger            *slog.Logger
@@ -278,6 +280,15 @@ func handleProbe(ctx context.Context, stream edgev1.EdgeTunnel_ChannelClient,
 
 func (c Config) rootPool() (*x509.CertPool, error) {
 	ca := c.MasterCA
+	if len(ca) == 0 && c.MasterCAPath != "" {
+		blob, err := os.ReadFile(c.MasterCAPath)
+		if err != nil {
+			// 明确指定了路径却读不到，是配置错误，不能悄悄退回系统信任库——
+			// 那会让「主控证书由谁签」这件事在无人察觉的情况下换掉
+			return nil, fmt.Errorf("读取主控 CA %s: %w", c.MasterCAPath, err)
+		}
+		ca = blob
+	}
 	if len(ca) == 0 {
 		// 落盘的 CA（接入时保存的）优先于系统信任库
 		if blob, err := os.ReadFile(c.path(caFile)); err == nil {

@@ -2,6 +2,7 @@ package render_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/xltxb/edge_caddy/internal/model"
@@ -281,5 +282,55 @@ func TestDisabledRuleRendersNoAuth(t *testing.T) {
 		render.Options{Rules: rules, VerifyAddr: "127.0.0.1:19999"})
 	if bytesContains(out, "19999") {
 		t.Error("停用的规则不应产生鉴权配置")
+	}
+}
+
+// 有受保护域名却没有校验端点地址时，**拒绝渲染**。
+//
+// 这是一个真实漏洞的护栏：cmd/agent 与 internal/master 两侧都没设过 VerifyAddr，
+// 于是受保护域名被渲染成 dial 为空的 forward_auth——指向虚空。渲染器是下发的
+// 唯一权威（ADR-0004），这道线必须在这里守住，而不是指望每个调用方都记得填。
+func TestProtectedDomainWithoutVerifyAddrIsRejected(t *testing.T) {
+	routes := []model.Route{{
+		Domain: "api.example.com", Upstream: "10.0.0.1:8080",
+		Block: model.BlockAbort, BodyMax: "1MB", Whitelist: []string{model.AllowAllCIDR},
+	}}
+	rules := []model.AccessRule{{
+		ID: "r1", Type: model.RuleJWTBearer, Enabled: true,
+		ApplyTo: []string{"api.example.com"},
+		Spec:    model.RuleSpec{Issuer: "https://idp.test", Audience: "api", JWKS: "https://idp.test/jwks"},
+	}}
+
+	_, err := render.CaddyWith(routes, render.Options{
+		Listen: []string{":443"}, Rules: rules, VerifyAddr: "",
+	})
+	if err == nil {
+		t.Fatal("受保护域名缺少校验端点地址时必须拒绝渲染，而不是产出一个指向虚空的 forward_auth")
+	}
+	if !strings.Contains(err.Error(), "api.example.com") {
+		t.Errorf("报错应指出是哪个域名，实际 %v", err)
+	}
+}
+
+// 没有受保护域名时，缺少校验端点地址不是问题。
+func TestNoVerifyAddrIsFineWithoutProtectedDomains(t *testing.T) {
+	routes := []model.Route{{
+		Domain: "open.example.com", Upstream: "10.0.0.1:8080",
+		Block: model.BlockAbort, BodyMax: "1MB", Whitelist: []string{model.AllowAllCIDR},
+	}}
+	if _, err := render.CaddyWith(routes, render.Options{Listen: []string{":443"}}); err != nil {
+		t.Fatalf("没有受保护域名时不该要求校验端点地址: %v", err)
+	}
+}
+
+// 默认配置自带回环校验端点：调用方忘了填时，得到的是一个能用的默认值，
+// 而不是一个指向虚空的配置。
+func TestDefaultOptionsCarryLoopbackVerifyAddr(t *testing.T) {
+	got := render.DefaultOptions().VerifyAddr
+	if got == "" {
+		t.Fatal("默认配置应带上校验端点地址")
+	}
+	if !strings.HasPrefix(got, "127.0.0.1:") {
+		t.Errorf("校验端点只能在回环上——它没有任何鉴权，对外监听等于把鉴权决策交给任何人；实际 %q", got)
 	}
 }

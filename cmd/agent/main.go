@@ -7,11 +7,14 @@
 //
 // 接入 Token 走环境变量 EDGE_ENROLL_TOKEN，不走命令行参数——
 // 命令行参数会出现在 ps 输出里，任何本机用户都能看到。
+//
+// 参数解析在 internal/agent.ParseArgs，因为它需要被测试走一遍：内联在这里的
+// 时候，--verify-addr 这个默认值从没被任何测试覆盖过，结果是校验端点在生产上
+// 一直没起来，访问规则完全不工作（见 internal/agent/args.go）。
 package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -22,44 +25,15 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		usage()
-	}
-	cmd := os.Args[1]
-
-	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
-	var (
-		nodeID     = fs.String("node-id", "", "节点 ID，例如 node-hk-01")
-		master     = fs.String("master", "", "主控地址 host:port")
-		serverName = fs.String("server-name", "", "校验主控证书用的域名，默认取 master 的主机名")
-		stateDir   = fs.String("state-dir", "/etc/edge-agent/pki", "证书落盘目录")
-		caPath     = fs.String("master-ca", "", "主控 CA 根证书路径；不给则用系统信任库")
-		caddyAdmin = fs.String("caddy-admin", "http://127.0.0.1:2019", "本机 Caddy Admin API 地址")
-	)
-	_ = fs.Parse(os.Args[2:])
-
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	if *nodeID == "" || *master == "" {
-		log.Error("必须指定 --node-id 与 --master")
-		os.Exit(1)
-	}
-	name := *serverName
-	if name == "" {
-		name = hostOf(*master)
-	}
 
-	cfg := agent.Config{
-		NodeID: *nodeID, MasterAddr: *master, ServerName: name,
-		StateDir: *stateDir, CaddyAdmin: *caddyAdmin, Logger: log,
+	cfg, cmd, err := agent.ParseArgs(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, "用法: edge-agent <enroll|run> --node-id <ID> --master <host:port>")
+		os.Exit(2)
 	}
-	if *caPath != "" {
-		blob, err := os.ReadFile(*caPath)
-		if err != nil {
-			log.Error("读取主控 CA 失败", "path", *caPath, "err", err)
-			os.Exit(1)
-		}
-		cfg.MasterCA = blob
-	}
+	cfg.Logger = log
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -80,21 +54,5 @@ func main() {
 			log.Error("运行失败", "err", err)
 			os.Exit(1)
 		}
-	default:
-		usage()
 	}
-}
-
-func hostOf(addr string) string {
-	for i := len(addr) - 1; i >= 0; i-- {
-		if addr[i] == ':' {
-			return addr[:i]
-		}
-	}
-	return addr
-}
-
-func usage() {
-	fmt.Fprintln(os.Stderr, "用法: edge-agent <enroll|run> --node-id <ID> --master <host:port>")
-	os.Exit(2)
 }

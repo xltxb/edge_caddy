@@ -552,3 +552,31 @@ func decodeData(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
 	}
 	return env.Data
 }
+
+// 安装命令必须是**部署脚本**的真实用法，而不是一句手工调用 edge-agent。
+//
+// 面板上那条命令是运维会直接复制粘贴的东西。它要是不能一条跑通，人会自己
+// 拼一条——拼出来的那条不会有沙箱、不会有防火墙、Token 多半进了命令行参数。
+func TestInstallHintUsesTheDeployScript(t *testing.T) {
+	r := newRig(t, false)
+	data := decodeData(t, r.do(t, http.MethodPost, "/api/v1/nodes/token", nil, nil))
+
+	hint, _ := data["install"].(string)
+	if hint == "" {
+		t.Fatal("应返回安装命令")
+	}
+	for _, want := range []string{"EDGE_ENROLL_TOKEN=", "edge-node.sh install", "--node-id", "--master"} {
+		if !strings.Contains(hint, want) {
+			t.Errorf("安装命令里应有 %q，实际：%s", want, hint)
+		}
+	}
+	// Token 必须在环境变量位置，不能出现在任何 --flag 后面：
+	// 命令行参数会出现在 ps 输出里，任何本机用户都看得到
+	tok, _ := data["token"].(string)
+	if i := strings.Index(hint, tok); i < 0 || !strings.HasPrefix(hint[:i], "EDGE_ENROLL_TOKEN=") {
+		t.Errorf("Token 必须作为环境变量前缀出现，实际：%s", hint)
+	}
+	if strings.Contains(hint, "--token") {
+		t.Error("Token 不得作为命令行参数——ps 里看得到")
+	}
+}

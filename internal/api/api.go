@@ -313,10 +313,16 @@ func (h *handler) issueNodeToken(c *gin.Context) {
 		"token":      tok,
 		"expires_at": exp.UTC().Format(time.RFC3339),
 		"note":       "该 Token 一次性，用于换取隧道客户端证书；用过即失效。",
+		// 给的是**部署脚本**的用法，不是一句手工调用 edge-agent：
+		// 面板上这条命令是运维会直接复制粘贴的东西，它要是不能一条跑通，
+		// 人会自己拼一条——拼出来的那条不会有沙箱、不会有防火墙，
+		// Token 多半还进了命令行参数。
+		//
 		// Token 走环境变量而不是命令行参数：命令行参数会出现在 ps 输出里，
 		// 任何本机用户都能看到。部署脚本里也是同一条规矩（凭据写
 		// EnvironmentFile 而非 ExecStart）。
 		"install": "EDGE_ENROLL_TOKEN=" + tok +
-			" edge-agent enroll --node-id <节点ID> --master " + c.Request.Host,
+			" ./edge-node.sh install --node-id <节点ID> --master " + c.Request.Host +
+			" --agent-binary ./edge-agent",
 	})
 }

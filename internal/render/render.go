@@ -38,7 +38,9 @@ type Options struct {
 	VerifyAddr string
 }
 
-func DefaultOptions() Options { return Options{Listen: []string{":443"}} }
+func DefaultOptions() Options {
+	return Options{Listen: []string{":443"}, VerifyAddr: model.DefaultVerifyAddr}
+}
 
 // CaddyWith 用给定配置渲染。
 func CaddyWith(routes []model.Route, opts Options) ([]byte, error) {
@@ -56,6 +58,19 @@ func CaddyWith(routes []model.Route, opts Options) ([]byte, error) {
 	}
 
 	protected := protectedHosts(opts)
+	// 有受保护域名却没有校验端点地址时拒绝渲染。
+	//
+	// 渲染器是下发的唯一权威（ADR-0004），这道线必须在这里守住：产出一个
+	// dial 为空的 forward_auth 等于把受保护域名指向虚空，而调用方忘了填
+	// VerifyAddr 是不会有任何东西提醒他的——两侧确实都忘过。
+	if opts.VerifyAddr == "" {
+		for _, r := range sorted {
+			if protected[r.Domain] {
+				return nil, fmt.Errorf("域名 %s 绑定了访问规则，但没有提供校验端点地址；"+
+					"缺了它渲染出的 forward_auth 会指向虚空", r.Domain)
+			}
+		}
+	}
 
 	httpRoutes := make([]any, 0, len(sorted))
 	for _, r := range sorted {

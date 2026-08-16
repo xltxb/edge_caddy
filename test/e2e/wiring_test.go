@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	edgemaster "github.com/xltxb/edge_caddy/internal/master"
+	"github.com/xltxb/edge_caddy/internal/model"
 )
 
 // 主控进程的**装配**必须完整：每个接口都得拿到它依赖的组件。
@@ -105,5 +106,58 @@ func TestMasterRefusesToStartWithoutSecret(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("没有主密钥必须拒绝启动")
+	}
+}
+
+// 装配后的主控渲染受保护域名时，forward_auth 的 dial 必须是真实的回环地址。
+//
+// 这条守的是另一个装配漏洞：cmd/agent 与 internal/master 两侧都没设过
+// VerifyAddr，于是访问规则一旦启用，渲染出的 forward_auth 指向虚空。
+// 单测看不见——它们都显式传 render.Options。
+func TestMasterRendersRealVerifyAddrForProtectedDomains(t *testing.T) {
+	m, err := edgemaster.Assemble(context.Background(), edgemaster.Options{
+		DBPath:   filepath.Join(t.TempDir(), "v.sqlite"),
+		Hostname: "master.local",
+		Secret:   []byte("test-master-key"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+
+	ctx := context.Background()
+	if err := m.Store.PutRoute(ctx, model.Route{
+		Domain: "api.example.com", Upstream: "10.0.0.1:8080",
+		Block: model.BlockAbort, BodyMax: "1MB", Whitelist: []string{model.AllowAllCIDR},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Store.PutRule(ctx, model.AccessRule{
+		ID: "r1", Type: model.RuleJWTBearer, Enabled: true,
+		ApplyTo: []string{"api.example.com"},
+		Spec:    model.RuleSpec{Issuer: "https://idp.test", Audience: "api", JWKS: "https://idp.test/jwks"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/config/preview", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	m.HTTP.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("预览应成功，实际 %d：%s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	if strings.Contains(body, "指向虚空") {
+		t.Fatalf("渲染被拒绝了，说明主控根本没提供校验端点地址：%s", body)
+	}
+	if !strings.Contains(body, model.DefaultVerifyAddr) {
+		t.Errorf("受保护域名的 forward_auth 应拨向 %s，实际渲染结果：%s",
+			model.DefaultVerifyAddr, body)
+	}
+	// 校验端点绝不能对外监听：它没有鉴权，能连上就能替别人做鉴权决策
+	if strings.Contains(body, `"dial":"0.0.0.0`) || strings.Contains(body, `"dial":":`) {
+		t.Errorf("校验端点被渲染成对外地址：%s", body)
 	}
 }
