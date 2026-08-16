@@ -111,10 +111,10 @@ type Node struct {
 // 全局可见：任何人都能看到别人正在改什么。但一次下发只携带**本次勾选**的
 // 草稿键，未勾选的仍留在草稿里（见 CONTEXT.md 的「下发」）。
 type Draft struct {
-	ResKey    string            `json:"res_key"` // route:api.example.com
-	Patch     map[string]any    `json:"patch"`
-	UpdatedBy string            `json:"updated_by"`
-	UpdatedAt time.Time         `json:"updated_at"`
+	ResKey    string         `json:"res_key"` // route:api.example.com
+	Patch     map[string]any `json:"patch"`
+	UpdatedBy string         `json:"updated_by"`
+	UpdatedAt time.Time      `json:"updated_at"`
 }
 
 // Deploy 是一次下发的记录。Snapshot 是当次的全量渲染快照，回滚以它为源。
