@@ -3,7 +3,9 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
@@ -171,4 +173,70 @@ func (c *CaddyClient) Ping(ctx context.Context) error {
 		return fmt.Errorf("caddy admin 返回 %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// LoadedCert 是节点上 Caddy 实际加载着的一张证书。
+type LoadedCert struct {
+	Domain   string
+	NotAfter string
+	Issuer   string
+	KeyType  string
+	Serial   string
+}
+
+// LoadedCerts 读回 Caddy 当前 tls app 里加载的证书。
+//
+// 从**运行中的配置**读，而不是从我们下发的那份算：两者不一致正是要发现的东西
+// （下发失败、被人手工改过、或者 Caddy 拒绝了某一张）。从下发的那份算等于
+// 自己给自己打分。
+func (c *CaddyClient) LoadedCerts(ctx context.Context) ([]LoadedCert, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.adminAddr+"/config/apps/tls", nil)
+	if err != nil {
+		return nil, fmt.Errorf("构造请求: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("读取 caddy tls 配置: %w", err)
+	}
+	defer resp.Body.Close()
+	blob, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if resp.StatusCode != http.StatusOK {
+		// 没有 tls app 不是错误：这台节点上还没有证书
+		return nil, nil
+	}
+
+	var cfg struct {
+		Certificates struct {
+			LoadPEM []struct {
+				Certificate string `json:"certificate"`
+			} `json:"load_pem"`
+		} `json:"certificates"`
+	}
+	if err := json.Unmarshal(blob, &cfg); err != nil {
+		return nil, fmt.Errorf("解析 caddy tls 配置: %w", err)
+	}
+
+	out := make([]LoadedCert, 0, len(cfg.Certificates.LoadPEM))
+	for _, entry := range cfg.Certificates.LoadPEM {
+		block, _ := pem.Decode([]byte(entry.Certificate))
+		if block == nil {
+			continue
+		}
+		x, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			continue
+		}
+		domain := x.Subject.CommonName
+		if len(x.DNSNames) > 0 {
+			domain = x.DNSNames[0]
+		}
+		out = append(out, LoadedCert{
+			Domain:   domain,
+			NotAfter: x.NotAfter.UTC().Format(time.RFC3339),
+			Issuer:   x.Issuer.CommonName,
+			KeyType:  x.PublicKeyAlgorithm.String() + " " + x.SignatureAlgorithm.String(),
+			Serial:   x.SerialNumber.Text(16),
+		})
+	}
+	return out, nil
 }

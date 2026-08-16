@@ -377,7 +377,13 @@ type ProbeResult struct {
 	CaddyOk     bool   `protobuf:"varint,3,opt,name=caddy_ok,json=caddyOk,proto3" json:"caddy_ok,omitempty"`
 	CaddyDetail string `protobuf:"bytes,4,opt,name=caddy_detail,json=caddyDetail,proto3" json:"caddy_detail,omitempty"`
 	// Agent 最近日志，最新的在最后。
-	Logs          []string `protobuf:"bytes,5,rep,name=logs,proto3" json:"logs,omitempty"`
+	Logs []string `protobuf:"bytes,5,rep,name=logs,proto3" json:"logs,omitempty"`
+	// 节点上 Caddy 实际加载的证书清单。
+	//
+	// 证书状态**不落库**（PRD §4）：落库只会得到一份随时可能过时的副本，
+	// 而「过时的证书状态」比没有更危险——它会让人以为一张已经换掉的证书
+	// 还在生效。这里上报的是节点此刻真正加载着的那些。
+	Certs         []*LoadedCert `protobuf:"bytes,6,rep,name=certs,proto3" json:"certs,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -447,6 +453,91 @@ func (x *ProbeResult) GetLogs() []string {
 	return nil
 }
 
+func (x *ProbeResult) GetCerts() []*LoadedCert {
+	if x != nil {
+		return x.Certs
+	}
+	return nil
+}
+
+type LoadedCert struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Domain string                 `protobuf:"bytes,1,opt,name=domain,proto3" json:"domain,omitempty"`
+	// not_after 是 RFC3339 时间串。用字符串而不是时间戳：排查时人要直接看它，
+	// 而一串秒数得先换算。
+	NotAfter      string `protobuf:"bytes,2,opt,name=not_after,json=notAfter,proto3" json:"not_after,omitempty"`
+	Issuer        string `protobuf:"bytes,3,opt,name=issuer,proto3" json:"issuer,omitempty"`
+	KeyType       string `protobuf:"bytes,4,opt,name=key_type,json=keyType,proto3" json:"key_type,omitempty"`
+	Serial        string `protobuf:"bytes,5,opt,name=serial,proto3" json:"serial,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LoadedCert) Reset() {
+	*x = LoadedCert{}
+	mi := &file_edge_v1_edge_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LoadedCert) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LoadedCert) ProtoMessage() {}
+
+func (x *LoadedCert) ProtoReflect() protoreflect.Message {
+	mi := &file_edge_v1_edge_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LoadedCert.ProtoReflect.Descriptor instead.
+func (*LoadedCert) Descriptor() ([]byte, []int) {
+	return file_edge_v1_edge_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *LoadedCert) GetDomain() string {
+	if x != nil {
+		return x.Domain
+	}
+	return ""
+}
+
+func (x *LoadedCert) GetNotAfter() string {
+	if x != nil {
+		return x.NotAfter
+	}
+	return ""
+}
+
+func (x *LoadedCert) GetIssuer() string {
+	if x != nil {
+		return x.Issuer
+	}
+	return ""
+}
+
+func (x *LoadedCert) GetKeyType() string {
+	if x != nil {
+		return x.KeyType
+	}
+	return ""
+}
+
+func (x *LoadedCert) GetSerial() string {
+	if x != nil {
+		return x.Serial
+	}
+	return ""
+}
+
 // Heartbeat 刻意**不含 node_id**。
 //
 // 后端开发文档 §5 的草案里有这个字段，但在 mTLS 之上它是危险的冗余：身份应当
@@ -465,7 +556,7 @@ type Heartbeat struct {
 
 func (x *Heartbeat) Reset() {
 	*x = Heartbeat{}
-	mi := &file_edge_v1_edge_proto_msgTypes[6]
+	mi := &file_edge_v1_edge_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -477,7 +568,7 @@ func (x *Heartbeat) String() string {
 func (*Heartbeat) ProtoMessage() {}
 
 func (x *Heartbeat) ProtoReflect() protoreflect.Message {
-	mi := &file_edge_v1_edge_proto_msgTypes[6]
+	mi := &file_edge_v1_edge_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -490,7 +581,7 @@ func (x *Heartbeat) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Heartbeat.ProtoReflect.Descriptor instead.
 func (*Heartbeat) Descriptor() ([]byte, []int) {
-	return file_edge_v1_edge_proto_rawDescGZIP(), []int{6}
+	return file_edge_v1_edge_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *Heartbeat) GetCpu() float64 {
@@ -541,7 +632,7 @@ type PushConfig struct {
 
 func (x *PushConfig) Reset() {
 	*x = PushConfig{}
-	mi := &file_edge_v1_edge_proto_msgTypes[7]
+	mi := &file_edge_v1_edge_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -553,7 +644,7 @@ func (x *PushConfig) String() string {
 func (*PushConfig) ProtoMessage() {}
 
 func (x *PushConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_edge_v1_edge_proto_msgTypes[7]
+	mi := &file_edge_v1_edge_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -566,7 +657,7 @@ func (x *PushConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PushConfig.ProtoReflect.Descriptor instead.
 func (*PushConfig) Descriptor() ([]byte, []int) {
-	return file_edge_v1_edge_proto_rawDescGZIP(), []int{7}
+	return file_edge_v1_edge_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *PushConfig) GetCfgVersion() string {
@@ -625,7 +716,7 @@ type PushResult struct {
 
 func (x *PushResult) Reset() {
 	*x = PushResult{}
-	mi := &file_edge_v1_edge_proto_msgTypes[8]
+	mi := &file_edge_v1_edge_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -637,7 +728,7 @@ func (x *PushResult) String() string {
 func (*PushResult) ProtoMessage() {}
 
 func (x *PushResult) ProtoReflect() protoreflect.Message {
-	mi := &file_edge_v1_edge_proto_msgTypes[8]
+	mi := &file_edge_v1_edge_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -650,7 +741,7 @@ func (x *PushResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PushResult.ProtoReflect.Descriptor instead.
 func (*PushResult) Descriptor() ([]byte, []int) {
-	return file_edge_v1_edge_proto_rawDescGZIP(), []int{8}
+	return file_edge_v1_edge_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *PushResult) GetCfgVersion() string {
@@ -697,14 +788,22 @@ const file_edge_v1_edge_proto_rawDesc = "" +
 	"\x05probe\x18\x02 \x01(\v2\x0e.edge.v1.ProbeH\x00R\x05probeB\x03\n" +
 	"\x01m\"\x17\n" +
 	"\x05Probe\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"\x90\x01\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\xbb\x01\n" +
 	"\vProbeResult\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
 	"\vcfg_version\x18\x02 \x01(\tR\n" +
 	"cfgVersion\x12\x19\n" +
 	"\bcaddy_ok\x18\x03 \x01(\bR\acaddyOk\x12!\n" +
 	"\fcaddy_detail\x18\x04 \x01(\tR\vcaddyDetail\x12\x12\n" +
-	"\x04logs\x18\x05 \x03(\tR\x04logs\"f\n" +
+	"\x04logs\x18\x05 \x03(\tR\x04logs\x12)\n" +
+	"\x05certs\x18\x06 \x03(\v2\x13.edge.v1.LoadedCertR\x05certs\"\x8c\x01\n" +
+	"\n" +
+	"LoadedCert\x12\x16\n" +
+	"\x06domain\x18\x01 \x01(\tR\x06domain\x12\x1b\n" +
+	"\tnot_after\x18\x02 \x01(\tR\bnotAfter\x12\x16\n" +
+	"\x06issuer\x18\x03 \x01(\tR\x06issuer\x12\x19\n" +
+	"\bkey_type\x18\x04 \x01(\tR\akeyType\x12\x16\n" +
+	"\x06serial\x18\x05 \x01(\tR\x06serial\"f\n" +
 	"\tHeartbeat\x12\x10\n" +
 	"\x03cpu\x18\x01 \x01(\x01R\x03cpu\x12\x10\n" +
 	"\x03mem\x18\x02 \x01(\x01R\x03mem\x12\x14\n" +
@@ -748,7 +847,7 @@ func file_edge_v1_edge_proto_rawDescGZIP() []byte {
 	return file_edge_v1_edge_proto_rawDescData
 }
 
-var file_edge_v1_edge_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_edge_v1_edge_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_edge_v1_edge_proto_goTypes = []any{
 	(*EnrollRequest)(nil),  // 0: edge.v1.EnrollRequest
 	(*EnrollResponse)(nil), // 1: edge.v1.EnrollResponse
@@ -756,25 +855,27 @@ var file_edge_v1_edge_proto_goTypes = []any{
 	(*MasterMsg)(nil),      // 3: edge.v1.MasterMsg
 	(*Probe)(nil),          // 4: edge.v1.Probe
 	(*ProbeResult)(nil),    // 5: edge.v1.ProbeResult
-	(*Heartbeat)(nil),      // 6: edge.v1.Heartbeat
-	(*PushConfig)(nil),     // 7: edge.v1.PushConfig
-	(*PushResult)(nil),     // 8: edge.v1.PushResult
+	(*LoadedCert)(nil),     // 6: edge.v1.LoadedCert
+	(*Heartbeat)(nil),      // 7: edge.v1.Heartbeat
+	(*PushConfig)(nil),     // 8: edge.v1.PushConfig
+	(*PushResult)(nil),     // 9: edge.v1.PushResult
 }
 var file_edge_v1_edge_proto_depIdxs = []int32{
-	6, // 0: edge.v1.AgentMsg.hb:type_name -> edge.v1.Heartbeat
-	8, // 1: edge.v1.AgentMsg.push_result:type_name -> edge.v1.PushResult
+	7, // 0: edge.v1.AgentMsg.hb:type_name -> edge.v1.Heartbeat
+	9, // 1: edge.v1.AgentMsg.push_result:type_name -> edge.v1.PushResult
 	5, // 2: edge.v1.AgentMsg.probe_result:type_name -> edge.v1.ProbeResult
-	7, // 3: edge.v1.MasterMsg.push:type_name -> edge.v1.PushConfig
+	8, // 3: edge.v1.MasterMsg.push:type_name -> edge.v1.PushConfig
 	4, // 4: edge.v1.MasterMsg.probe:type_name -> edge.v1.Probe
-	0, // 5: edge.v1.EdgeEnroll.Enroll:input_type -> edge.v1.EnrollRequest
-	2, // 6: edge.v1.EdgeTunnel.Channel:input_type -> edge.v1.AgentMsg
-	1, // 7: edge.v1.EdgeEnroll.Enroll:output_type -> edge.v1.EnrollResponse
-	3, // 8: edge.v1.EdgeTunnel.Channel:output_type -> edge.v1.MasterMsg
-	7, // [7:9] is the sub-list for method output_type
-	5, // [5:7] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	6, // 5: edge.v1.ProbeResult.certs:type_name -> edge.v1.LoadedCert
+	0, // 6: edge.v1.EdgeEnroll.Enroll:input_type -> edge.v1.EnrollRequest
+	2, // 7: edge.v1.EdgeTunnel.Channel:input_type -> edge.v1.AgentMsg
+	1, // 8: edge.v1.EdgeEnroll.Enroll:output_type -> edge.v1.EnrollResponse
+	3, // 9: edge.v1.EdgeTunnel.Channel:output_type -> edge.v1.MasterMsg
+	8, // [8:10] is the sub-list for method output_type
+	6, // [6:8] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_edge_v1_edge_proto_init() }
@@ -797,7 +898,7 @@ func file_edge_v1_edge_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_edge_v1_edge_proto_rawDesc), len(file_edge_v1_edge_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   9,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

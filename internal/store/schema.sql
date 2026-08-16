@@ -119,3 +119,15 @@ CREATE TABLE IF NOT EXISTS certificates (
   issued_at TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_certs_expiry ON certificates (not_after);
+
+-- DNS 解析权重。每条线路上每个节点一行。
+--
+-- 权重是**相对值**，不是百分比：下发前会在本条线路内归一化（internal/dnssched）。
+-- 存百分比的话，加一台节点就得把其余全部改一遍，而那正是最容易改漏的操作。
+CREATE TABLE IF NOT EXISTS dns_weights (
+  domain  TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  line    TEXT NOT NULL,
+  weight  INTEGER NOT NULL DEFAULT 0 CHECK (weight >= 0),
+  PRIMARY KEY (domain, node_id, line)
+);

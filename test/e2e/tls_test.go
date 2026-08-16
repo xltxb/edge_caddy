@@ -263,3 +263,65 @@ func appConfig(t *testing.T, adminPort int, name string) string {
 	blob, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	return string(blob)
 }
+
+// 探活能读回节点上**实际加载**的证书清单。
+//
+// 从运行中的配置读，而不是从主控下发的那份算：两者不一致正是要发现的东西
+// （下发失败、被人手工改过、或者 Caddy 拒绝了某一张）。从下发的那份算
+// 等于自己给自己打分。
+func TestProbeReportsLoadedCerts(t *testing.T) {
+	caddyBin := findCaddy(t)
+	edgePort, adminPort := freePort(t), freePort(t)
+	startCaddy(t, caddyBin, t.TempDir(), adminPort)
+
+	m := startMaster(t, render.Options{Listen: []string{fmt.Sprintf("127.0.0.1:%d", edgePort)}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	joinAgent(t, ctx, m, "node-inv-01", adminPort)
+	if !waitFor(5*time.Second, func() bool { return len(m.tun.Connected()) == 1 }) {
+		t.Fatal("Agent 未能接入")
+	}
+
+	// 还没下发证书时，清单是空的——而不是报错
+	rep, err := m.tun.Probe(ctx, "node-inv-01", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Certs) != 0 {
+		t.Fatalf("还没下发证书时清单应为空，实际 %+v", rep.Certs)
+	}
+
+	const domain = "inv.example.com"
+	_, leaf := issueLeaf(t, domain)
+	if err := certs.Save(ctx, m.st, m.secret, leaf); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.st.PutRoute(ctx, model.Route{
+		Domain: domain, Upstream: "127.0.0.1:1",
+		Block: model.BlockAbort, BodyMax: "1MB", Whitelist: []string{model.AllowAllCIDR},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.orch.Deploy(ctx, "abiu", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err = m.tun.Probe(ctx, "node-inv-01", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Certs) != 1 {
+		t.Fatalf("下发后应能读回 1 张证书，实际 %+v", rep.Certs)
+	}
+	got := rep.Certs[0]
+	if got.Domain != domain {
+		t.Errorf("域名应为 %s，实际 %q", domain, got.Domain)
+	}
+	if got.NotAfter == "" {
+		t.Error("应带上到期时间")
+	}
+	// 序列号是换证时唯一能确认「真的换了」的字段
+	if got.Serial != leaf.Serial {
+		t.Errorf("序列号应与主控签发的一致：主控 %q，节点 %q", leaf.Serial, got.Serial)
+	}
+}

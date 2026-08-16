@@ -52,7 +52,7 @@ func main() {
 		log.Warn("控制台接口当前无鉴权：任何能访问 " + *httpAddr + " 的人都可以改配置、签发接入凭据。设置 EDGE_ADMIN_PASSWORD 后重启即可启用")
 	}
 
-	go m.Checker.Run(ctx)
+	m.RunBackground(ctx)
 
 	lis, err := net.Listen("tcp", *grpcAddr)
 	if err != nil {

@@ -50,6 +50,14 @@ type ResultSink interface {
 	OnPushResult(nodeID string, res *edgev1.PushResult)
 }
 
+// CertSink 接收节点上报的证书清单。
+//
+// 每次探活回报都交一次，不管有没有人在等：证书视图是内存里的，
+// 只在「有人点了探活」时更新的话，面板打开的第一眼永远是空的。
+type CertSink interface {
+	OnNodeCerts(nodeID string, certs []LoadedCert)
+}
+
 // Broadcaster 把节点状态推给控制台。
 type Broadcaster interface {
 	Broadcast(f ws.Frame)
@@ -58,6 +66,7 @@ type Broadcaster interface {
 type Deps struct {
 	CA      *pki.CA
 	Results ResultSink
+	Certs   CertSink
 	Hub     Broadcaster
 	Enroll  *enroll.Enroller
 	Store   Store
@@ -81,6 +90,17 @@ type ProbeReport struct {
 	CaddyOK     bool
 	CaddyDetail string
 	Logs        []string
+	// Certs 是节点上 Caddy 实际加载着的证书清单。
+	Certs []LoadedCert
+}
+
+// LoadedCert 是节点上报的一张已加载证书。
+type LoadedCert struct {
+	Domain   string
+	NotAfter string
+	Issuer   string
+	KeyType  string
+	Serial   string
 }
 
 type Server struct {
@@ -92,6 +112,13 @@ type Server struct {
 
 	mu       sync.RWMutex
 	sessions map[string]*session
+}
+
+// SetCertSink 装上证书清单的接收方。
+func (s *Server) SetCertSink(c CertSink) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deps.Certs = c
 }
 
 // SetResults 装上下发结果的接收方。
@@ -187,6 +214,9 @@ func (s *Server) recvLoop(ctx context.Context, stream edgev1.EdgeTunnel_ChannelS
 			}
 		}
 		if pr := in.GetProbeResult(); pr != nil {
+			if s.deps.Certs != nil {
+				s.deps.Certs.OnNodeCerts(nodeID, loadedCertsOf(pr))
+			}
 			s.deliverProbe(nodeID, pr)
 		}
 		if hb := in.GetHb(); hb != nil {
@@ -250,6 +280,7 @@ func (s *Server) Probe(ctx context.Context, nodeID string, timeout time.Duration
 			CaddyOK:     res.GetCaddyOk(),
 			CaddyDetail: res.GetCaddyDetail(),
 			Logs:        res.GetLogs(),
+			Certs:       loadedCertsOf(res),
 		}, nil
 	case <-timer.C:
 		return ProbeReport{}, fmt.Errorf("节点 %s 探活超时（%s 内未回报）", nodeID, timeout)
@@ -361,4 +392,15 @@ func peerAddr(ctx context.Context) string {
 		return p.Addr.String()
 	}
 	return "unknown"
+}
+
+func loadedCertsOf(res *edgev1.ProbeResult) []LoadedCert {
+	out := make([]LoadedCert, 0, len(res.GetCerts()))
+	for _, c := range res.GetCerts() {
+		out = append(out, LoadedCert{
+			Domain: c.GetDomain(), NotAfter: c.GetNotAfter(),
+			Issuer: c.GetIssuer(), KeyType: c.GetKeyType(), Serial: c.GetSerial(),
+		})
+	}
+	return out
 }

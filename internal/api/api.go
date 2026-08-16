@@ -47,6 +47,8 @@ type Store interface {
 	AppendAudit(ctx context.Context, a model.AuditLog) error
 	ListAudit(ctx context.Context, operator string, limit int) ([]model.AuditLog, error)
 	ListRules(ctx context.Context) ([]model.AccessRule, error)
+	ListWeights(ctx context.Context, domain string) ([]model.DNSWeight, error)
+	PutWeights(ctx context.Context, domain string, ws []model.DNSWeight) error
 	PutRule(ctx context.Context, r model.AccessRule) error
 	DeleteRule(ctx context.Context, id string) error
 	GetSetting(ctx context.Context, key string) ([]byte, error)
@@ -70,6 +72,10 @@ type Deps struct {
 	Hub    *ws.Hub
 	// Alerts 是告警通知器。为空时告警接口返回「未装配」。
 	Alerts *alert.Notifier
+	// Certs 是证书能力。为空时证书接口返回「未装配」。
+	Certs Certs
+	// DNS 是解析调度能力。为空时调度接口返回「未装配」。
+	DNS DNS
 	// Secret 是主密钥，用于加解密落库的渠道凭据。
 	Secret []byte
 	Logger *slog.Logger
@@ -128,6 +134,15 @@ func New(d Deps) http.Handler {
 		authed.GET("/rules", h.listRules)
 		authed.PUT("/rules/:id", h.putRule)
 		authed.DELETE("/rules/:id", h.deleteRule)
+
+		authed.GET("/certs", h.listCerts)
+		authed.POST("/certs/:domain/renew", h.renewCert)
+		authed.POST("/certs/renew-all", h.renewAllCerts)
+
+		authed.GET("/dns/provider", h.getDNSProvider)
+		authed.PUT("/dns/provider", h.putDNSProvider)
+		authed.GET("/dns/schedule/:domain", h.getDNSSchedule)
+		authed.PUT("/dns/schedule/:domain", h.putDNSSchedule)
 
 		authed.GET("/alerts", h.getAlerts)
 		authed.PUT("/alerts", h.putAlerts)

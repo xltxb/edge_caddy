@@ -68,6 +68,22 @@ message ProbeResult {
   string caddy_detail = 4;
   // Agent 最近日志，最新的在最后。
   repeated string logs = 5;
+  // 节点上 Caddy 实际加载的证书清单。
+  //
+  // 证书状态**不落库**（PRD §4）：落库只会得到一份随时可能过时的副本，
+  // 而「过时的证书状态」比没有更危险——它会让人以为一张已经换掉的证书
+  // 还在生效。这里上报的是节点此刻真正加载着的那些。
+  repeated LoadedCert certs = 6;
+}
+
+message LoadedCert {
+  string domain = 1;
+  // not_after 是 RFC3339 时间串。用字符串而不是时间戳：排查时人要直接看它，
+  // 而一串秒数得先换算。
+  string not_after = 2;
+  string issuer = 3;
+  string key_type = 4;
+  string serial = 5;
 }
 
 // Heartbeat 刻意**不含 node_id**。

@@ -185,3 +185,34 @@ func (m *Manager) Run(ctx context.Context, interval time.Duration, domains func(
 		}
 	}
 }
+
+// RenewNow 立刻为一个域名签发/续期，**跳过续期窗口判断**。
+//
+// 这是人在面板上点「续期」时走的路径：他已经知道自己想续了，不该被
+// 「还有 80 天，不用续」挡回去。
+//
+// 但**退避仍然生效**：连点十次按钮不该真去撞十次 ACME 的失败校验配额
+// （每小时 5 次），撞进去之后连正确配置也签不出来。
+func (m *Manager) RenewNow(ctx context.Context, domain string) error {
+	now := m.now()
+	if !m.mayTry(domain, now) {
+		return fmt.Errorf("%s 刚刚签发失败过，%s 内不再重试——"+
+			"ACME 对失败校验也有速率限制，撞进去之后连正确配置也签不出来",
+			domain, FailureBackoff)
+	}
+	fresh, err := m.deps.Issuer.Issue(ctx, domain)
+	if err != nil {
+		// 旧证书原样留着：签失败就删掉的话，本来还能撑二十多天的证书也没了
+		m.backoff(domain, now)
+		m.alert("crit", domain, "签发失败："+err.Error())
+		return err
+	}
+	fresh.Domain = domain
+	fresh.Auto = true
+	if err := Save(ctx, m.deps.Store, m.deps.Master, fresh); err != nil {
+		return err
+	}
+	m.clearBackoff(domain)
+	m.log.Info("证书已签发", "domain", domain, "not_after", fresh.NotAfter)
+	return nil
+}

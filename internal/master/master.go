@@ -23,6 +23,7 @@ import (
 	"github.com/xltxb/edge_caddy/internal/alert"
 	"github.com/xltxb/edge_caddy/internal/api"
 	"github.com/xltxb/edge_caddy/internal/auth"
+	"github.com/xltxb/edge_caddy/internal/certs"
 	"github.com/xltxb/edge_caddy/internal/deploy"
 	"github.com/xltxb/edge_caddy/internal/enroll"
 	"github.com/xltxb/edge_caddy/internal/health"
@@ -55,6 +56,10 @@ type Master struct {
 	Alerts  *alert.Notifier
 	Hub     *ws.Hub
 	Auth    *auth.Manager
+	// CertInventory 是证书状态的内存视图。**不落库**（PRD §4）。
+	CertInventory *certs.Inventory
+	// Certs 提供签发与续期。
+	Certs *certService
 
 	log *slog.Logger
 }
@@ -122,6 +127,27 @@ func Assemble(ctx context.Context, o Options) (*Master, error) {
 	}
 	notifier.SetConfig(alertCfg)
 
+	// 证书：状态是内存视图（不落库），签发/续期走 ACME + DNS-01。
+	//
+	// 落库只会得到一份随时可能过时的副本，而「过时的证书状态」比没有更危险——
+	// 它会让人以为一张已经换掉的证书还在生效。
+	inv := certs.NewInventory(nil)
+	certAlert := &certAlerts{emit: func(kind, domain, msg string) {
+		notifier.Broadcast(ws.Frame{Type: "event", Data: map[string]any{
+			"t": time.Now().Format("15:04:05"), "node": domain, "kind": kind,
+			"msg": "证书 " + domain + "：" + msg,
+		}})
+	}}
+	certSvc := newCertService(st, o.Secret, inv, certAlert, log)
+	// 节点每次探活回报都把清单交过来。只在「有人点了探活」时更新的话，
+	// 面板打开的第一眼永远是空的。
+	tun.SetCertSink(&certCollector{inv: inv})
+	// 证书随每次下发一起带上，而不是「签发那一刻推一次」——后者会让接入时间
+	// 晚于签发的节点永远拿不到证书。
+	orch.SetCertSource(certs.NewSource(st, o.Secret))
+
+	dnsSvc := newDNSService(st, o.Secret, log)
+
 	// 健康巡检：心跳连续超时即判离线并发事件。判离线不做补救动作
 	// （摘 DNS 属工单 #15），只更新状态让人看得见。
 	checker := health.New(st, notifier, health.Config{Logger: log})
@@ -152,12 +178,24 @@ func Assemble(ctx context.Context, o Options) (*Master, error) {
 	h := api.New(api.Deps{
 		Store: st, Auth: authMgr, Enroll: enroller, Deploy: orch, Nodes: tun,
 		Hub: hub, Alerts: notifier, Secret: o.Secret, Logger: log,
+		Certs: certSvc, DNS: dnsSvc,
 	})
 
 	return &Master{
 		HTTP: h, GRPC: g, Store: st, Tunnel: tun,
-		Checker: checker, Alerts: notifier, Hub: hub, Auth: authMgr, log: log,
+		Checker: checker, Alerts: notifier, Hub: hub, Auth: authMgr,
+		CertInventory: inv, Certs: certSvc, log: log,
 	}, nil
+}
+
+// RunBackground 起主控的后台巡检：健康、证书续期、证书清单刷新。
+//
+// 单独一个方法而不是在 Assemble 里起：Assemble 要能被测试反复调用，
+// 而后台 goroutine 会在测试之间互相干扰。
+func (m *Master) RunBackground(ctx context.Context) {
+	go m.Checker.Run(ctx)
+	go m.Certs.RunRenewal(ctx, time.Hour)
+	go runCertSweep(ctx, m.Tunnel, m.log, CertSweepInterval)
 }
 
 // AuthEnabled 报告控制台接口是否需要登录。

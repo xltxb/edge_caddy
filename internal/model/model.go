@@ -183,3 +183,14 @@ type DeployResult struct {
 	State    string `json:"state"` // ok / fail
 	Detail   string `json:"res"`
 }
+
+// DNSWeight 是一个节点在某条线路上的解析权重。
+//
+// 权重是**相对值**，不是百分比：下发前会在本条线路内归一化。存百分比的话，
+// 加一台节点就得把其余全部改一遍，而那正是最容易改漏的操作。
+type DNSWeight struct {
+	Domain string `json:"domain"`
+	NodeID string `json:"node"`
+	Line   string `json:"line"`
+	Weight int    `json:"weight"`
+}

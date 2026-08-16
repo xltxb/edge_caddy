@@ -270,6 +270,20 @@ func handleProbe(ctx context.Context, stream edgev1.EdgeTunnel_ChannelClient,
 			res.CaddyOk, res.CaddyDetail = true, "Admin API 正常应答"
 		}
 	}
+	if caddy != nil {
+		listCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		loaded, err := caddy.LoadedCerts(listCtx)
+		cancel()
+		if err != nil {
+			log.Warn("读取已加载证书失败", "err", err)
+		}
+		for _, lc := range loaded {
+			res.Certs = append(res.Certs, &edgev1.LoadedCert{
+				Domain: lc.Domain, NotAfter: lc.NotAfter,
+				Issuer: lc.Issuer, KeyType: lc.KeyType, Serial: lc.Serial,
+			})
+		}
+	}
 	// 日志在最后取：上面那次 Ping 失败的记录也该被带回去
 	res.Logs = st.recentLogs()
 
