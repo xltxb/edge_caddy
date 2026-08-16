@@ -95,6 +95,7 @@ func New(d Deps) http.Handler {
 	authed.Use(h.requireSession(), h.auditMiddleware())
 	{
 		authed.GET("/me", h.me)
+		authed.GET("/overview", h.listOverview)
 		authed.GET("/nodes", h.listNodes)
 		authed.POST("/nodes/token", h.issueNodeToken)
 

@@ -59,8 +59,22 @@ export const useNodesStore = defineStore('nodes', () => {
     }
   }
 
+  /** filtered 按 KPI 卡片筛选节点（前端文档 §3：query 同步 ?filter=）。 */
+  function filtered(kind: string) {
+    switch (kind) {
+      case 'online':
+        return nodes.value.filter((n) => n.status !== 'down')
+      case 'down':
+        return nodes.value.filter((n) => n.status === 'down')
+      case 'drifted':
+        return nodes.value.filter((n) => n.drifted)
+      default:
+        return nodes.value
+    }
+  }
+
   const onlineCount = computed(() => nodes.value.filter((n) => n.status !== 'down').length)
   const driftedCount = computed(() => nodes.value.filter((n) => n.drifted).length)
 
-  return { nodes, baseline, loading, loadError, load, applyFrame, onlineCount, driftedCount, __setFetcher }
+  return { nodes, baseline, loading, loadError, load, applyFrame, filtered, onlineCount, driftedCount, __setFetcher }
 })

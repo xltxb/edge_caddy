@@ -197,6 +197,45 @@ func (h *handler) createDeploy(c *gin.Context) {
 	ok(c, gin.H{"deploy_id": res.DeployID, "cfg_version": res.CfgVersion, "results": res.Rows})
 }
 
+// listOverview 返回集群 KPI。
+//
+// 漂移口径与节点列表**共用同一个判定**（driftedOf），不能两处各算各的——
+// 两处算法不同的表现是「总览说 2 个漂移、节点页只标出 1 个」，
+// 而没人分得清哪个对。
+func (h *handler) listOverview(c *gin.Context) {
+	ctx := c.Request.Context()
+	nodes, err := h.deps.Store.ListNodes(ctx)
+	if err != nil {
+		h.failErr(c, err, "读取节点失败")
+		return
+	}
+	baseline, err := h.deps.Store.Baseline(ctx)
+	if err != nil {
+		h.failErr(c, err, "读取基线失败")
+		return
+	}
+	routes, err := h.deps.Store.ListRoutes(ctx)
+	if err != nil {
+		h.failErr(c, err, "读取路由失败")
+		return
+	}
+
+	online, drifted, conns := 0, 0, 0
+	for _, n := range nodes {
+		if n.Status != "down" {
+			online++
+		}
+		if driftedOf(n, baseline) {
+			drifted++
+		}
+	}
+	ok(c, gin.H{
+		"nodes_total": len(nodes), "nodes_online": online,
+		"drifted": drifted, "conns": conns,
+		"routes": len(routes), "baseline": baseline,
+	})
+}
+
 // preview 返回下发前后的两份权威渲染，供确认弹层展示真实 diff（docs/adr/0007）。
 func (h *handler) preview(c *gin.Context) {
 	if h.deps.Deploy == nil {
@@ -257,4 +296,12 @@ func (h *handler) listDeploys(c *gin.Context) {
 		})
 	}
 	ok(c, gin.H{"deploys": out, "baseline": baseline})
+}
+
+// driftedOf 判定配置漂移：节点上报的版本 ≠ 当前基线（docs/adr/0002）。
+//
+// 只比版本号，**不检查节点上的配置内容**。尚无基线时不判漂移——那时所有节点
+// 都还没收到过任何配置，全标成漂移只会是噪声。
+func driftedOf(n model.Node, baseline string) bool {
+	return baseline != "" && n.CfgVersion != baseline
 }

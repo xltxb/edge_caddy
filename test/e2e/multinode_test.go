@@ -128,8 +128,11 @@ func joinAgent(t *testing.T, ctx context.Context, m *master, nodeID string, cadd
 	cfg := agent.Config{
 		NodeID: nodeID, MasterAddr: m.addr, ServerName: "master.local",
 		StateDir: t.TempDir(), MasterCA: m.ca.RootPEM(),
-		CaddyAdmin:        fmt.Sprintf("http://127.0.0.1:%d", caddyAdminPort),
 		HeartbeatInterval: 100 * time.Millisecond,
+	}
+	// 端口为 0 表示这个节点不需要 Caddy（只用来发心跳）
+	if caddyAdminPort != 0 {
+		cfg.CaddyAdmin = fmt.Sprintf("http://127.0.0.1:%d", caddyAdminPort)
 	}
 	if err := agent.Enroll(ctx, cfg, tok); err != nil {
 		t.Fatalf("%s 接入失败: %v", nodeID, err)

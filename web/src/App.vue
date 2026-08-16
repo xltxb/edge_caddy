@@ -4,12 +4,14 @@ import { RouterLink, RouterView, useRoute } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
 import { useNodesStore } from '@/stores/nodes'
 import { useDeployStore } from '@/stores/deploys'
+import { useEventsStore } from '@/stores/events'
 import { connectWS } from '@/api/ws'
 
 const route = useRoute()
 const session = useSessionStore()
 const nodes = useNodesStore()
 const deploys = useDeployStore()
+const events = useEventsStore()
 const theme = ref<'light' | 'dark'>('light')
 let closeWS: (() => void) | null = null
 
@@ -30,6 +32,7 @@ onMounted(() => {
   closeWS = connectWS((frame) => {
     nodes.applyFrame(frame)
     deploys.applyFrame(frame)
+    events.applyFrame(frame)
   })
 })
 onUnmounted(() => closeWS?.())

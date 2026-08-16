@@ -19,6 +19,7 @@ import (
 	"github.com/xltxb/edge_caddy/internal/auth"
 	"github.com/xltxb/edge_caddy/internal/deploy"
 	"github.com/xltxb/edge_caddy/internal/enroll"
+	"github.com/xltxb/edge_caddy/internal/health"
 	"github.com/xltxb/edge_caddy/internal/pki"
 	"github.com/xltxb/edge_caddy/internal/store"
 	"github.com/xltxb/edge_caddy/internal/tunnel"
@@ -83,6 +84,11 @@ func main() {
 	// 用 setter 打破这个环，比引入一个中间事件总线简单。
 	tun.SetResults(orch)
 	orch.SetBroadcaster(hub)
+
+	// 健康巡检：心跳连续超时即判离线并发事件。判离线不做补救动作
+	// （摘 DNS 属工单 #15），只更新状态让人看得见。
+	checker := health.New(st, hub, health.Config{Logger: log})
+	go checker.Run(context.Background())
 
 	serverCert, err := tunnelCA.IssueServer(*hostname, 365*24*time.Hour)
 	if err != nil {
