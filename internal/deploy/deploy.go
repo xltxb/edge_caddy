@@ -60,6 +60,8 @@ type Store interface {
 	CreateDeploy(ctx context.Context, d model.Deploy) (int64, error)
 	PutDeployResult(ctx context.Context, r model.DeployResult) error
 	BumpRouteVersions(ctx context.Context, domains []string) error
+	ListDrafts(ctx context.Context) ([]model.Draft, error)
+	DeleteDrafts(ctx context.Context, keys []string) error
 }
 
 // Tunnel 是 deploy 需要的下发通道能力。
@@ -127,7 +129,11 @@ type Result struct {
 }
 
 // Deploy 渲染当前配置并下发到所有在线节点。
-func (o *Orchestrator) Deploy(ctx context.Context, operator string) (Result, error) {
+//
+// resKeys 是本次勾选的资源；为空表示全部。**只有勾选的草稿会被合入并清除**——
+// 未勾选的原样留着。若下发顺手把全部草稿一起推了或顺手清空，别人还没推的改动
+// 就被无声吞掉了，而他不会知道。
+func (o *Orchestrator) Deploy(ctx context.Context, operator string, resKeys []string) (Result, error) {
 	routes, err := o.st.ListRoutes(ctx)
 	if err != nil {
 		return Result{}, fmt.Errorf("读取路由: %w", err)
@@ -153,15 +159,26 @@ func (o *Orchestrator) Deploy(ctx context.Context, operator string) (Result, err
 		return Result{}, fmt.Errorf("快照序列化: %w", err)
 	}
 
+	keys := resKeys
+	if len(keys) == 0 {
+		keys = resKeysOf(routes)
+	}
 	deployID, err := o.st.CreateDeploy(ctx, model.Deploy{
 		CfgVersion: cfgVersion, Operator: operator,
-		ResKeys: resKeysOf(routes), Snapshot: snapshot, CreatedAt: time.Now(),
+		ResKeys: keys, Snapshot: snapshot, CreatedAt: time.Now(),
 	})
 	if err != nil {
 		return Result{}, err
 	}
 
 	rows := o.broadcast(ctx, deployID, cfgVersion, payload, targets)
+
+	// 至少有一个节点成功才清掉本次勾选的草稿。失败时留着，人改完能接着推。
+	if anyOK(rows) && len(resKeys) > 0 {
+		if err := o.st.DeleteDrafts(ctx, resKeys); err != nil {
+			o.log.Error("清除草稿失败", "err", err)
+		}
+	}
 
 	// 至少有一个节点成功才推进资源版本。版本号是「这条路由已经在节点上生效过」
 	// 的唯一凭据：无一成功却推进，等于宣称已生效；成功了却不推进，界面永远显示

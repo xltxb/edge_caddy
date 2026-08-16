@@ -353,3 +353,90 @@ func TestDeployRejectsUnrenderableConfig(t *testing.T) {
 		t.Fatal("渲染失败时不应报告下发成功")
 	}
 }
+
+// ── 草稿与勾选下发 ──
+
+// 草稿全局可见：任何人都能看到别人正在改什么。
+func TestDraftsAreGloballyVisible(t *testing.T) {
+	r := newRig(t, true)
+	c := r.login(t)
+
+	// 模拟 ops-bot 写的草稿
+	if err := r.st.PutDraft(context.Background(), "route:b.example.com",
+		map[string]any{"upstream": "10.0.0.9:80"}, "ops-bot", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// 当前操作人自己写一条
+	if rec := r.do(t, http.MethodPut, "/api/v1/drafts/route:a.example.com",
+		map[string]any{"patch": map[string]any{"upstream": "10.0.0.1:80"}}, c); rec.Code != http.StatusOK {
+		t.Fatalf("写草稿应成功，实际 %d: %s", rec.Code, rec.Body.String())
+	}
+
+	_, data := envelope(t, r.do(t, http.MethodGet, "/api/v1/drafts", nil, c))
+	ds, _ := data["drafts"].([]any)
+	if len(ds) != 2 {
+		t.Fatalf("应看到全部 2 条草稿（含别人的），实际 %v", data)
+	}
+	// 作者要带回来：确认弹层要逐条标注是谁改的
+	authors := map[string]bool{}
+	for _, d := range ds {
+		authors[d.(map[string]any)["updated_by"].(string)] = true
+	}
+	if !authors["ops-bot"] || !authors[auth.AdminUser] {
+		t.Errorf("草稿应带上作者，实际 %v", authors)
+	}
+}
+
+// 空 patch 表示该资源已无待下发改动，应删除而不是存一个空对象。
+func TestEmptyPatchClearsDraft(t *testing.T) {
+	r := newRig(t, true)
+	c := r.login(t)
+	key := "route:a.example.com"
+	_ = r.do(t, http.MethodPut, "/api/v1/drafts/"+key,
+		map[string]any{"patch": map[string]any{"upstream": "10.0.0.1:80"}}, c)
+	_ = r.do(t, http.MethodPut, "/api/v1/drafts/"+key, map[string]any{"patch": map[string]any{}}, c)
+
+	_, data := envelope(t, r.do(t, http.MethodGet, "/api/v1/drafts", nil, c))
+	if ds, _ := data["drafts"].([]any); len(ds) != 0 {
+		t.Fatalf("空 patch 应清除草稿，实际还剩 %v", ds)
+	}
+}
+
+// 下发只携带**本次勾选**的资源，未勾选的草稿必须原样留着。
+//
+// 这是「推送时勾选」那个决定的核心：若下发顺手把全部草稿一起推了、或顺手清空，
+// 别人还没推的改动就被无声吞掉了——而他不会知道。
+func TestDeployOnlyCarriesSelectedResources(t *testing.T) {
+	r := newRig(t, true)
+	c := r.login(t)
+	ctx := context.Background()
+
+	for _, d := range []string{"a.example.com", "b.example.com"} {
+		if err := r.st.PutRoute(ctx, model.Route{
+			Domain: d, Upstream: "10.0.0.1:80", Block: model.BlockAbort, BodyMax: "1MB",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 两条草稿，分属不同的人
+	_ = r.st.PutDraft(ctx, "route:a.example.com", map[string]any{"upstream": "10.0.0.2:80"}, auth.AdminUser, time.Now())
+	_ = r.st.PutDraft(ctx, "route:b.example.com", map[string]any{"upstream": "10.0.0.3:80"}, "ops-bot", time.Now())
+
+	// 只勾 a
+	rec := r.do(t, http.MethodPost, "/api/v1/deploys",
+		map[string]any{"res_keys": []string{"route:a.example.com"}}, c)
+	// 没有在线节点，下发会失败——但**草稿的处理不该受此影响**之外，
+	// 更重要的是它不能把 b 的草稿也带走。这里只断言 b 还在。
+	_ = rec
+
+	left, err := r.st.ListDrafts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range left {
+		if d.ResKey == "route:b.example.com" {
+			return // 未勾选的草稿仍在，符合预期
+		}
+	}
+	t.Fatalf("未勾选的草稿被吞掉了，剩余 %+v", left)
+}

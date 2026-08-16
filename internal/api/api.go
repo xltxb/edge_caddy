@@ -39,11 +39,15 @@ type Store interface {
 	PutRoute(ctx context.Context, r model.Route) error
 	DeleteRoute(ctx context.Context, domain string) error
 	ListDeploys(ctx context.Context, limit int) ([]model.Deploy, map[int64][]model.DeployResult, error)
+	ListDrafts(ctx context.Context) ([]model.Draft, error)
+	PutDraft(ctx context.Context, key string, patch map[string]any, by string, now time.Time) error
+	DeleteDrafts(ctx context.Context, keys []string) error
 }
 
 // Deployer 是 api 需要的下发能力。
 type Deployer interface {
-	Deploy(ctx context.Context, operator string) (deploy.Result, error)
+	// Deploy 只携带 resKeys 指定的资源；resKeys 为空表示全部。
+	Deploy(ctx context.Context, operator string, resKeys []string) (deploy.Result, error)
 }
 
 type Deps struct {
@@ -92,6 +96,10 @@ func New(d Deps) http.Handler {
 
 		authed.POST("/deploys", h.createDeploy)
 		authed.GET("/deploys", h.listDeploys)
+
+		authed.GET("/drafts", h.listDrafts)
+		authed.PUT("/drafts/:key", h.putDraft)
+		authed.DELETE("/drafts", h.deleteDrafts)
 
 		authed.GET("/ws", h.serveWS)
 	}

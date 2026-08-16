@@ -57,7 +57,7 @@ func TestPartialFailureAndRecoveryOnRealLink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := m.orch.Deploy(ctx, "abiu")
+	res, err := m.orch.Deploy(ctx, "abiu", nil)
 	if err != nil {
 		t.Fatalf("下发不应整体失败——有节点成功就该记录下来: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestPartialFailureAndRecoveryOnRealLink(t *testing.T) {
 
 	// 修好 B 的 Caddy 后重推，它应当转为成功
 	startCaddy(t, caddyBin, t.TempDir(), adminPortB)
-	res2, err := m.orch.Deploy(ctx, "abiu")
+	res2, err := m.orch.Deploy(ctx, "abiu", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

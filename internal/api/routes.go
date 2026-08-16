@@ -173,12 +173,20 @@ func (h *handler) deleteRoute(c *gin.Context) {
 
 // ── 下发 ──
 
+type deployInput struct {
+	// ResKeys 是本次勾选下发的资源键。为空表示全部。
+	ResKeys []string `json:"res_keys"`
+}
+
 func (h *handler) createDeploy(c *gin.Context) {
 	if h.deps.Deploy == nil {
 		fail(c, http.StatusServiceUnavailable, codeInternal, "下发功能未装配")
 		return
 	}
-	res, err := h.deps.Deploy.Deploy(c.Request.Context(), operatorOf(c))
+	var in deployInput
+	_ = c.ShouldBindJSON(&in) // 请求体可选
+
+	res, err := h.deps.Deploy.Deploy(c.Request.Context(), operatorOf(c), in.ResKeys)
 	if err != nil {
 		// 渲染失败与「没有在线节点」都是可预期的拒绝，不是服务端故障，
 		// 因此用 422 而不是 500——调用方的处理完全不同。

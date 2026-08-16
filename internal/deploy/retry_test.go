@@ -86,7 +86,7 @@ func TestRetriesWhenNodeNeverAnswers(t *testing.T) {
 	}
 	o, _ := newOrch(t, tun, deploy.RetryPolicy{Max: 3, Backoff: time.Millisecond, Deadline: 80 * time.Millisecond})
 
-	res, err := o.Deploy(context.Background(), "abiu")
+	res, err := o.Deploy(context.Background(), "abiu", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestDoesNotRetryWhenCaddyRejectsConfig(t *testing.T) {
 	}
 	o, _ := newOrch(t, tun)
 
-	res, err := o.Deploy(context.Background(), "abiu")
+	res, err := o.Deploy(context.Background(), "abiu", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestGivesUpAfterMaxAttempts(t *testing.T) {
 	tun.reply = func(string, int, string) *edgev1.PushResult { return nil }
 	o, _ := newOrch(t, tun, deploy.RetryPolicy{Max: 2, Backoff: time.Millisecond, Deadline: 40 * time.Millisecond})
 
-	res, err := o.Deploy(context.Background(), "abiu")
+	res, err := o.Deploy(context.Background(), "abiu", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestPartialFailureRecordsBothOutcomes(t *testing.T) {
 	}
 	o, st := newOrch(t, tun)
 
-	res, err := o.Deploy(context.Background(), "abiu")
+	res, err := o.Deploy(context.Background(), "abiu", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func TestSuccessfulDeployBumpsResourceVersion(t *testing.T) {
 	o, st := newOrch(t, tun)
 
 	before, _ := st.GetRoute(context.Background(), "api.example.com")
-	if _, err := o.Deploy(context.Background(), "abiu"); err != nil {
+	if _, err := o.Deploy(context.Background(), "abiu", nil); err != nil {
 		t.Fatal(err)
 	}
 	after, _ := st.GetRoute(context.Background(), "api.example.com")
@@ -213,7 +213,7 @@ func TestFailedDeployDoesNotBumpVersion(t *testing.T) {
 	o, st := newOrch(t, tun)
 
 	before, _ := st.GetRoute(context.Background(), "api.example.com")
-	if _, err := o.Deploy(context.Background(), "abiu"); err != nil {
+	if _, err := o.Deploy(context.Background(), "abiu", nil); err != nil {
 		t.Fatal(err)
 	}
 	after, _ := st.GetRoute(context.Background(), "api.example.com")

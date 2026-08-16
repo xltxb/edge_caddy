@@ -85,7 +85,7 @@ func TestDeployMakesTrafficFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := m.orch.Deploy(ctx, "abiu")
+	res, err := m.orch.Deploy(ctx, "abiu", nil)
 	if err != nil {
 		t.Fatalf("下发失败: %v", err)
 	}
