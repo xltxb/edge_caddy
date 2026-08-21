@@ -37,6 +37,7 @@ var contractEndpoints = []string{
 	"DELETE /api/v1/routes/:domain",
 	"GET /api/v1/rules",
 	"PUT /api/v1/rules/:id",
+	"DELETE /api/v1/rules/:id",
 	"GET /api/v1/policies/:id",
 	"PUT /api/v1/policies/:id",
 	"GET /api/v1/drafts",
@@ -95,8 +96,24 @@ func TestAllContractEndpointsAreRegistered(t *testing.T) {
 
 // 反过来也要查：路由表里有而契约里没有的端点，要么是忘了写进契约，
 // 要么是不该存在。两种都值得当场知道。
+// **这是一条否定断言，它天然会因为装置失效而变绿。**
+//
+// 「路由表里没有多余的端点」和「我根本没拿到路由表」产生同样的结果——
+// r.Routes() 哪天返回空（装配变了、gin 的 API 变了），这条会一声不响地全绿。
+//
+// 旁边的 TestAllContractEndpointsAreRegistered 是肯定断言，装置坏了它会红，
+// 所以这两条实际上互为对方的兜底。**但那是偶然的**：这条测试自己读起来完全独立，
+// 谁把另一条删了或改窄了，都不会觉得跟这里有关系。
+//
+// 所以自己也带一句自检。前端 agent 给这个形状起了个名字，值得照抄：
+// **否定断言天然会因为装置失效而变绿。**
 func TestNoUndocumentedEndpoints(t *testing.T) {
 	r, _ := newServer(t)
+	if n := len(r.Routes()); n < len(contractEndpoints) {
+		t.Fatalf("路由表只有 %d 条，比契约里的 %d 条还少 —— "+
+			"这份路由表不是我们以为的东西，下面那个『没有多余端点』的结论"+
+			"是因为什么都没看到才成立的", n, len(contractEndpoints))
+	}
 	want := map[string]bool{}
 	for _, e := range contractEndpoints {
 		want[e] = true

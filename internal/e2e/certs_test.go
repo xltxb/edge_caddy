@@ -432,3 +432,61 @@ func TestRateLimitIsRejectedNotSilentlyIgnored(t *testing.T) {
 		t.Fatalf("应当定位到 global:log 的 spec.rate_limit，实际 %+v", d.Errors)
 	}
 }
+
+// **一条建错的规则要能被删掉，而不只是被停用。**
+//
+// 路由有 `PUT|DELETE /routes/:domain`，规则原先只有 PUT。于是一条 id 打错的规则
+// 会永远躺在列表里：「停用」和「解绑域名」都是**让它不生效**，不是**让它不在**。
+//
+// 前端 agent 报的这个缺口，他的诊断比缺口本身更要紧：
+// **界面上既没有删除按钮、也没说不能删，人会找一圈然后以为是自己没找到。**
+//
+// 删规则在「已删但还没下发」那个窗口里是 fail-closed 方向——节点上那条规则还在拦，
+// 直到下一次下发。删路由在同一个窗口里是 fail-open（节点还在服务那个域名），
+// 而那一个我们早就允许了。
+func TestDeleteRule(t *testing.T) {
+	r := newRig(t)
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "api.example.com", "upstream": r.upstream, "block_mode": "abort",
+	})
+	r.mustDo("PUT", "/rules/typo-rule", map[string]any{
+		"name": "打错了的规则", "type": "ip_whitelist", "enabled": true,
+		"apply_to": []string{"api.example.com"},
+		"spec":     map[string]any{"ips": []string{"203.0.113.7"}},
+	})
+	// 顺手给它留一份草稿，删除要一并清掉。
+	r.mustDo("PUT", "/drafts/rule:typo-rule", map[string]any{"enabled": false})
+
+	r.mustDo("DELETE", "/rules/typo-rule", nil)
+
+	list := r.mustDo("GET", "/rules", nil)
+	var d struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(list.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range d.Items {
+		if it.ID == "typo-rule" {
+			t.Fatalf("删掉的规则还在列表里：%+v", d.Items)
+		}
+	}
+
+	// **草稿要跟着走。** 留一份指向已删资源的草稿，会让「有几处未下发改动」
+	// 这个数字算上一个再也下发不出去的东西——与删路由同一条理由。
+	drafts := r.mustDo("GET", "/drafts", nil)
+	if contains(string(drafts.Data), "rule:typo-rule") {
+		t.Errorf("删规则之后它的草稿还在：%s", drafts.Data)
+	}
+
+	// 删不存在的规则报 404，不假装成功。
+	//
+	// 前端的前提检查脚本就栽在这上面：它用 DELETE 收尾清理，
+	// 而**从没看过返回值**——一个没生效的清理表现成了清理过了。
+	_, e := r.do("DELETE", "/rules/nope", nil)
+	if e.Code != api.CodeNotFound {
+		t.Errorf("删不存在的规则 code = %d，想要 %d", e.Code, api.CodeNotFound)
+	}
+}

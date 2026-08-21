@@ -174,6 +174,37 @@ func (s *Server) handleDeleteRoute(c *gin.Context) {
 	OK(c, gin.H{"deleted": domain, "unbound_rules": unbound})
 }
 
+// handleDeleteRule 删掉一条访问规则。
+//
+// 这个端点原先没有：路由有 PUT|DELETE，规则只有 PUT。于是一条 id 打错的规则
+// 会永远躺在列表里——**「停用」和「解绑域名」都是让它不生效，不是让它不在。**
+//
+// 是前端 agent 撞见的：他的前提检查脚本在库里留了个夹具，删不掉。而他指出的
+// 那一层比缺口本身更要紧——界面上既没有删除按钮、也没说不能删，
+// 人会找一圈然后以为是自己没找到。
+func (s *Server) handleDeleteRule(c *gin.Context) {
+	id := c.Param("id")
+	setAuditTarget(c, id)
+	ctx := c.Request.Context()
+
+	// sealer 传 nil：只是确认它存在，不需要解密共享密钥。
+	if _, err := s.store.GetRule(ctx, id); errors.Is(err, store.ErrNotFound) {
+		Fail(c, CodeNotFound, "没有这条访问规则")
+		return
+	}
+	if err := s.store.DeleteRule(ctx, id); err != nil {
+		s.log.Error("删除访问规则失败", "rule", id, "err", err)
+		Fail(c, CodeDownstream, "删除访问规则失败")
+		return
+	}
+	// 草稿跟着走，与删路由同一条理由：留一份指向已删资源的草稿，
+	// 会让「有几处未下发改动」这个数字算上一个再也下发不出去的东西。
+	if err := s.store.DeleteDraft(ctx, "rule:"+id); err != nil {
+		s.log.Error("清理草稿失败", "rule", id, "err", err)
+	}
+	OK(c, gin.H{"deleted": id})
+}
+
 func (s *Server) handleListRules(c *gin.Context) {
 	// sealer 传 nil：这个端点不解共享密钥。凭证只写入不回显（PRD §7），
 	// spec 里回的是 secret_configured 而不是密钥本身。

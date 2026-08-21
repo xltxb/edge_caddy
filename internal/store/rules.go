@@ -131,3 +131,12 @@ func (s *Store) UnbindDomain(ctx context.Context, domain string) ([]string, erro
 	}
 	return ids, rows.Err()
 }
+
+// DeleteRule 删掉一条访问规则。
+//
+// 规则**没有外键指向它**（apply_to 是域名数组，方向是规则→域名），
+// 所以删除不会留下悬挂引用——不必像删路由那样先解绑。
+func (s *Store) DeleteRule(ctx context.Context, id string) error {
+	_, err := s.Pool.Exec(ctx, `DELETE FROM access_rules WHERE id = $1`, id)
+	return err
+}

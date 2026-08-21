@@ -5,6 +5,8 @@ import { http, errorText } from '@/api/http'
 import type { DnsWeightsWire } from '@/api/types'
 import { isDivergent, lineInputs, mergedWeight, type LineInput } from '@/dns/capability'
 import { useUiStore } from '@/stores/ui'
+import { useNodesStore } from '@/stores/nodes'
+import { participation as whyNotServing } from '@/dns/participation'
 import { isZeroTime } from '@/model'
 import { fmtClock } from '@/utils/format'
 
@@ -43,11 +45,32 @@ async function load(): Promise<void> {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  void load()
+  // 只为拿 drained_at；列表本来就常驻在 store 里，多数情况下不会真的发请求
+  if (!nodes.items.length) void nodes.fetchAll().catch(() => {})
+})
 
 const caps = computed(() => data.value?.capabilities)
 const configured = computed(() => !!caps.value?.kind)
 const sync = computed(() => data.value?.dns_sync)
+
+/*
+ * 为什么这一页要读节点列表：`/dns/weights` 的 entry 只给 `dns_enabled` 与
+ * `status`，**不给「谁让它退出的」**。而这一页恰恰要回答「我配了 40，为什么
+ * 它没在扛流量」—— 人为下线和手动暂停的补救动作完全不同。
+ *
+ * 已请后端考虑在 entry 上给一个原因字段。在那之前从 /nodes 关联 drained_at，
+ * 而不是照 status 猜 —— 猜错的方向恰好是「把人做的事归给系统」。
+ */
+const nodes = useNodesStore()
+const drainedOf = (id: string) => nodes.byId.get(id)?.drainedAt
+
+/** 返回给模板用的两句话；解析开着时两句都是空的（模板那一支不渲染）。 */
+function why(node: string, status: string): { text: string; hint: string } {
+  const p = whyNotServing(false, drainedOf(node), status === 'down')
+  return p.kind === 'active' ? { text: '', hint: '' } : { text: p.text, hint: p.hint }
+}
 
 /** 契约线路码 → 该线路的原始 entries，供合并组取值与算占比。 */
 const byCode = computed(() => {
@@ -259,8 +282,17 @@ async function save(): Promise<void> {
               退出解析的节点要说清「权重还在、但不承载流量」，
               否则看到 weight 40 / share 0 会以为界面算错了。
             -->
-            <span v-if="!entryOf(g, n)?.dns_enabled" class="why">
-              {{ entryOf(g, n)?.status === 'down' ? '离线，已自动退出解析' : '已手动暂停解析' }}
+            <!--
+              「谁让它退出的」由 @/dns/participation 判，有测试。
+              早先这里只凭 status === 'down' 就说「已自动退出解析」——
+              一台被人下线之后又离线的机器会被说成是系统干的。
+            -->
+            <span
+              v-if="!entryOf(g, n)?.dns_enabled"
+              class="why"
+              :title="why(n, entryOf(g, n)?.status ?? '').hint"
+            >
+              {{ why(n, entryOf(g, n)?.status ?? '').text }}
               · 权重保留，不参与分流
             </span>
           </li>

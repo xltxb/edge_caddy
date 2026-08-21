@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -149,6 +150,17 @@ func TestUpstreamCACannotAuthenticateToTunnel(t *testing.T) {
 		})
 	if err == nil {
 		t.Fatal("回源 CA 签的证书不该能通过隧道的客户端校验——两套 CA 就白分了")
+	}
+	// **err != nil 还不够。** 端口分配失败、握手超时、keypair 出错，
+	// 全都会让 err 非 nil，而这条测试想证的是「证书被拒了」，不是「没连上」。
+	//
+	// 这是一条否定断言，它天然会因为装置失效而变绿——旁边的
+	// TestTunnelMTLSHandshakeSucceeds 用同一套装置做正面对照，装置坏了那条会红。
+	// 但那是偶然的兜底：这条自己读起来完全独立。所以把「因为什么失败」也钉住。
+	if !strings.Contains(err.Error(), "certificate") &&
+		!strings.Contains(err.Error(), "bad certificate") &&
+		!strings.Contains(err.Error(), "tls:") {
+		t.Fatalf("失败原因得是证书被拒，而不是别的什么故障：%v", err)
 	}
 }
 

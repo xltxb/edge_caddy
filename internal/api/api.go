@@ -158,6 +158,7 @@ func New(o Options) *gin.Engine {
 
 	authed.GET("/rules", s.handleListRules)
 	authed.PUT("/rules/:id", audited("修改访问规则", s.handleUpsertRule))
+	authed.DELETE("/rules/:id", audited("删除访问规则", s.handleDeleteRule))
 
 	authed.GET("/policies/:id", s.handleGetPolicy)
 	authed.PUT("/policies/:id", audited("修改全局策略", s.handlePutPolicy))
