@@ -54,6 +54,42 @@ def scan(paths):
     return found
 
 
+def check_index():
+    """scripts/README.md 那份索引必须与真实存在的脚本**双向**一致。
+
+    一份手写的索引正是最会过期的东西，而**索引过期不会有任何东西报错**——
+    它只在有人照它做的时候才显形。
+
+    双向是关键。只查「索引提到的都存在」的话，「加了脚本忘了写索引」
+    永远不会被发现——而那正是索引最常见的坏法。
+
+    （前端 agent 先做的这一条，他指出它跟 contractEndpoints 那张表是同一个
+    形状：「契约有而路由没有」和「路由有而契约没有」都要查。）
+    """
+    readme = ROOT / "scripts" / "README.md"
+    if not readme.exists():
+        print("  ✗ scripts/README.md 不见了 —— 那份索引是这些脚本唯一的入口")
+        return 1
+    text = readme.read_text(encoding="utf-8")
+
+    real = {p.name for p in (ROOT / "scripts").iterdir()
+            if p.suffix in (".py", ".sh") and p.name != "README.md"}
+    real.add("edge-node_test.sh")  # 它住在 deploy/，但索引里该有它
+
+    bad = 0
+    for name in sorted(real):
+        if name not in text:
+            print(f"  ✗ {name} 存在，而索引里没有它")
+            bad += 1
+    for m in re.finditer(r'scripts/(\w[\w.-]*\.(?:py|sh))', text):
+        if m.group(1) not in real:
+            print(f"  ✗ 索引指着 scripts/{m.group(1)}，而它不在了")
+            bad += 1
+    if not bad:
+        print(f"  ✓ 索引与 {len(real)} 个脚本双向一致")
+    return bad
+
+
 def go_files():
     return sorted(
         p for d in ("internal", "cmd")
@@ -114,7 +150,10 @@ def main():
     if found:
         print("\n  把结论提到第一句，复盘放它后面 —— 复盘有价值，"
               "它只是不该占第一句。")
-    return 1 if found else 0
+
+    print()
+    bad = check_index()
+    return 1 if (found or bad) else 0
 
 
 if __name__ == "__main__":

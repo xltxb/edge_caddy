@@ -11,6 +11,17 @@ import (
 
 // TestMigrateCreatesSchema 是这一层最基础的断言：迁移能在一个空库上跑到底。
 // 它同时是 ADR-0011 兑现的地方——跑的是真 PostgreSQL 16，不是内存替身。
+//
+// **它保的是「迁移跑得完」，不是「这些表有用」。** 那两件事隔着一整个世界，
+// 而这条测试的绿色很容易被读成后者。
+//
+// 真发生过：`traffic_samples` 在这张清单里躺了很久，而那段时间**没有任何
+// 代码写它或读它**。任何人查到那张表，第一眼会看到「有测试覆盖」——
+// 一条一直绿的测试，替一个从没被使用的表作了很久的保。
+//
+// 「表还有没有人用」由 `scripts/unread.py` 回答，不由这里回答。
+// 前端 agent 那句值得照抄：**一条测试保的到底是什么，得写在测试里，
+// 而不是靠读的人推断。**
 func TestMigrateCreatesSchema(t *testing.T) {
 	s := testdb.New(t)
 	ctx := context.Background()
