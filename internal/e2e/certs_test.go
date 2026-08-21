@@ -207,3 +207,132 @@ func TestUpstreamMTLSCertIsDistributedAndAccepted(t *testing.T) {
 		t.Fatalf("得到 %d %q，想要请求能走到回源（200 或 502）", code, body)
 	}
 }
+
+// 访问规则与全局策略的读写。前端工作台的另外两栏靠它们。
+func TestRulesAndPoliciesRoundTrip(t *testing.T) {
+	r := newRig(t)
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "api.example.com", "upstream": r.upstream, "block_mode": "abort",
+	})
+
+	// 全局策略始终存在，即使没人改过 —— 资源树里那两栏不该因此消失。
+	for _, id := range []string{"tls", "log"} {
+		e := r.mustDo("GET", "/policies/"+id, nil)
+		var p struct {
+			ID   string          `json:"id"`
+			Name string          `json:"name"`
+			Spec json.RawMessage `json:"spec"`
+		}
+		if err := json.Unmarshal(e.Data, &p); err != nil {
+			t.Fatal(err)
+		}
+		if p.ID != id || p.Name == "" || len(p.Spec) == 0 {
+			t.Fatalf("策略 %s = %+v", id, p)
+		}
+	}
+
+	r.mustDo("PUT", "/policies/tls", map[string]any{
+		"spec": map[string]any{"min_version": "1.3", "hsts": true},
+	})
+	back := r.mustDo("GET", "/policies/tls", nil)
+	if !contains(string(back.Data), `"min_version":"1.3"`) {
+		t.Fatalf("策略没保存对: %s", back.Data)
+	}
+
+	// 只有 tls 与 log 两条。
+	if _, e := r.do("GET", "/policies/nope", nil); e.Code == 0 {
+		t.Fatal("不存在的策略 id 应当被拒绝")
+	}
+
+	// 访问规则：IP 白名单。
+	r.mustDo("PUT", "/rules/office-wl", map[string]any{
+		"name": "办公网白名单", "type": "ip_whitelist", "enabled": true,
+		"apply_to": []string{"api.example.com"},
+		"spec":     map[string]any{"ips": []string{"203.0.113.7", "10.8.0.0/24"}},
+	})
+	list := r.mustDo("GET", "/rules", nil)
+	var d struct {
+		Items []struct {
+			ID      string   `json:"id"`
+			Type    string   `json:"type"`
+			ApplyTo []string `json:"apply_to"`
+			Spec    struct {
+				IPs              []string `json:"ips"`
+				SecretConfigured bool     `json:"secret_configured"`
+			} `json:"spec"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(list.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Items) != 1 || d.Items[0].ID != "office-wl" || len(d.Items[0].Spec.IPs) != 2 {
+		t.Fatalf("规则没保存对: %+v", d.Items)
+	}
+}
+
+// 服务密钥的共享密钥只写入不回显（PRD §7），且**空串表示保持不变**——
+// 前端不回显它，提交时也带不出原值来。
+func TestRuleSecretIsWriteOnly(t *testing.T) {
+	r := newRig(t)
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "api.example.com", "upstream": r.upstream, "block_mode": "abort",
+	})
+	const secret = "SHARED-SECRET-XYZ"
+
+	r.mustDo("PUT", "/rules/svc-1", map[string]any{
+		"name": "服务密钥", "type": "service_secret", "enabled": true,
+		"apply_to": []string{"api.example.com"},
+		"spec":     map[string]any{"header": "X-Service-Key", "algo": "hmac-sha256", "ttl_s": 300},
+		"secret":   secret,
+	})
+
+	list := r.mustDo("GET", "/rules", nil)
+	if contains(string(list.Data), "SHARED-SECRET") {
+		t.Fatalf("GET /rules 回显了共享密钥: %s", list.Data)
+	}
+	if !contains(string(list.Data), `"secret_configured":true`) {
+		t.Fatalf("应当说明密钥已配置: %s", list.Data)
+	}
+
+	// 不带密钥再保存一次：既不该抹掉密钥，也不该因为「缺密钥」而校验失败。
+	r.mustDo("PUT", "/rules/svc-1", map[string]any{
+		"name": "服务密钥（改名）", "type": "service_secret", "enabled": true,
+		"apply_to": []string{"api.example.com"},
+		"spec":     map[string]any{"header": "X-Service-Key", "algo": "hmac-sha256", "ttl_s": 300},
+	})
+	again := r.mustDo("GET", "/rules", nil)
+	if !contains(string(again.Data), `"secret_configured":true`) {
+		t.Fatal("不带密钥的保存把已配置的密钥抹掉了 —— 前端根本带不出原值来")
+	}
+}
+
+// 删除路由**联动**摘除访问规则里的绑定。
+// 留着一条指向已删域名的绑定，会让人以为那个域名还受保护。
+func TestDeleteRouteUnbindsRules(t *testing.T) {
+	r := newRig(t)
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "gone.example.com", "upstream": r.upstream, "block_mode": "abort",
+	})
+	r.mustDo("PUT", "/rules/wl", map[string]any{
+		"name": "白名单", "type": "ip_whitelist", "enabled": true,
+		"apply_to": []string{"gone.example.com"},
+		"spec":     map[string]any{"ips": []string{"203.0.113.7"}},
+	})
+
+	e := r.mustDo("DELETE", "/routes/gone.example.com", nil)
+	var d struct {
+		Deleted      string   `json:"deleted"`
+		UnboundRules []string `json:"unbound_rules"`
+	}
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Deleted != "gone.example.com" || len(d.UnboundRules) != 1 || d.UnboundRules[0] != "wl" {
+		t.Fatalf("应当报出被摘除绑定的规则: %+v", d)
+	}
+
+	list := r.mustDo("GET", "/rules", nil)
+	if contains(string(list.Data), "gone.example.com") {
+		t.Fatalf("规则里还留着已删域名的绑定: %s", list.Data)
+	}
+}

@@ -114,9 +114,16 @@ func New(o Options) *gin.Engine {
 	authed.GET("/auth/session", s.handleSession)
 
 	// WS 复用会话 Cookie，因此挂在 authed 组里：未登录直接 401，不升级（契约 §0.6）。
-	if o.Hub != nil {
-		authed.GET("/ws", gin.WrapF(ws.Handler(o.Hub, o.Log)))
-	}
+	//
+	// **无条件注册。** 条件注册意味着装配漏了 Hub 时这个端点会静默 404，
+	// 而 404 读起来是「没实现」而不是「配错了」——排查方向完全不同。
+	authed.GET("/ws", func(c *gin.Context) {
+		if o.Hub == nil {
+			Fail(c, CodeStateConflict, "实时通道未装配")
+			return
+		}
+		ws.Handler(o.Hub, o.Log)(c.Writer, c.Request)
+	})
 
 	authed.GET("/overview", s.handleOverview)
 	authed.GET("/audit", s.handleAudit)
@@ -143,6 +150,14 @@ func New(o Options) *gin.Engine {
 
 	authed.GET("/routes", s.handleListRoutes)
 	authed.POST("/routes", audited("新建路由", s.handleCreateRoute))
+	authed.PUT("/routes/:domain", audited("修改路由", s.handleUpdateRoute))
+	authed.DELETE("/routes/:domain", audited("删除路由", s.handleDeleteRoute))
+
+	authed.GET("/rules", s.handleListRules)
+	authed.PUT("/rules/:id", audited("修改访问规则", s.handleUpsertRule))
+
+	authed.GET("/policies/:id", s.handleGetPolicy)
+	authed.PUT("/policies/:id", audited("修改全局策略", s.handlePutPolicy))
 
 	authed.GET("/drafts", s.handleListDrafts)
 	authed.PUT("/drafts/:key", audited("修改草稿", s.handlePutDraft))
