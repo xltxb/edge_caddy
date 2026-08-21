@@ -1,6 +1,8 @@
 package api_test
 
 import (
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -66,6 +68,30 @@ var contractEndpoints = []string{
 	"POST /api/v1/alerts/test",
 }
 
+// unimplementedEndpoints 是**契约里写了、刻意没有实现**的端点。
+//
+// 「未实现的端点不注册，也不给返回空数据的桩」是个刻意的决定（契约 §0）：
+// 桩会被读成「还没有数据」，404 才说得出「这个端点还没做」。
+//
+// 但那条原则此前没有任何东西守着，于是 GET /nodes/:id/logs 在契约里躺了很久
+// ——格式完整、看不出异样、从来没注册过，而 contractEndpoints 那张**手工维护**
+// 的清单漏了它。**一份用来防止人忘记的清单，自己被忘了。**
+//
+// 现在它进清单，但进的是这一格：下面那条测试断言它**确实没有注册**。
+var unimplementedEndpoints = []string{
+	// 要实现它得有整条日志链路（Agent 上报 LogBatch → 主控存 → 这个端点查），
+	// 而 proto 里的 LogBatch 至今也没人接。
+	"GET /api/v1/nodes/:id/logs",
+}
+
+// contractMentionExemptions 是契约全文里形如 `METHOD /path` 但**不是端点声明**
+// 的片段。每一条都要写清为什么豁免 —— 一个没有理由的豁免列表会变成垃圾桶，
+// 而垃圾桶里迟早会躺着一个真的遗漏。
+var contractMentionExemptions = map[string]string{
+	"PUT /routes/nope.com":                "错误码表里的例子，不是端点声明",
+	"POST /deploys/:cfg_version/rollback": "同一端点的另一种写法，实现里参数名是 :id",
+}
+
 func registered(r *gin.Engine) map[string]bool {
 	out := map[string]bool{}
 	for _, ri := range r.Routes() {
@@ -107,6 +133,64 @@ func TestAllContractEndpointsAreRegistered(t *testing.T) {
 //
 // 所以自己也带一句自检。前端 agent 给这个形状起了个名字，值得照抄：
 // **否定断言天然会因为装置失效而变绿。**
+// **契约里提到的端点，都要在上面那两张清单之一里。**
+//
+// 这条守的是那两张清单本身。它们是手工维护的，而 GET /nodes/:id/logs 证明了
+// 手工维护的清单会被忘 —— 忘掉之后，「契约与实现一致」这件事就没人在看了，
+// 而两条端点测试照旧全绿。
+//
+// 从契约**自动生成**清单更彻底，但这份文档里端点的写法不统一
+// （有的是 ### 标题，有的在正文里、在错误码表的例子里），
+// 全自动会把例子当成端点、把变体当成遗漏。所以是宽松扫描 + 具名豁免。
+func TestEveryEndpointMentionedInContractIsAccountedFor(t *testing.T) {
+	raw, err := os.ReadFile("../../docs/api-contract.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mentions := regexp.MustCompile("`(GET|POST|PUT|DELETE|PATCH) (/[^`\\s]*)`").
+		FindAllStringSubmatch(string(raw), -1)
+	// 装置自检：这份文档理应提到几十个端点。解析不出来的话，
+	// 下面那个「都在清单里」会因为什么都没扫到而成立。
+	if len(mentions) < 30 {
+		t.Fatalf("只从契约里扫出 %d 处端点提及 —— 这份文档不是我们以为的东西，"+
+			"下面的断言什么也没在检查", len(mentions))
+	}
+
+	known := map[string]bool{}
+	for _, e := range append(append([]string{}, contractEndpoints...), unimplementedEndpoints...) {
+		known[e] = true
+	}
+	var missing []string
+	for _, m := range mentions {
+		key := m[1] + " /api/v1" + m[2]
+		if known[key] || contractMentionExemptions[m[1]+" "+m[2]] != "" {
+			continue
+		}
+		missing = append(missing, key)
+	}
+	if len(missing) > 0 {
+		t.Errorf("契约里提到这些端点，而两张清单都没有它们：\n  %s\n"+
+			"要么加进 contractEndpoints（已实现），要么加进 unimplementedEndpoints"+
+			"（刻意没做），要么加进 contractMentionExemptions 并写清为什么不是端点。",
+			strings.Join(missing, "\n  "))
+	}
+}
+
+// **刻意未实现的端点，必须确实没有注册。**
+//
+// 「不给返回空数据的桩」这条原则此前只写在契约里。写在文档里的原则
+// 不会红，而一个悄悄加上的桩会让前端读成「还没有数据」。
+func TestUnimplementedEndpointsAreReallyAbsent(t *testing.T) {
+	r, _ := newServer(t)
+	have := registered(r)
+	for _, e := range unimplementedEndpoints {
+		if have[e] {
+			t.Errorf("%s 标着未实现，却注册了 —— 要么把它从 unimplementedEndpoints "+
+				"挪进 contractEndpoints，要么它是个不该存在的桩", e)
+		}
+	}
+}
+
 func TestNoUndocumentedEndpoints(t *testing.T) {
 	r, _ := newServer(t)
 	if n := len(r.Routes()); n < len(contractEndpoints) {
