@@ -190,13 +190,8 @@ def run_test(pkg, test):
     return ran, failed, "".join(output) + p.stderr
 
 
-def main():
-    only = sys.argv[1] if len(sys.argv) > 1 else ""
-    probes = [p for p in PROBES if only in p.name]
-    if not probes:
-        print(f"没有名字含 {only!r} 的探针")
-        return 1
-
+def run_probes(probes):
+    """跑一批探针，返回 [(probe, verdict, detail)] 与被碰过的文件快照。"""
     touched, results = [], []
     for p in probes:
         path = ROOT / p.file
@@ -243,7 +238,82 @@ def main():
             results.append((p, "ok", ""))
         finally:
             path.write_text(original, encoding="utf-8")
+    return results, touched
 
+
+def restore_check(touched):
+    """收尾自检：源码必须还原成探针找到它时的样子。
+
+    **不用 git。** `git diff` 问的是「相对 HEAD 脏不脏」，而这里要问的是
+    「探针有没有还原它自己的改动」——文件本来就有未提交改动时两者分岔，
+    那时 git 会冤枉一个干得很好的探针。拿了个相邻问题的答案，
+    就会在边缘情况上得到错的结论，而边缘情况正是你需要它的时候。
+    """
+    return [str(path.relative_to(ROOT)) for path, orig in touched
+            if path.read_text(encoding="utf-8") != orig]
+
+
+def self_test():
+    """**探针脚本自己也要被检查。**
+
+    这三种失败是我在写这个脚本的过程中真实撞上的，不是设想出来的：
+    第四问那次，我的临时改动因为一个 TypeError 根本没落进文件，
+    而我看到「11/11 通过」就往下走了。
+
+    手工跑一遍自检然后忘掉，跟固化探针之前的状态一模一样 —— 所以固化它。
+
+    这一层封顶是合理的：产品代码的失败模式无穷，而这个脚本只有四问、
+    每问只有一种失败方式，可以枚举完。
+    """
+    real = PROBES[2]  # 心跳那条：跑得快，且不需要 Caddy
+    cases = [
+        ("改坏是无害的", Probe(real.name, real.why, real.file, real.old, real.old,
+                          real.pkg, real.test, real.expect_line), "没红"),
+        ("期望片段对不上", Probe(real.name, real.why, real.file, real.old, real.new,
+                           real.pkg, real.test, "某句永远不会出现的话"), "红在别处"),
+        ("要替换的片段不存在", Probe(real.name, real.why, real.file, "这段代码不存在",
+                             real.new, real.pkg, real.test, real.expect_line),
+         "改坏没匹配到"),
+        ("目标测试名写错", Probe(real.name, real.why, real.file, real.old, real.new,
+                          real.pkg, real.test + "TYPO", real.expect_line),
+         "一条测试都没跑"),
+    ]
+    bad = 0
+    for label, probe, want in cases:
+        results, touched = run_probes([probe])
+        got = results[0][1]
+        mark = "✓" if got == want else "✗"
+        if got != want:
+            bad += 1
+        print(f"  {mark} {label} → 应报「{want}」，实际「{got}」")
+        if dirty := restore_check(touched):
+            print(f"     ✗ 而且没还原干净：{dirty}")
+            bad += 1
+
+    # 第五种：还原自身失效。这一条只能直接测 restore_check ——
+    # 它是唯一一个「探针跑完之后」才能问的问题。
+    probe_file = ROOT / "scripts" / "probes.py"
+    fake_touched = [(probe_file, probe_file.read_text(encoding="utf-8") + "\n# 假的原始内容")]
+    if restore_check(fake_touched) != ["scripts/probes.py"]:
+        print("  ✗ 还原自检认不出被改过的文件")
+        bad += 1
+    else:
+        print("  ✓ 还原自检认得出被改过的文件")
+
+    print(f"\n  自检 {5 - bad}/5 通过")
+    return 1 if bad else 0
+
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--self-test":
+        return self_test()
+    only = sys.argv[1] if len(sys.argv) > 1 else ""
+    probes = [p for p in PROBES if only in p.name]
+    if not probes:
+        print(f"没有名字含 {only!r} 的探针")
+        return 1
+
+    results, touched = run_probes(probes)
     ok = sum(1 for _, verdict, _ in results if verdict == "ok")
     for p, verdict, detail in results:
         mark = "✓" if verdict == "ok" else "✗"
@@ -252,12 +322,11 @@ def main():
             print(f"     {detail}")
             print(f"     它保护的是：{p.why}")
 
-    # 收尾自检：源码必须还原干净。
+    # 收尾自检：源码必须还原成探针找到它时的样子。
     #
     # **一个会留下损伤的探针比没有探针更糟**——它不只是自己不可信，
     # 它让后面所有测试的结论也变得不可信，因为那些测试跑的不是真正的源码。
-    dirty = [str(path.relative_to(ROOT)) for path, orig in touched
-             if path.read_text(encoding="utf-8") != orig]
+    dirty = restore_check(touched)
     print(f"\n  探针 {ok}/{len(results)} 通过")
     if dirty:
         print("\n  ✗ 源码没还原干净，工作区被污染了：")

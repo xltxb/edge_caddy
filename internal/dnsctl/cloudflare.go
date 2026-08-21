@@ -324,6 +324,14 @@ func (c *Cloudflare) call(ctx context.Context, method, path string, body, out an
 	}
 
 	var env cfEnvelope
+	// **丢弃这个错误是安全的，理由在下一行。**
+	//
+	// 解析失败时 env.Success 保持零值 false，紧接着的 !env.Success 就会
+	// 进错误分支，并把原始响应体原样带出去（Cloudflare 返回 HTML 错误页时
+	// 正是这条路）。丢弃它不会变成一次静默的成功。
+	//
+	// 写下这条是因为这个关系是**隐式**的：读的人得自己往下看一行才能推出来，
+	// 而「丢弃错误」这个动作本身长得跟真正的疏忽一模一样。
 	_ = json.Unmarshal(raw, &env)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !env.Success {
 		msg := strings.TrimSpace(string(raw))
