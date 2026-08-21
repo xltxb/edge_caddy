@@ -85,20 +85,39 @@ async function copy(): Promise<void> {
           </button>
         </div>
         <!--
-          这三条说的是**这条命令能跑起来的前提**，不是泛泛的最佳实践。
-          原来第三条写的是「安装脚本会校验主控 CA 指纹」—— 那是编的：没有安装
-          脚本，指纹就明晃晃在上面这条命令的 --ca-pin 里。把一个真实的保护
-          归功于一个不存在的东西，人就不会注意到那串指纹是不能改的。
+          这几条说的是**这条命令能跑起来的前提**，不是泛泛的最佳实践。
+
+          头两条是同一类：命令里的 `./edge-node.sh` 和 `--agent-bin ./edge-agent`
+          都是相对路径，都假定那个文件已经在当前目录。谁也不负责把它们送上去，
+          而不说的话，这条「复制粘贴即可」的命令会在一台远程机器上以
+          「没有那个文件」失败 —— 在人以为一切就绪的时候。
+
+          Admin 的监听地址早先写在这里当前提，现在归脚本了（drop-in 里钉死，
+          verify 会真的查一遍），所以只留「装了官方 Caddy」这半句。
         -->
         <ul class="checklist">
-          <li>目标机器上已经有 <code>edge-agent</code> 二进制 —— 这条命令不负责下载它</li>
+          <li>
+            当前目录下有 <code>edge-node.sh</code> 与 <code>edge-agent</code> ——
+            命令里那两个相对路径指的就是它们，<b>脚本不负责下载二进制</b>
+          </li>
           <li>目标机器可以外连主控的 9000 端口（Agent 主动外连，无需入站放行）</li>
-          <li>机器上已安装官方 Caddy，Admin 只监听 127.0.0.1:2019</li>
+          <li>机器上已安装官方 Caddy（Admin 收到 127.0.0.1:2019 由脚本负责）</li>
           <li>
             命令里的 <code>--ca-pin</code> 是主控的 CA 指纹，<b>不要改也不要省</b>：
             少了它，首连就是纯 TOFU，中间人可以在那一刻把 Token 骗走。
           </li>
         </ul>
+
+        <!--
+          verify 不在 install_cmd 里，照「复制命令」做的人不会跑到它。
+          而它查的两件事处置完全不同：Caddy 没起来，和 Admin 监听在了对外地址上
+          —— 后者是私钥暴露（证书私钥以 load_pem 内联在运行配置里，能读 Admin
+          就能读到）。不提这一步，那道检查等于不存在。
+        -->
+        <p class="verify">
+          装完之后跑一遍 <code>sudo ./edge-node.sh verify</code>：它会真的去查
+          Agent 是否接上、Caddy Admin 有没有监听在不该监听的地方。
+        </p>
         <div class="actions">
           <button class="primary" type="button" @click="emit('close')">完成</button>
         </div>
@@ -189,6 +208,20 @@ input:focus {
   font-size: var(--fs-micro);
   color: var(--text-faint);
   margin-bottom: var(--space-4);
+}
+.verify {
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 2px solid var(--accent);
+  background: var(--surface-sunken, var(--bg-subtle));
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  line-height: 1.7;
+}
+.verify code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--text-body);
 }
 .checklist code {
   font-family: var(--font-mono);

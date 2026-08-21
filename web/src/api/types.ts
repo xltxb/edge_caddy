@@ -397,7 +397,22 @@ export interface CertWire {
 export interface NodeTokenWire {
   /** 仅此一次可见，任何后续接口都不回显。 */
   token: string
+  /**
+   * 主控隧道 CA 的指纹。与 token 不同，它**不是**秘密，也不随这次签发变化。
+   *
+   * 单独给一份是因为 `install_cmd` 是**一条要执行的命令**，不是「两个值的来源」——
+   * 要单独取值就取这两个字段，不要去解析那条命令。
+   */
+  ca_pin: string
   expires_at: string
+  /**
+   * 完整的安装命令，脚本形式。
+   *
+   * **不是裸的 `edge-agent …`。** 裸命令跑得起来，但跑起来是前台进程、没有
+   * systemd 单元、没有 `Restart=always`——而受保护域名的 fail-closed 依赖
+   * Agent 存活（ADR-0003）。发一条绕过它的命令，等于让人有机会省掉这个
+   * 脚本存在的理由。
+   */
   install_cmd: string
 }
 
