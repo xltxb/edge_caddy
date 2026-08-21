@@ -111,6 +111,21 @@ export async function handleConfig(req: IncomingMessage, res: ServerResponse): P
   }
   if (m === 'GET' && path === '/api/v1/rules') return paged(res, state.rules), true
 
+  const rule = /^\/api\/v1\/rules\/([^/]+)$/.exec(path)
+  if (m === 'DELETE' && rule) {
+    const id = decodeURIComponent(rule[1]!)
+    const i = state.rules.findIndex((r) => r.id === id)
+    // 删不存在的要报 1003，不能假装成功 —— 假装成功会让「删掉了」和
+    // 「压根没有过」在界面上长得一模一样
+    if (i < 0) return json(res, { code: 1003, data: null, msg: '没有这条访问规则' }), true
+    state.rules.splice(i, 1)
+    // 草稿一并清掉：留一份指向已删资源的草稿，会让「有几处未下发改动」
+    // 算上一个再也下发不出去的东西
+    delete state.drafts[`rule:${id}`]
+    delete state.draftMeta[`rule:${id}`]
+    return ok(res, { deleted: id }), true
+  }
+
   const pol = /^\/api\/v1\/policies\/(tls|log)$/.exec(path)
   if (m === 'GET' && pol) {
     const p = state.policies.find((x) => x.id === pol[1])

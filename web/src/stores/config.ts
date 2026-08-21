@@ -270,6 +270,21 @@ export const useConfigStore = defineStore('config', () => {
     await fetchAll().catch(() => {})
   }
 
+  /**
+   * 删除一条访问规则。
+   *
+   * 后端会连同这条规则的草稿一起清掉 —— 留一份指向已删资源的草稿，会让顶栏的
+   * 「有几处未下发改动」算上一个再也下发不出去的东西。所以本地也要跟着清，
+   * 否则那个数字要等到下次 fetchAll 才对得上。
+   */
+  async function deleteRule(id: string): Promise<void> {
+    await http.del(`/rules/${id}`)
+    const copy = { ...patches.value }
+    delete copy[`rule:${id}`]
+    patches.value = copy
+    await fetchAll().catch(() => {})
+  }
+
   /** 下发成功后清掉已下发的那几条，并把版本推进。 */
   function commit(keys: string[]): void {
     const copy = { ...patches.value }
@@ -279,6 +294,7 @@ export const useConfigStore = defineStore('config', () => {
 
   return {
     setRuleSecret,
+    deleteRule,
     routes,
     rules,
     policies,

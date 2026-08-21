@@ -36,6 +36,8 @@ describe('为什么这个节点没在扛流量', () => {
   it('没下线过 + 离线：陈述观察，不断言因果', () => {
     const p = participation(false, null, true)
     expect(p.kind).toBe('paused')
+    // 「离线」是可观察的事实，进正文；「所以才被摘的」是因果，不进
+    expect(p.kind === 'paused' && p.text).toContain('离线')
     const hint = p.kind === 'paused' ? p.hint : ''
     expect(hint).toContain('离线')
     expect(hint).toContain('若') // 条件句，不是断言

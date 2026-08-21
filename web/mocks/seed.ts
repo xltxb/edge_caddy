@@ -69,6 +69,7 @@ const node = (
   rules: number,
   dns_enabled: boolean,
   cpu_series: number[],
+  drained_at: string | null = null,
 ): NodeWire => ({
   id,
   city,
@@ -86,7 +87,7 @@ const node = (
   drift: cfg_version !== BASELINE,
   dns_enabled,
   // 下线是**意图**，与 status 各记各的（CONTEXT.md）。默认没人下过线。
-  drained_at: null,
+  drained_at,
   routes,
   rules,
   created_at: ago(86_400 * 20),
@@ -98,7 +99,7 @@ export const nodes: NodeWire[] = [
   node('node-kr-01', '首尔', 'Kdatacenter', 'KT · SK Direct', '158.247.220.94', 'warn', 81.4, 74.2, 31200, 2.1, BASELINE, 4, 3, true, [48, 55, 61, 58, 66, 72, 69, 75, 79, 83, 80, 81]),
   // 漂移节点：routes/rules 停在旧配置的数字上，这正是它有用的地方
   node('node-tw-01', '台北', 'MoonVM', 'HiNet 直连', '103.40.16.203', 'warn', 12.0, 22.5, 2100, 14, PREV, 2, 3, true, [18, 16, 20, 17, 19, 15, 18, 0, 0, 0, 12, 12]),
-  node('node-de-01', '法兰克福', 'Hetzner CX42', '国际 BGP', '116.202.75.31', 'ok', 9.7, 28.1, 6700, 1.5, BASELINE, 4, 3, true, [12, 10, 14, 11, 9, 13, 10, 8, 11, 9, 10, 10]),
+  node('node-de-01', '法兰克福', 'Hetzner CX42', '国际 BGP', '116.202.75.31', 'ok', 9.7, 28.1, 6700, 1.5, BASELINE, 4, 3, false, [12, 10, 14, 11, 9, 13, 10, 8, 11, 9, 10, 10], '2026-08-21T09:40:00+08:00'),
   node('node-us-01', '洛杉矶', 'Contabo', '国际 BGP', '194.238.19.62', 'down', 0, 0, 0, 372, PREV, 2, 3, false, [14, 12, 15, 13, 11, 14, 9, 0, 0, 0, 0, 0]),
 ]
 
@@ -147,6 +148,10 @@ export const routes: RouteWire[] = [
 export const rules: RuleWire[] = [
   { id: 'office-wl', name: '办公出口白名单', type: 'ip_whitelist', enabled: true, version: 4, spec: { ips: ['203.0.113.7', '198.51.100.24', '192.0.2.15', '203.0.113.88', '198.51.100.161', '10.8.0.0/24'] }, apply_to: ['api.example.com', 'admin.example.com'] },
   { id: 'partner-secret', name: '合作方服务密钥', type: 'service_secret', enabled: true, version: 2, spec: { header: 'X-Service-Secret', algo: 'hmac-sha256', ttl_s: 300, replay_protection: true, secret_configured: true }, apply_to: ['api.example.com'] },
+  // 故意留一条**未绑定域名**的规则：它是半成品状态（契约 §6.2），
+  // 而一个夹具表达不了的状态，等于在开发期不存在 —— 界面上那条「未绑定域名」
+  // 分支、以及删除弹层里「本来就不生效」那一支，都靠它才走得到。
+  { id: 'staging-wl', name: '预发环境白名单', type: 'ip_whitelist', enabled: true, version: 1, spec: { ips: ['198.51.100.200'] }, apply_to: [] },
   { id: 'app-jwt', name: 'App 客户端 JWT', type: 'jwt_bearer', enabled: true, version: 6, spec: { iss: 'https://auth.example.com/', aud: 'edge-api', jwks_url: 'https://auth.example.com/.well-known/jwks.json', skew_s: 60 }, apply_to: ['api.example.com', 'push.example.com'] },
 ]
 

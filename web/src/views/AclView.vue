@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useConfigStore } from '@/stores/config'
 import { errorText } from '@/api/http'
@@ -54,6 +54,31 @@ function statusOf(r: RuleWire): { text: string; tone: 'ok' | 'warn' } {
     return { text: '未设置密钥', tone: 'warn' }
   }
   return { text: '生效中', tone: 'ok' }
+}
+
+/* ── 删除规则 ── */
+
+const removing = ref<string | null>(null)
+const removeBusy = ref(false)
+const removeError = ref<string | null>(null)
+
+const removeTarget = computed(() =>
+  removing.value ? config.rules.find((r) => r.id === removing.value) : undefined,
+)
+
+async function confirmRemove(): Promise<void> {
+  const id = removing.value
+  if (!id) return
+  removeBusy.value = true
+  removeError.value = null
+  try {
+    await config.deleteRule(id)
+    removing.value = null
+  } catch (e) {
+    removeError.value = errorText(e, '删除失败')
+  } finally {
+    removeBusy.value = false
+  }
 }
 
 /* ── 设置共享密钥（直写，不进草稿）── */
@@ -158,6 +183,7 @@ function edit(id: string): void {
               更换密钥
             </button>
             <button class="mini" type="button" @click="edit(r.id)">在工作台编辑</button>
+            <button class="mini danger" type="button" @click="removing = r.id">删除</button>
           </td>
           </tr>
 
@@ -188,10 +214,82 @@ function edit(id: string): void {
       </tbody>
     </table>
   </section>
+
+  <!--
+    删除要确认，而确认框要说清**那个时间差**：规则从控制台消失，但节点上那条
+    还在拦，直到下一次下发。方向是 fail-closed（拦多了不是漏了），所以不算险，
+    但不说的话，人删完会以为立刻不拦了，然后去试一个「应该能过」的请求。
+  -->
+  <div v-if="removeTarget" class="mask" @click.self="removing = null">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="删除访问规则">
+      <div class="modal-title">删除 {{ removeTarget.name }}</div>
+      <p class="modal-note">
+        <b class="mono">{{ removeTarget.id }}</b> 会从控制台移除，它的未下发草稿一并清掉。
+      </p>
+      <p v-if="removeTarget.apply_to.length" class="modal-note warn">
+        这条规则当前绑在 {{ removeTarget.apply_to.join('、') }} 上。<b>删除不会立刻停止拦截</b>
+        —— 节点上那份配置里它还在，直到下一次下发把新配置推下去。
+      </p>
+      <p v-else class="modal-note">这条规则没有绑定域名，本来就不生效。</p>
+      <p v-if="removeError" class="secret-err">{{ removeError }}</p>
+      <div class="modal-actions">
+        <button class="mini" type="button" @click="removing = null">取消</button>
+        <button class="mini danger" type="button" :disabled="removeBusy" @click="confirmRemove">
+          {{ removeBusy ? '删除中…' : '确认删除' }}
+        </button>
+      </div>
+    </div>
+  </div>
 </template>
 
 <style scoped>
 @import './catalog.css';
+.mask {
+  position: fixed;
+  inset: 0;
+  background: var(--surface-overlay);
+  z-index: var(--z-modal);
+  display: grid;
+  place-items: center;
+  padding: var(--space-6);
+}
+.modal {
+  width: min(460px, 100%);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl);
+  padding: var(--space-5);
+}
+.modal-title {
+  font-family: var(--font-mono);
+  font-size: var(--fs-base);
+  font-weight: var(--weight-bold);
+  color: var(--text-strong);
+  margin-bottom: var(--space-3);
+}
+.modal-note {
+  margin: 0 0 var(--space-2-5, 10px);
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  line-height: 1.7;
+}
+.modal-note.warn {
+  color: var(--warning-text);
+}
+.modal-note b {
+  color: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+.modal-note.warn b {
+  color: var(--warning-text);
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
 .secret-row td {
   background: var(--surface-sunken, var(--bg-subtle));
 }
