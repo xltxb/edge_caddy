@@ -143,7 +143,7 @@ func TestHeartbeatDoesNotClearDrainedMark(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetNodeDrained(ctx, "node-a", true); err != nil {
+	if err := s.SetNodeDrained(ctx, "node-a", true, "abiu"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -189,7 +189,7 @@ func TestMarkingDownDoesNotClearDrainedMark(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetNodeDrained(ctx, "node-a", true); err != nil {
+	if err := s.SetNodeDrained(ctx, "node-a", true, "abiu"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetNodeDown(ctx, "node-a"); err != nil {

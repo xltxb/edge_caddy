@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/xltxb/edge_caddy/internal/dnsops"
+	"github.com/xltxb/edge_caddy/internal/store"
 )
 
 func queryInt(c *gin.Context, key string, def int) int {
@@ -70,7 +71,8 @@ type dnsToggleReq struct {
 // 那条接上了服务商，下线那条没跟着改，于是下线报「已停止解析」而解析纹丝未动。
 // 只要「改标志位」和「同步服务商」是两个可以分开调的动作，就还会有第三个调用方
 // 只调前一个。**把它们焊死在一个函数里，才是这个 bug 真正的修法。**
-func (s *Server) setNodeDNS(ctx context.Context, nodeID string, enabled bool) (synced bool, detail string, err error) {
+func (s *Server) setNodeDNS(ctx context.Context, nodeID string, enabled bool,
+	reason, actor string) (synced bool, detail string, err error) {
 	// **已下线的节点不能被重新放进解析。**
 	//
 	// 下线会关掉 dns_enabled，归一化因此自然排除了它——但那道排除是间接的，
@@ -87,7 +89,7 @@ func (s *Server) setNodeDNS(ctx context.Context, nodeID string, enabled bool) (s
 			return false, "该节点已被下线，先「重新上线」再恢复解析", errNodeDrained
 		}
 	}
-	if err := s.store.SetNodeDNS(ctx, nodeID, enabled); err != nil {
+	if err := s.store.SetNodeDNS(ctx, nodeID, enabled, reason, actor); err != nil {
 		return false, "改解析标志位失败：" + err.Error(), err
 	}
 	if s.dns == nil {
@@ -123,7 +125,9 @@ func (s *Server) handleNodeDNS(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	synced, detail, err := s.setNodeDNS(ctx, nodeID, *req.Enabled)
+	// 人在控制台点的，记下是谁 —— 半夜看到一台机器不接流量时，
+	// 「谁关的」和「什么时候关的」是最先要问的两件事。
+	synced, detail, err := s.setNodeDNS(ctx, nodeID, *req.Enabled, store.DNSManual, operatorOf(c))
 	switch {
 	case errors.Is(err, errNodeDrained):
 		// 不是下游故障，是一次说不通的操作 —— 措辞要让人知道下一步该做什么。
@@ -186,7 +190,7 @@ func (s *Server) handleNodeDrain(c *gin.Context) {
 	// 这一步原先拿 SetNodeDNS 的 err 当成功判据，于是没配服务商时也报 ok=true。
 	// 另外两步诚实地报 false，唯独最要紧的这一步撒谎——运维看到「已停止解析」
 	// 就去关机器，而流量还在往那台机器上打。
-	synced, detail, err := s.setNodeDNS(ctx, nodeID, false)
+	synced, detail, err := s.setNodeDNS(ctx, nodeID, false, store.DNSDrained, operatorOf(c))
 	if err != nil {
 		detail = err.Error()
 	}
@@ -200,7 +204,7 @@ func (s *Server) handleNodeDrain(c *gin.Context) {
 
 	// **先落下线标记，再断隧道。** 反过来的话，断开与写库之间有一个窗口，
 	// 而 Agent 恰恰在那个窗口里重连 —— 它会被放进来，然后一直待到下次有人再点。
-	if err := s.store.SetNodeDrained(ctx, nodeID, true); err != nil {
+	if err := s.store.SetNodeDrained(ctx, nodeID, true, operatorOf(c)); err != nil {
 		s.log.Error("落下线标记失败", "node", nodeID, "err", err)
 		steps = append(steps, step("tunnel_closed", false, "落下线标记失败："+err.Error()))
 		setAuditPartial(c, "下线标记没落成，节点会自己连回来")
@@ -228,7 +232,7 @@ func (s *Server) handleNodeRejoin(c *gin.Context) {
 	nodeID := c.Param("id")
 	setAuditTarget(c, nodeID)
 
-	if err := s.store.SetNodeDrained(c.Request.Context(), nodeID, false); err != nil {
+	if err := s.store.SetNodeDrained(c.Request.Context(), nodeID, false, operatorOf(c)); err != nil {
 		s.log.Error("重新上线失败", "node", nodeID, "err", err)
 		Fail(c, CodeDownstream, "重新上线失败")
 		return

@@ -23,6 +23,15 @@ type Node struct {
 	// DrainedAt 非 nil 表示这台机器是**被人下线的**，与 Status 无关（ADR-0014）。
 	// nil 时前端不该显示任何下线痕迹 —— 那会跟「它自己挂了」混成一件事。
 	DrainedAt *time.Time `json:"drained_at"`
+
+	// DNSReason / DNSActor / DNSChangedAt 记着**最近一次解析开关是谁改的**。
+	//
+	// 只有一个 dns_enabled 布尔的时候，三条关掉它的路径（人手动、系统自动摘、
+	// 人下线）在数据里长得一模一样，界面只能说「未参与解析」。而三者的处置
+	// 完全不同：自己关的想开就开，系统摘的要先去修那台机器，下线的要先重新上线。
+	DNSReason    string     `json:"dns_reason"` // manual | auto_offline | drained
+	DNSActor     string     `json:"dns_actor"`  // 操作人；系统自动摘除时为空
+	DNSChangedAt *time.Time `json:"dns_changed_at"`
 }
 
 // UpsertNode 在接入时写入或更新节点。同一台机器重新接入时更新元信息，
@@ -41,7 +50,8 @@ func (s *Store) UpsertNode(ctx context.Context, spec NodeSpec) error {
 func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 	rows, err := s.Pool.Query(ctx,
 		`SELECT id, city, vendor, line, host(public_ip), status::text,
-		        cfg_version, dns_enabled, last_hb_at, created_at, drained_at
+		        cfg_version, dns_enabled, last_hb_at, created_at, drained_at,
+		        coalesce(dns_reason::text, ''), coalesce(dns_actor, ''), dns_changed_at
 		 FROM edge_nodes ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -53,7 +63,7 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 		var n Node
 		if err := rows.Scan(&n.ID, &n.City, &n.Vendor, &n.Line, &n.PublicIP,
 			&n.Status, &n.CfgVersion, &n.DNSEnabled, &n.LastHBAt, &n.CreatedAt,
-			&n.DrainedAt); err != nil {
+			&n.DrainedAt, &n.DNSReason, &n.DNSActor, &n.DNSChangedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, n)
@@ -107,7 +117,10 @@ func (s *Store) SetNodeCfgVersion(ctx context.Context, nodeID, cfgVersion string
 // 而流量恰恰在那个窗口里继续往一台死机器上打。
 func (s *Store) SetNodeDown(ctx context.Context, nodeID string) error {
 	_, err := s.Pool.Exec(ctx,
-		`UPDATE edge_nodes SET status = 'down', dns_enabled = FALSE WHERE id = $1`, nodeID)
+		`UPDATE edge_nodes
+		    SET status = 'down', dns_enabled = FALSE,
+		        dns_reason = 'auto_offline', dns_actor = NULL, dns_changed_at = now()
+		  WHERE id = $1`, nodeID)
 	return err
 }
 
@@ -119,10 +132,13 @@ func (s *Store) SetNodeDown(ctx context.Context, nodeID string) error {
 //
 // **重新上线不自动打开解析。** 一台机器能接入不等于它该马上分流量：
 // 它刚回来，配置可能还是旧的。解析由人另外点，或者由下一次成功下发带起来。
-func (s *Store) SetNodeDrained(ctx context.Context, nodeID string, drained bool) error {
+func (s *Store) SetNodeDrained(ctx context.Context, nodeID string, drained bool, actor string) error {
 	if drained {
 		_, err := s.Pool.Exec(ctx,
-			`UPDATE edge_nodes SET drained_at = now(), dns_enabled = FALSE WHERE id = $1`, nodeID)
+			`UPDATE edge_nodes
+			    SET drained_at = now(), dns_enabled = FALSE,
+			        dns_reason = 'drained', dns_actor = nullif($2, ''), dns_changed_at = now()
+			  WHERE id = $1`, nodeID, actor)
 		return err
 	}
 	_, err := s.Pool.Exec(ctx,
@@ -148,8 +164,26 @@ func (s *Store) IsNodeDrained(ctx context.Context, nodeID string) (bool, error) 
 	return at != nil, nil
 }
 
-func (s *Store) SetNodeDNS(ctx context.Context, nodeID string, enabled bool) error {
+// 解析开关变更的原因。**每一次改都要带上一个**——
+// 一个不带原因的开关，界面上就只剩「未参与解析」四个字。
+const (
+	DNSManual      = "manual"       // 人在控制台点的
+	DNSAutoOffline = "auto_offline" // 心跳超时，系统自动摘的
+	DNSDrained     = "drained"      // 人把这台节点下线了
+)
+
+// SetNodeDNS 改一个节点的解析标志位，并记下**是谁在什么时候改的**。
+//
+// actor 是操作人；系统自动摘除时传空 —— 空与「某个叫 system 的用户」
+// 是两回事，而后者会在审计页上冒出一个不存在的账号。
+func (s *Store) SetNodeDNS(ctx context.Context, nodeID string, enabled bool,
+	reason, actor string) error {
 	_, err := s.Pool.Exec(ctx,
-		`UPDATE edge_nodes SET dns_enabled = $2 WHERE id = $1`, nodeID, enabled)
+		`UPDATE edge_nodes
+		    SET dns_enabled = $2,
+		        dns_reason = $3::dns_change_reason,
+		        dns_actor = nullif($4, ''),
+		        dns_changed_at = now()
+		  WHERE id = $1`, nodeID, enabled, reason, actor)
 	return err
 }

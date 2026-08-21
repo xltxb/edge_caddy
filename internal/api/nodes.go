@@ -35,6 +35,14 @@ type nodeResp struct {
 	// 它和 Status 是两个正交的事实：可以「已下线且在线」（刚下线，隧道还没断干净），
 	// 也可以「未下线但离线」（它自己挂了）。前端别把它们合成一个徽标。
 	DrainedAt *string `json:"drained_at"`
+	// **「未参与解析」要说得出为什么。**
+	//
+	// 三条路径关掉解析（人手动、系统自动摘、人下线），而它们的处置完全不同：
+	// 自己关的想开就开，系统摘的要先去修那台机器，下线的要先「重新上线」。
+	// 只有一个 dns_enabled 的时候，界面只能说「未参与解析」四个字。
+	DNSReason    string  `json:"dns_reason"` // manual | auto_offline | drained
+	DNSActor     *string `json:"dns_actor"`  // 操作人；系统自动摘除时是 null
+	DNSChangedAt *string `json:"dns_changed_at"`
 }
 
 func (s *Server) handleListNodes(c *gin.Context) {
@@ -85,6 +93,18 @@ func (s *Server) handleListNodes(c *gin.Context) {
 		if n.DrainedAt != nil {
 			ts := n.DrainedAt.Format(time.RFC3339)
 			item.DrainedAt = &ts
+		}
+		item.DNSReason = n.DNSReason
+		if n.DNSActor != "" {
+			// **系统自动摘除时是 null，不是「system」。**
+			// 一个叫 system 的操作人会在界面上冒出一个不存在的账号，
+			// 而人会去问那是谁。
+			a := n.DNSActor
+			item.DNSActor = &a
+		}
+		if n.DNSChangedAt != nil {
+			ts := n.DNSChangedAt.Format(time.RFC3339)
+			item.DNSChangedAt = &ts
 		}
 		items = append(items, item)
 	}

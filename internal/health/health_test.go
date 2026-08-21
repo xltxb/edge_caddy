@@ -290,7 +290,7 @@ func TestDrainedNodeDoesNotRaiseOfflineAlert(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if err := st.SetNodeDrained(ctx, "node-a", true); err != nil {
+	if err := st.SetNodeDrained(ctx, "node-a", true, "abiu"); err != nil {
 		t.Fatal(err)
 	}
 	go m.Run(ctx)

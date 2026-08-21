@@ -1,9 +1,13 @@
 package e2e_test
 
 import (
+	"context"
 	"encoding/json"
+	"github.com/xltxb/edge_caddy/internal/store"
+	"github.com/xltxb/edge_caddy/internal/testdb"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xltxb/edge_caddy/internal/api"
 )
@@ -310,5 +314,103 @@ func TestDNSSyncStateIsPersistedAndExposed(t *testing.T) {
 	}
 	if !strings.Contains(w.DNSSync.Detail, "服务商") {
 		t.Errorf("失败原因应当留下来: %q", w.DNSSync.Detail)
+	}
+}
+
+// **「未参与解析」要说得出为什么、是谁、什么时候。**
+//
+// 三条路径关掉解析，而它们的处置完全不同：人自己关的想开就开，
+// 系统自动摘的要先去修那台机器，人下线的要先「重新上线」。
+// 只有一个 dns_enabled 布尔的时候，三者在数据里长得一模一样。
+func TestDNSChangeCarriesReasonActorAndTime(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	read := func() (reason string, actor *string, at *string) {
+		t.Helper()
+		e := r.mustDo("GET", "/nodes", nil)
+		var d struct {
+			Items []struct {
+				DNSReason    string  `json:"dns_reason"`
+				DNSActor     *string `json:"dns_actor"`
+				DNSChangedAt *string `json:"dns_changed_at"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			t.Fatal(err)
+		}
+		if len(d.Items) == 0 {
+			t.Fatal("/nodes 一个节点都没有")
+		}
+		return d.Items[0].DNSReason, d.Items[0].DNSActor, d.Items[0].DNSChangedAt
+	}
+
+	// 还没人动过：三样都空 —— 空与「manual 且操作人不详」是两回事。
+	if reason, actor, at := read(); reason != "" || actor != nil || at != nil {
+		t.Fatalf("没人动过时三样都该是空的：reason=%q actor=%v at=%v", reason, actor, at)
+	}
+
+	// 人手动关。
+	r.mustDo("POST", "/nodes/node-hk-01/dns", map[string]any{"enabled": false})
+	reason, actor, at := read()
+	if reason != "manual" {
+		t.Errorf("人手动关，reason 应当是 manual，实际 %q", reason)
+	}
+	if actor == nil || *actor != "abiu" {
+		t.Errorf("应当记下操作人，实际 %v", actor)
+	}
+	if at == nil {
+		t.Fatal("应当记下时间")
+	}
+	// 时间要是真时刻，不是零值 —— 一个 0001-01-01 会被渲染成
+	// 「凌晨关的」，而那是个格式正确、意思是假的值（契约 §0.4）。
+	ts, err := time.Parse(time.RFC3339, *at)
+	if err != nil {
+		t.Fatalf("时间解析不了：%q", *at)
+	}
+	if time.Since(ts) > time.Minute || ts.Year() < 2020 {
+		t.Errorf("应当是刚刚那一刻，实际 %q", *at)
+	}
+
+	// 人下线：原因要变成 drained，而不是留着上一次的 manual。
+	r.mustDo("POST", "/nodes/node-hk-01/drain", map[string]any{"confirm": true})
+	if reason, actor, _ := read(); reason != "drained" {
+		t.Errorf("下线之后 reason 应当是 drained，实际 %q（actor=%v）", reason, actor)
+	}
+}
+
+// 系统自动摘除时**操作人是 null，不是「system」**。
+//
+// 一个叫 system 的操作人会在界面上冒出一个不存在的账号，而人会去问那是谁。
+func TestAutoDetachHasNoActor(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	if err := st.UpsertNode(ctx, store.NodeSpec{
+		NodeID: "node-a", City: "香港", Vendor: "DMIT", Line: "CN2 GIA",
+		PublicIP: "203.0.113.7",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetNodeDown(ctx, "node-a"); err != nil {
+		t.Fatal(err)
+	}
+	nodes, err := st.ListNodes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := nodes[0]
+	if n.DNSReason != store.DNSAutoOffline {
+		t.Errorf("reason = %q，想要 %q", n.DNSReason, store.DNSAutoOffline)
+	}
+	if n.DNSActor != "" {
+		t.Errorf("系统自动摘除不该有操作人，实际 %q", n.DNSActor)
+	}
+	if n.DNSChangedAt == nil {
+		t.Error("应当记下时间")
+	}
+	if n.DNSEnabled {
+		t.Error("自动摘除应当同时关掉解析")
 	}
 }

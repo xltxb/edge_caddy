@@ -110,6 +110,15 @@ func setAuditTarget(c *gin.Context, target string) { c.Set(ctxKeyTarget, target)
 // 一条不说明「试的是哪个用户名」的告警，看到了也不知道该做什么。
 func setAuditOperator(c *gin.Context, name string) { c.Set(ctxKeyOperator, name) }
 
+// operatorOf 取当前登录的人，供**要落库的操作人字段**用（不只是审计）。
+//
+// 与审计中间件用的是同一个来源，所以审计页上的「操作人」与节点行上的
+// 「谁关的解析」必然一致 —— 两处各取各的迟早会给出两个名字。
+func operatorOf(c *gin.Context) string {
+	p, _ := principalOf(c)
+	return p.Name
+}
+
 // setAuditPartial 用于「部分成功」——下发是典型：5 个节点成功 1 个失败，
 // 记成 ok 或 fail 都是撒谎。
 func setAuditPartial(c *gin.Context, detail string) {
