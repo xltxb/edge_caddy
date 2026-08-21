@@ -40,6 +40,26 @@ type Scheduler struct {
 	// Sealer 用来解开服务密钥规则的共享密钥。渲染需要明文——
 	// 校验端点要拿它验签，而它只在下发的载荷里出现，不经任何读接口回显。
 	Sealer *secret.Sealer
+
+	// RetryBackoff 是第一次重试前的等待，此后翻倍。留空即用默认的 1 秒。
+	// 做成字段只为让重试策略能被单独测——真跑 1+2+4+8+16 秒的测试不会有人跑。
+	RetryBackoff time.Duration
+
+	retryOnce sync.Once
+	retrier   *Retrier
+}
+
+func (s *Scheduler) baseBackoff() time.Duration {
+	if s.RetryBackoff > 0 {
+		return s.RetryBackoff
+	}
+	return defaultBaseBackoff
+}
+
+// Retries 返回后台补推器，装配时惰性建立。
+func (s *Scheduler) Retries() *Retrier {
+	s.retryOnce.Do(func() { s.retrier = newRetrier(s) })
+	return s.retrier
 }
 
 // ErrNoOnlineNodes —— 没有在线节点时下发是个无操作。
@@ -90,6 +110,10 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 		return Result{}, nil, fmt.Errorf("写入下发记录: %w", err)
 	}
 
+	// 新的下发开始，停掉上一次还在飞的补推。一次迟到的重试会把旧配置盖到
+	// 已经拿到新版本的节点上——那是把节点推回过去。
+	s.Retries().CancelAll()
+
 	for _, n := range targets {
 		s.progress(deployID, cfgVersion, n, "wait", "", false)
 	}
@@ -117,9 +141,10 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 			if out.OK {
 				state = "ok"
 			}
-			// 本切片不实现重试队列（属于 #19）。没有队列却报 retrying=true，
-			// 是在界面上承诺一件不会发生的事。
-			const retrying = false
+			// 只有**传输层失败**才会被重试（ADR-0005）：节点没回应才重试，
+			// 节点回应了但 Caddy 拒绝的不重试。这一位决定前端那一行显示
+			// 「重试中」还是终态红字。
+			retrying := !out.OK && !out.Responded
 			if err := s.Store.SaveDeployResult(ctx, deployID, store.DeployResult{
 				Node: node, State: state, Detail: detail, Retrying: retrying,
 			}); err != nil {
@@ -131,6 +156,7 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 	wg.Wait()
 
 	var okCount, failCount int
+	var needRetry []string
 	for _, r := range results {
 		if r.out.OK {
 			okCount++
@@ -139,6 +165,9 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 			}
 		} else {
 			failCount++
+			if !r.out.Responded {
+				needRetry = append(needRetry, r.node)
+			}
 		}
 	}
 
@@ -163,8 +192,19 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 		}
 	}
 
-	s.event(ctx, "", eventKind(okCount, failCount),
-		fmt.Sprintf("配置 %s 下发完成，%d/%d 节点", cfgVersion, okCount, len(targets)))
+	// 首轮跑完就返回，掉队的交给后台补推：5 次指数退避最长要一分多钟，
+	// 而 PRD 要求单次全网推送 6 节点 ≤10s 完成反馈。进度继续经 WS 推。
+	s.Retries().enqueue(retryJob{
+		deployID: deployID, cfgVersion: cfgVersion,
+		caddyJSON: cfg, verifyRules: verifyRules, nodes: needRetry,
+	})
+
+	msg := fmt.Sprintf("配置 %s 下发完成，%d/%d 节点", cfgVersion, okCount, len(targets))
+	if len(needRetry) > 0 {
+		msg = fmt.Sprintf("配置 %s 首轮 %d/%d 节点，%d 个节点重试中",
+			cfgVersion, okCount, len(targets), len(needRetry))
+	}
+	s.event(ctx, "", eventKind(okCount, failCount), msg)
 
 	return Result{
 		DeployID: deployID, CfgVersion: cfgVersion, Targets: targets,

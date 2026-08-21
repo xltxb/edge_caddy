@@ -181,3 +181,38 @@ func (s *Store) ListDeploys(ctx context.Context, limit int, beforeID int64) ([]D
 	}
 	return out, rows.Err()
 }
+
+// RecountDeploy 按 deploy_results 重算成功/失败数。
+//
+// 重试会让这两个数字在下发返回之后继续变，因此它们不能在写入时累加——
+// 累加会在重试成功时留下一个「既算失败又算成功」的旧账。
+func (s *Store) RecountDeploy(ctx context.Context, deployID int64) (ok, fail int, err error) {
+	err = s.Pool.QueryRow(ctx,
+		`SELECT count(*) FILTER (WHERE state = 'ok'),
+		        count(*) FILTER (WHERE state = 'fail')
+		 FROM deploy_results WHERE deploy_id = $1`, deployID).Scan(&ok, &fail)
+	if err != nil {
+		return 0, 0, err
+	}
+	_, err = s.Pool.Exec(ctx,
+		`UPDATE deploys SET ok_count = $2, fail_count = $3 WHERE id = $1`, deployID, ok, fail)
+	return ok, fail, err
+}
+
+// ClearStaleRetries 把「重试中」的结果标为终态。
+//
+// 主控重启时内存里的重试队列就没了，而库里那些 retrying=true 的行会让
+// phase 永远停在 running——弹层永远不落定，而它等的那个重试再也不会发生。
+// 启动时清一遍，宁可说「中断了」也不要一个永远转圈的界面。
+func (s *Store) ClearStaleRetries(ctx context.Context) (int64, error) {
+	tag, err := s.Pool.Exec(ctx,
+		`UPDATE deploy_results
+		 SET retrying = FALSE,
+		     detail = CASE WHEN detail = '' THEN '主控重启，重试已中断'
+		                   ELSE detail || '（主控重启，重试已中断）' END
+		 WHERE retrying`)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}

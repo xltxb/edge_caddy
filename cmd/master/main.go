@@ -88,6 +88,14 @@ func main() {
 		return
 	}
 
+	// 主控重启时内存里的重试队列没了，库里 retrying=true 的行会让 phase
+	// 永远停在 running —— 弹层永远不落定，而它等的那次重试再也不会发生。
+	if n, err := st.ClearStaleRetries(ctx); err != nil {
+		log.Error("清理中断的重试失败", "err", err)
+	} else if n > 0 {
+		log.Warn("清理了上次运行遗留的重试", "rows", n)
+	}
+
 	hub := ws.NewHub(log)
 
 	advertiseHost, _, err := net.SplitHostPort(cfg.Advertise)

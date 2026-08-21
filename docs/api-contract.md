@@ -203,6 +203,16 @@ offset 会漏行或重复。
   节点回应了但 Caddy 拒绝 → `retrying: false`，`detail` 是 Caddy 的原文报错，这一行到此为止。
   见 [ADR-0005](adr/0005-retry-only-transport-failures.md)。
 
+  **重试是异步的**：`POST /deploys` 在首轮结束时就返回（PRD 要求 6 节点
+  ≤10s 完成反馈），掉队的节点在后台补推，最多 5 次、指数退避封顶 30 秒。
+  期间这一行会反复在 `run` 与 `fail(retrying:true)` 之间变化，最后落到
+  `ok` 或 `fail(retrying:false)`。次数用尽时 `detail` 会带上「已重试 N 次」。
+
+  > 两种情况下重试会被**放弃**，这一行直接转终态并说明原因：
+  > 一次新的下发开始了（旧配置不能盖到已经拿到新版本的节点上——那是把节点
+  > 推回过去），或主控重启了（内存里的队列没了，留着 `retrying:true`
+  > 会让 `phase` 永远停在 `running`）。
+
 ### 断线降级
 
 WS 断开时前端按指数退避重连；重连期间对进行中的下发降级为每 2s 轮询
