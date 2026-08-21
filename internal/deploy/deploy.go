@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/xltxb/edge_caddy/internal/model"
+	"github.com/xltxb/edge_caddy/internal/pki"
 	"github.com/xltxb/edge_caddy/internal/render"
 	"github.com/xltxb/edge_caddy/internal/secret"
 	"github.com/xltxb/edge_caddy/internal/store"
@@ -28,7 +29,7 @@ const PushDeadline = 5 * time.Second
 // Pusher 是隧道在这一层的最小面貌。抽出来只为让下发能被单独测。
 type Pusher interface {
 	OnlineNodes() []string
-	Push(ctx context.Context, nodeID, cfgVersion string, caddyJSON, verifyRules []byte, counts tunnel.ResourceCounts, deadline time.Duration) tunnel.PushOutcome
+	Push(ctx context.Context, nodeID, cfgVersion string, caddyJSON, verifyRules []byte, counts tunnel.ResourceCounts, up tunnel.UpstreamCert, deadline time.Duration) tunnel.PushOutcome
 }
 
 type Scheduler struct {
@@ -41,6 +42,17 @@ type Scheduler struct {
 	// Sealer 用来解开服务密钥规则的共享密钥。渲染需要明文——
 	// 校验端点要拿它验签，而它只在下发的载荷里出现，不经任何读接口回显。
 	Sealer *secret.Sealer
+
+	// UpstreamCA 给每个节点签回源 mTLS 的客户端证书（ADR-0008 / ADR-0009）。
+	// 叶子 24 小时，随每次下发续上——吊销就退化成「停止续期」这一个动作，
+	// 不需要另造 CRL/OCSP（内部 PKI 的吊销列表基本没人真部署，写了也是摆设）。
+	UpstreamCA *pki.CA
+
+	// EnsureCerts 在下发后为路由域名确保证书存在。
+	//
+	// 证书跟着路由走：人配了一个域名就该有证书，不该还要手动点一次签发。
+	// 做成回调是为了不让下发依赖证书包（那会成环）。
+	EnsureCerts func(ctx context.Context, domains []string)
 
 	// RetryBackoff 是第一次重试前的等待，此后翻倍。留空即用默认的 1 秒。
 	// 做成字段只为让重试策略能被单独测——真跑 1+2+4+8+16 秒的测试不会有人跑。
@@ -88,7 +100,12 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 		return Result{}, nil, err
 	}
 
-	cfg, issues := render.Render(routes, rules, s.Render)
+	certs, err := s.certsForRender(ctx)
+	if err != nil {
+		return Result{}, nil, err
+	}
+
+	cfg, issues := render.Render(routes, rules, certs, s.Render)
 	if len(issues) > 0 {
 		// 校验不过即整体拒绝，不触达节点。
 		return Result{}, issues, nil
@@ -138,7 +155,8 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 		go func(i int, node string) {
 			defer wg.Done()
 			s.progress(deployID, cfgVersion, node, "run", "", false)
-			out := s.Pusher.Push(ctx, node, cfgVersion, cfg, verifyRules, counts, PushDeadline)
+			out := s.Pusher.Push(ctx, node, cfgVersion, cfg, verifyRules, counts,
+				s.upstreamCertFor(node), PushDeadline)
 			results[i] = outcome{node, out}
 
 			// **结果一到就落库**，不等其余节点。
@@ -217,6 +235,15 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 		deployID: deployID, cfgVersion: cfgVersion,
 		caddyJSON: cfg, verifyRules: verifyRules, counts: counts, nodes: needRetry,
 	})
+
+	if s.EnsureCerts != nil {
+		domains := make([]string, 0, len(routes))
+		for _, r := range routes {
+			domains = append(domains, r.Domain)
+		}
+		// 异步：ACME 要跟服务商往返，同步等会把下发拖很久。
+		go s.EnsureCerts(context.WithoutCancel(ctx), domains)
+	}
 
 	msg := fmt.Sprintf("配置 %s 下发完成，%d/%d 节点", cfgVersion, okCount, len(targets))
 	if len(needRetry) > 0 {
@@ -426,15 +453,18 @@ func (s *Scheduler) Preview(ctx context.Context, resKeys []string) (Preview, err
 		return p, err
 	}
 
-	// before 是当前基线所代表的内容。它自己也可能渲染不出来（比如某条路由的
-	// mtls 还开着），那不该让整个预览失败——前端拿到 null 时把整份显示为
-	// 「全新增」即可，而 after 的校验结果仍然是有用的。
-	if b, issues := render.Render(liveRoutes, liveRules, s.Render); len(issues) == 0 {
+	// **预览一律不带证书。** 于是 apps/tls 与 :443 那台 server 都不会出现在
+	// diff 里——私钥不进浏览器（ADR-0007 补充），而 :443 的路由与 :80 完全相同，
+	// 显示两遍只会让每一次路由改动在 diff 里翻倍，不增加任何信息。
+	//
+	// before 自己也可能渲染不出来，那不该让整个预览失败——前端拿到 null 时
+	// 把整份显示为「全新增」即可，而 after 的校验结果仍然是有用的。
+	if b, issues := render.Render(liveRoutes, liveRules, nil, s.Render); len(issues) == 0 {
 		before := string(b)
 		p.Before = &before
 	}
 
-	if b, issues := render.Render(afterRoutes, afterRules, s.Render); len(issues) > 0 {
+	if b, issues := render.Render(afterRoutes, afterRules, nil, s.Render); len(issues) > 0 {
 		p.Validation.OK = false
 		p.Validation.Errors = issues
 	} else {
@@ -479,7 +509,11 @@ func (s *Scheduler) RepushNode(ctx context.Context, nodeID string) (string, stri
 	if err != nil {
 		return "", "", nil, err
 	}
-	cfg, issues := render.Render(routes, rules, s.Render)
+	certs, err := s.certsForRender(ctx)
+	if err != nil {
+		return "", "", nil, err
+	}
+	cfg, issues := render.Render(routes, rules, certs, s.Render)
 	if len(issues) > 0 {
 		return "", "", issues, nil
 	}
@@ -489,7 +523,8 @@ func (s *Scheduler) RepushNode(ctx context.Context, nodeID string) (string, stri
 	}
 	counts := tunnel.ResourceCounts{Routes: uint32(len(routes)), Rules: uint32(countEffectiveRules(rules))}
 
-	out := s.Pusher.Push(ctx, nodeID, baseline, cfg, verifyRules, counts, PushDeadline)
+	out := s.Pusher.Push(ctx, nodeID, baseline, cfg, verifyRules, counts,
+		s.upstreamCertFor(nodeID), PushDeadline)
 	if !out.OK {
 		s.event(ctx, nodeID, "warn", "重推失败："+out.Detail)
 		return "", "", nil, fmt.Errorf("%s", out.Detail)
@@ -499,6 +534,54 @@ func (s *Scheduler) RepushNode(ctx context.Context, nodeID string) (string, stri
 	}
 	s.event(ctx, nodeID, "ok", "已重推基线 "+baseline+"，耗时 "+out.Detail)
 	return baseline, out.Detail, nil, nil
+}
+
+// upstreamCertFor 为一个节点签一张 24 小时的回源客户端证书。
+//
+// **每次下发都重签**，而不是「快到期时才续」：叶子只有 24 小时，而下发的频率
+// 远高于那个；顺手续上比另造一条轮换路径简单，也少一处会忘记跑的定时任务。
+//
+// 24 小时是刻意取短的（ADR-0009）：内部 PKI 的 CRL/OCSP 基本没人真部署，
+// 写了也是摆设。叶子做短，吊销就退化成「停止续期」这一个动作。
+// 代价是节点与主控失联超过 24 小时后回源 mTLS 失效——那是可接受的：
+// 一台你整天联系不上的机器，不该继续拿着凭据进你的源站。
+func (s *Scheduler) upstreamCertFor(nodeID string) tunnel.UpstreamCert {
+	if s.UpstreamCA == nil || s.Render.UpstreamClientCert == "" {
+		return tunnel.UpstreamCert{}
+	}
+	leaf, err := s.UpstreamCA.SignClient(nodeID, 24*time.Hour)
+	if err != nil {
+		s.logger().Error("签发回源证书失败", "node", nodeID, "err", err)
+		return tunnel.UpstreamCert{}
+	}
+	return tunnel.UpstreamCert{
+		CertPEM: leaf.CertPEM, KeyPEM: leaf.KeyPEM,
+		CertPath: s.Render.UpstreamClientCert, KeyPath: s.Render.UpstreamClientKey,
+	}
+}
+
+// certsForRender 取出要内联进配置的证书。
+//
+// 需要私钥明文——load_pem 就是把它内联进去（ADR-0010）。它只出现在下发的
+// 载荷里，不经任何读接口回显，也不进快照与预览。
+func (s *Scheduler) certsForRender(ctx context.Context) ([]render.Cert, error) {
+	if s.Sealer == nil {
+		// 没有密封器就取不出私钥。这时**不渲染证书**而不是报错：
+		// 一个还没配密钥的系统应当能跑起来并下发 HTTP 配置。
+		return nil, nil
+	}
+	list, err := s.Store.ListCerts(ctx, s.Sealer)
+	if err != nil {
+		return nil, fmt.Errorf("读取证书: %w", err)
+	}
+	out := make([]render.Cert, 0, len(list))
+	for _, c := range list {
+		if len(c.CertPEM) == 0 || len(c.KeyPEM) == 0 {
+			continue
+		}
+		out = append(out, render.Cert{Domain: c.Domain, CertPEM: c.CertPEM, KeyPEM: c.KeyPEM})
+	}
+	return out, nil
 }
 
 // commit 把本次勾选的资源的**合并结果**写回 live。

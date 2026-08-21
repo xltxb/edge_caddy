@@ -12,6 +12,7 @@ import (
 
 	"github.com/xltxb/edge_caddy/internal/alert"
 	"github.com/xltxb/edge_caddy/internal/api"
+	"github.com/xltxb/edge_caddy/internal/certs"
 	"github.com/xltxb/edge_caddy/internal/config"
 	"github.com/xltxb/edge_caddy/internal/deploy"
 	"github.com/xltxb/edge_caddy/internal/dnsops"
@@ -147,17 +148,49 @@ func main() {
 	}()
 	defer tun.Stop()
 
+	// 回源 CA 与隧道 CA 相互独立、根私钥都只在主控（ADR-0009）。
+	upstreamCA, err := st.EnsureCA(ctx, pki.KindUpstream, sealer)
+	if err != nil {
+		log.Error("准备回源 CA 失败", "err", err)
+		os.Exit(1)
+	}
+
 	scheduler := &deploy.Scheduler{
-		Store: st, Pusher: tun, Hub: hub, Log: log, Sealer: sealer,
+		Store: st, Pusher: tun, Hub: hub, Log: log, Sealer: sealer, UpstreamCA: upstreamCA,
 		Render: render.Options{
-			HTTPListen: cfg.EdgeHTTPListen,
-			VerifyAddr: cfg.VerifyAddr,
+			HTTPListen:         cfg.EdgeHTTPListen,
+			HTTPSListen:        cfg.EdgeHTTPSListen,
+			VerifyAddr:         cfg.VerifyAddr,
+			UpstreamClientCert: cfg.UpstreamCert,
+			UpstreamClientKey:  cfg.UpstreamKey,
 		},
 	}
 
+	dnsProvider, err := st.GetDNSProvider(ctx, sealer)
+	if err != nil {
+		log.Error("读取 DNS 服务商设置失败", "err", err)
+		os.Exit(1)
+	}
+	certMgr := certs.New(&certs.Manager{
+		Store: st, Sealer: sealer, Hub: hub, Log: log,
+		Issuer: &certs.ACMEIssuer{
+			Email:     cfg.ACMEEmail,
+			Directory: cfg.ACMEDirectory,
+			Provider:  dnsProvider,
+		},
+		// 证书随每次下发内联带上（ADR-0010），所以续期之后必须触发一次下发——
+		// 否则新证书会躺在库里，直到下一次有人改配置才下去。
+		Redeploy: func(ctx context.Context, reason string) error {
+			_, _, err := scheduler.Deploy(ctx, "system", nil)
+			return err
+		},
+	})
+	go certMgr.Run(ctx, 12*time.Hour)
+	scheduler.EnsureCerts = certMgr.EnsureFor
+
 	srv := api.New(api.Options{
 		Store: st, Hub: hub, Tunnel: tun, Health: monitor, Alerts: notifier, DNS: dnsOrch,
-		Sealer: sealer, Deployer: scheduler, Log: log,
+		Sealer: sealer, Deployer: scheduler, Certs: certMgr, Log: log,
 		SessionTTL: cfg.SessionTTL, OpsBotToken: cfg.OpsBotToken,
 		SecureCookie: cfg.MTLSEnabled,
 		MasterAddr:   cfg.Advertise, CAPin: caPin,

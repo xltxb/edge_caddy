@@ -38,9 +38,11 @@ type Config struct {
 	CaddyAdmin string
 	// VerifyListen 是校验端点的监听地址：host:port 或 unix/<绝对路径>。
 	VerifyListen string
-	Heartbeat    time.Duration
-	Log          *slog.Logger
-	Version      string
+	// TLSProbe 是本机 TLS server 的地址，用来探证书回执。空则默认 127.0.0.1:443。
+	TLSProbe  string
+	Heartbeat time.Duration
+	Log       *slog.Logger
+	Version   string
 }
 
 type Agent struct {
@@ -159,6 +161,18 @@ func (a *Agent) handlePush(ctx context.Context, stream edgev1.EdgeTunnel_Channel
 		a.verify.SetRules(nil)
 	}
 
+	// **回源证书要先落盘再应用配置。** 反过来的话，配置里引用的文件那一刻
+	// 还不存在，Caddy 会整份拒绝——而报错是「文件不存在」，跟证书轮换
+	// 看起来毫无关系。
+	if err := writeUpstreamCert(p); err != nil {
+		a.log.Error("写入回源证书失败", "err", err)
+		res := &edgev1.PushResult{CfgVersion: p.GetCfgVersion(), Ok: false, Detail: err.Error()}
+		if sendErr := stream.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_PushResult{PushResult: res}}); sendErr != nil {
+			a.log.Error("回报下发结果失败", "err", sendErr)
+		}
+		return
+	}
+
 	took, err := a.caddy.ApplyConfig(applyCtx, p.GetCaddyJson())
 
 	res := &edgev1.PushResult{CfgVersion: p.GetCfgVersion()}
@@ -170,6 +184,7 @@ func (a *Agent) handlePush(ctx context.Context, stream edgev1.EdgeTunnel_Channel
 	} else {
 		res.Ok = true
 		res.Detail = fmt.Sprintf("%dms", took.Milliseconds())
+		go a.reportCerts(context.WithoutCancel(ctx), stream, p.GetCaddyJson())
 		a.mu.Lock()
 		a.cfgVersion = p.GetCfgVersion()
 		a.routes, a.rules = p.GetRoutes(), p.GetRules()
@@ -201,6 +216,72 @@ func (a *Agent) handleProbe(ctx context.Context, stream edgev1.EdgeTunnel_Channe
 	}
 	if err := stream.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_ProbeResult{ProbeResult: res}}); err != nil {
 		a.log.Error("回报探活失败", "err", err)
+	}
+}
+
+// writeUpstreamCert 把主控下发的回源客户端证书落盘。
+//
+// 路径来自主控（见 proto 里 PushConfig 的说明）：Caddy 的
+// client_certificate_file 不接受内联，若让两边各自决定路径，那就是两个进程
+// 持有同一份知识，迟早会不一致。
+func writeUpstreamCert(p *edgev1.PushConfig) error {
+	certPEM, keyPEM := p.GetUpstreamCertPem(), p.GetUpstreamKeyPem()
+	certPath, keyPath := p.GetUpstreamCertPath(), p.GetUpstreamKeyPath()
+	if len(certPEM) == 0 || certPath == "" {
+		return nil // 这次下发没有带回源证书
+	}
+	if err := os.MkdirAll(filepath.Dir(certPath), 0o700); err != nil {
+		return fmt.Errorf("建立证书目录: %w", err)
+	}
+	if err := os.WriteFile(certPath, certPEM, 0o644); err != nil {
+		return fmt.Errorf("写入回源证书: %w", err)
+	}
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		return fmt.Errorf("写入回源私钥: %w", err)
+	}
+	return nil
+}
+
+// reportCerts 在配置应用之后回报**实际出示的**证书。
+//
+// 契约要回答的是「下发到了之后节点有没有真的加载」，所以这里去回环上真握一次手
+// 读对端的证书，而不是复述主控下发的那份——后者只能证明「我收到了这些 PEM」。
+// 两者的区别正是 ADR-0004 复核时那个「幽灵监听」教过的：配置被接受不等于在服务。
+func (a *Agent) reportCerts(ctx context.Context, stream edgev1.EdgeTunnel_ChannelClient, caddyJSON []byte) {
+	domains := certDomainsOf(caddyJSON)
+	if len(domains) == 0 {
+		// 没有内联证书就报一份空清单——**必须报**，否则节点上刚被撤掉的证书
+		// 会在主控这边一直显示为「已加载」。
+		if err := stream.Send(&edgev1.AgentMsg{
+			M: &edgev1.AgentMsg_Certs{Certs: &edgev1.CertList{}},
+		}); err != nil {
+			a.log.Debug("回报空证书清单失败", "err", err)
+		}
+		return
+	}
+
+	// 配置刚 POST 下去，TLS app 装载需要一点时间。给它几次机会，
+	// 而不是立刻断言「没加载」。
+	tlsAddr := a.cfg.TLSProbe
+	if tlsAddr == "" {
+		tlsAddr = "127.0.0.1:443"
+	}
+	var receipts []certReceipt
+	for i := 0; i < 5; i++ {
+		receipts = collectCertReceipts(ctx, tlsAddr, domains, a.log)
+		if len(receipts) == len(domains) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	if err := stream.Send(&edgev1.AgentMsg{
+		M: &edgev1.AgentMsg_Certs{Certs: toProtoCerts(receipts)},
+	}); err != nil {
+		a.log.Debug("回报证书清单失败", "err", err)
 	}
 }
 

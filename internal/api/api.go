@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/xltxb/edge_caddy/internal/alert"
+	"github.com/xltxb/edge_caddy/internal/certs"
 	"github.com/xltxb/edge_caddy/internal/health"
 	"github.com/xltxb/edge_caddy/internal/secret"
 	"github.com/xltxb/edge_caddy/internal/tunnel"
@@ -40,6 +41,7 @@ type Server struct {
 	health           Healther
 	dns              *dnsops.Orchestrator
 	alerts           *alert.Notifier
+	certs            *certs.Manager
 	sealer           *secret.Sealer
 	deployer         *deploy.Scheduler
 	masterAddr       string
@@ -54,6 +56,7 @@ type Options struct {
 	Health   Healther
 	DNS      *dnsops.Orchestrator
 	Alerts   *alert.Notifier
+	Certs    *certs.Manager
 	Sealer   *secret.Sealer
 	Deployer *deploy.Scheduler
 	Log      *slog.Logger
@@ -93,6 +96,7 @@ func New(o Options) *gin.Engine {
 		health:           o.Health,
 		dns:              o.DNS,
 		alerts:           o.Alerts,
+		certs:            o.Certs,
 		sealer:           o.Sealer,
 		deployer:         o.Deployer,
 		masterAddr:       o.MasterAddr,
@@ -122,6 +126,10 @@ func New(o Options) *gin.Engine {
 	authed.POST("/nodes/:id/dns", s.handleNodeDNS)
 	authed.POST("/nodes/:id/probe", s.handleNodeProbe)
 	authed.POST("/nodes/:id/drain", audited("下线节点", s.handleNodeDrain))
+
+	authed.GET("/certs", s.handleListCerts)
+	authed.POST("/certs/:domain/renew", audited("续期证书", s.handleRenewCert))
+	authed.POST("/certs/renew-check", audited("续期证书", s.handleRenewCheck))
 
 	authed.GET("/dns/weights", s.handleGetDNSWeights)
 	authed.PUT("/dns/weights", audited("调整解析权重", s.handlePutDNSWeights))

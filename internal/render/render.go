@@ -21,10 +21,27 @@ import (
 )
 
 // Options 是渲染的环境参数，不属于配置资源本身。
+// Cert 是一张要内联进配置的证书。
+type Cert struct {
+	Domain  string
+	CertPEM []byte
+	KeyPEM  []byte
+}
+
 type Options struct {
 	// HTTPListen 是边缘 server 的监听地址，生产是 ":80"。
 	// 做成参数只为让测试能用非特权端口。
 	HTTPListen string
+
+	// HTTPSListen 是 TLS server 的监听地址，生产是 ":443"。
+	// 只在有证书时才渲染那个 server —— 一个没有证书的 :443 监听
+	// 会让每一次握手都失败，比不监听更糟。
+	HTTPSListen string
+
+	// UpstreamClientCert / UpstreamClientKey 是节点回源时出示的客户端证书
+	// 在**节点本机**的路径（ADR-0008 / ADR-0009）。
+	UpstreamClientCert string
+	UpstreamClientKey  string
 
 	// VerifyAddr 是 Agent 校验端点在节点回环上的地址。
 	// JWT 与服务密钥由它验签，Caddy 只做 forward_auth 委托（ADR-0003）。
@@ -34,6 +51,9 @@ type Options struct {
 func (o Options) withDefaults() Options {
 	if o.HTTPListen == "" {
 		o.HTTPListen = ":80"
+	}
+	if o.HTTPSListen == "" {
+		o.HTTPSListen = ":443"
 	}
 	if o.VerifyAddr == "" {
 		o.VerifyAddr = "127.0.0.1:2020"
@@ -52,7 +72,7 @@ func (i Issue) String() string { return i.ResKey + "." + i.Field + ": " + i.Reas
 
 // Render 校验并渲染。校验不过时返回全部问题且不产出配置——
 // 只报第一个错会让人改一处推一次，来回好几轮。
-func Render(routes []model.Route, rules []model.Rule, opt Options) ([]byte, []Issue) {
+func Render(routes []model.Route, rules []model.Rule, certs []Cert, opt Options) ([]byte, []Issue) {
 	opt = opt.withDefaults()
 
 	if issues := Validate(routes, rules); len(issues) > 0 {
@@ -81,30 +101,46 @@ func Render(routes []model.Route, rules []model.Rule, opt Options) ([]byte, []Is
 		caddyRoutes = []any{}
 	}
 
-	cfg := map[string]any{
-		"apps": map[string]any{
-			"http": map[string]any{
-				"servers": map[string]any{
-					"edge": map[string]any{
-						"listen": []string{opt.HTTPListen},
-						"routes": caddyRoutes,
-						// 打开 server 级 metrics：回源率靠它算。
-						// caddy_http_requests_total{handler="reverse_proxy"} 是到达
-						// upstream 的请求数，其余 handler 的是被边缘拦下的
-						// （api-contract §3）。不开这个就只能编一个数字。
-						"metrics": map[string]any{},
-						// 关掉自动 HTTPS：主控此刻还没有任何证书，开着会让 Caddy
-						// 自己去 ACME 申请，而证书由主控集中签发（ADR-0001）。
-						// 证书下发与 :443 属于 #22，届时这里要一并重来。
-						"automatic_https": map[string]any{"disable": true},
-					},
-				},
-			},
+	servers := map[string]any{
+		"edge": map[string]any{
+			"listen": []string{opt.HTTPListen},
+			"routes": caddyRoutes,
+			// 打开 server 级 metrics：回源率靠它算。
+			// caddy_http_requests_total{handler="reverse_proxy"} 是到达
+			// upstream 的请求数，其余 handler 的是被边缘拦下的
+			// （api-contract §3）。不开这个就只能编一个数字。
+			"metrics": map[string]any{},
+			// 关掉自动 HTTPS：证书由主控集中签发并内联下发（ADR-0001 / ADR-0010），
+			// 开着会让节点自己去 ACME 申请——而它既没有 DNS 凭据，
+			// 也不该有。
+			"automatic_https": map[string]any{"disable": true},
 		},
 	}
 
-	// **不渲染 apps/tls**：一张证书都没有时渲染这个 app 会把节点上外部证书平台
-	// 写入的内容抹掉，那是上一版真出过的事故（ADR-0010）。
+	cfg := map[string]any{
+		"apps": map[string]any{
+			"http": map[string]any{"servers": servers},
+		},
+	}
+
+	// **只在主控持有证书时才渲染 apps/tls 与 :443**（ADR-0010）。
+	//
+	// 一张证书都没有时完全不渲染这个 app，节点上外部证书平台写入的内容原样保留。
+	// 反过来的话，一个还没签发证书的系统会把那些内容抹掉——那是上一版真出过的事故。
+	//
+	// :443 同理：一个没有证书的 TLS 监听会让每一次握手都失败，比不监听更糟。
+	if len(certs) > 0 {
+		servers["edge_tls"] = map[string]any{
+			"listen":          []string{opt.HTTPSListen},
+			"routes":          caddyRoutes,
+			"metrics":         map[string]any{},
+			"automatic_https": map[string]any{"disable": true},
+			// 空的连接策略让**这台 server** 转 TLS。它只加在 :443 那台上——
+			// 加到 :80 那台会让所有没有服务端证书的域名立即失联（ADR-0010 实测）。
+			"tls_connection_policies": []any{map[string]any{}},
+		}
+		cfg["apps"].(map[string]any)["tls"] = tlsApp(certs)
+	}
 
 	b, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
@@ -141,6 +177,32 @@ func VerifyRules(rules []model.Rule) []model.VerifyRule {
 		}
 	}
 	return out
+}
+
+// tlsApp 用 load_pem 把证书**内联**进配置（ADR-0010）。
+//
+// 不用 load_files 落盘：落盘要求主控渲染的路径与节点上的实际路径一致，
+// 而那是两个进程各自持有的知识，迟早会不一致。内联让配置自带全部内容，
+// 没有第二处需要对齐。
+//
+// 代价是私钥出现在 Caddy 的运行配置里，能通过 Admin API 读到。Admin 只监听
+// 回环，且能访问它的人本来就等于拥有这台节点。**但这个论证不覆盖浏览器**——
+// 所以确认弹层的权威 diff 排除 apps/tls（ADR-0007 补充）。
+func tlsApp(certs []Cert) map[string]any {
+	sorted := append([]Cert(nil), certs...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Domain < sorted[j].Domain })
+
+	pairs := make([]any, 0, len(sorted))
+	for _, c := range sorted {
+		pairs = append(pairs, map[string]any{
+			"certificate": string(c.CertPEM),
+			"key":         string(c.KeyPEM),
+			"tags":        []string{c.Domain},
+		})
+	}
+	return map[string]any{
+		"certificates": map[string]any{"load_pem": pairs},
+	}
 }
 
 // denyRoute 是白名单之外流量的处置。放在代理路由**之前**，命中即终止。
@@ -283,10 +345,33 @@ func proxyRoute(r model.Route, rules []model.Rule, opt Options) map[string]any {
 			"encodings": map[string]any{"gzip": map[string]any{}},
 		})
 	}
-	handlers = append(handlers, map[string]any{
+	proxy := map[string]any{
 		"handler":   "reverse_proxy",
 		"upstreams": []any{map[string]any{"dial": r.Upstream}},
-	})
+	}
+	if r.MTLS {
+		// **回源 mTLS**：边缘节点作为客户端，向源站证明自己的身份（ADR-0008）。
+		// 不是「要求访问者出示证书」——两者方向相反。
+		//
+		// 渲染成 reverse_proxy.transport.tls，**不碰 tls_connection_policies**：
+		// 那会让整台 server 转 TLS，同节点上所有没有服务端证书的域名会立即失联。
+		//
+		// 用 client_certificate_file 而不是设计稿的 client_certificate_automate：
+		// 后者要求每台节点持有 CA 私钥，且 6 台节点会各自成为独立的 CA，
+		// 源站得同时信任 6 个根。改由主控持根、经隧道下发叶子（ADR-0009）。
+		// 字段在 transport.**tls 里面**，不是 transport 上。
+		// 第一版写成了 transport 上的 tls_client_certificate_file，
+		// golden 快照照样通过——只有真 Caddy 说得出「这份配置我不接受」。
+		// ADR-0004 承认的那个盲区就是指这个。
+		proxy["transport"] = map[string]any{
+			"protocol": "http",
+			"tls": map[string]any{
+				"client_certificate_file":     opt.UpstreamClientCert,
+				"client_certificate_key_file": opt.UpstreamClientKey,
+			},
+		}
+	}
+	handlers = append(handlers, proxy)
 
 	return map[string]any{
 		"match":    []any{map[string]any{"host": []string{r.Domain}}},
@@ -369,11 +454,6 @@ func Validate(routes []model.Route, rules []model.Rule) []Issue {
 			}
 		}
 
-		if r.MTLS {
-			// 宁可拒绝也不静默忽略：一个开着却没有效果的安全开关，
-			// 比一个明说「还没做」的报错危险得多。
-			issues = append(issues, Issue{key, "mtls", "回源 mTLS 尚未实现（见 issue #22），请先关闭"})
-		}
 	}
 
 	issues = append(issues, validateRules(rules, domains)...)

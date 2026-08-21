@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/xltxb/edge_caddy/internal/alert"
 	"github.com/xltxb/edge_caddy/internal/api"
 	"github.com/xltxb/edge_caddy/internal/caddytest"
+	"github.com/xltxb/edge_caddy/internal/certs"
 	"github.com/xltxb/edge_caddy/internal/deploy"
 	"github.com/xltxb/edge_caddy/internal/dnsops"
 	"github.com/xltxb/edge_caddy/internal/health"
@@ -91,9 +93,21 @@ func newRig(t *testing.T) *rig {
 	go func() { _ = tun.Serve(lis) }()
 	t.Cleanup(tun.Stop)
 
+	upstreamCA, err := st.EnsureCA(ctx, pki.KindUpstream, sealer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certDir := t.TempDir()
+
 	sched := &deploy.Scheduler{
-		Store: st, Pusher: tun, Hub: hub,
-		Render: render.Options{HTTPListen: cad.EdgeListen(), VerifyAddr: cad.VerifyDial()},
+		Store: st, Pusher: tun, Hub: hub, UpstreamCA: upstreamCA,
+		Render: render.Options{
+			HTTPListen: cad.EdgeListen(), HTTPSListen: cad.TLSListen(),
+			VerifyAddr:         cad.VerifyDial(),
+			UpstreamClientCert: filepath.Join(certDir, "edge-mtls.crt"),
+			UpstreamClientKey:  filepath.Join(certDir, "edge-mtls.key"),
+		},
+		Sealer: sealer,
 	}
 
 	monitor := health.New(health.Config{
@@ -102,10 +116,12 @@ func newRig(t *testing.T) *rig {
 	monitorRef = monitor
 	notifier := alert.New(st, sealer, nil)
 	dnsOrch := &dnsops.Orchestrator{Store: st, Sealer: sealer}
+	certMgr := certs.New(&certs.Manager{Store: st, Sealer: sealer, Hub: hub, Issuer: testIssuer{}})
+	sched.EnsureCerts = certMgr.EnsureFor
 
 	srv := httptest.NewServer(api.New(api.Options{
 		Store: st, Hub: hub, Tunnel: tun, Deployer: sched,
-		Health: monitor, Alerts: notifier, Sealer: sealer, DNS: dnsOrch,
+		Health: monitor, Alerts: notifier, Sealer: sealer, DNS: dnsOrch, Certs: certMgr,
 		SessionTTL: time.Hour, MasterAddr: lis.Addr().String(), CAPin: caPin,
 	}))
 	t.Cleanup(srv.Close)
@@ -215,6 +231,7 @@ func (r *rig) startAgent(nodeID, token, stateDir string) context.CancelFunc {
 	a := agent.New(agent.Config{
 		MasterAddr: r.tunnelAddr, NodeID: nodeID, Token: token, CAPin: r.caPin,
 		StateDir: stateDir, CaddyAdmin: r.caddy.AdminURL(),
+		TLSProbe:  "unix/" + r.caddy.TLSSocketPath(),
 		Heartbeat: 200 * time.Millisecond,
 	})
 	go func() { _ = a.Run(ctx) }()
@@ -319,4 +336,25 @@ func (r *rig) issueTokenFor(nodeID string) (token, caPin string) {
 		r.t.Fatal(err)
 	}
 	return d.Token, d.CAPin
+}
+
+// testIssuer 用内部 CA 代替真 ACME。
+//
+// 真 ACME 需要一个公网可解析的域名、一个真实的服务商账号，而且会在 CA 那边
+// 留下真实的签发记录与速率配额消耗。要验的是**下发、加载与回执**这条链路，
+// 它与证书由谁签无关——那正是把签发抽成接口的理由。
+type testIssuer struct{}
+
+func (testIssuer) Name() string { return "测试内部 CA" }
+
+func (testIssuer) Issue(_ context.Context, domain string) ([]byte, []byte, time.Time, error) {
+	ca, err := pki.GenerateCA(pki.KindTunnel)
+	if err != nil {
+		return nil, nil, time.Time{}, err
+	}
+	leaf, err := ca.SignServer(domain, []string{domain}, 90*24*time.Hour)
+	if err != nil {
+		return nil, nil, time.Time{}, err
+	}
+	return leaf.CertPEM, leaf.KeyPEM, time.Now().Add(90 * 24 * time.Hour), nil
 }

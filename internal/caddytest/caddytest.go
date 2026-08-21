@@ -42,6 +42,7 @@ type Caddy struct {
 	dir        string
 	adminSock  string
 	edgeSock   string
+	tlsSock    string
 	verifySock string
 	t          *testing.T
 	admin      *http.Client
@@ -52,6 +53,12 @@ func (c *Caddy) EdgeListen() string { return "unix/" + c.edgeSock }
 
 // AdminURL 是传给 agent.NewCaddyClient 的地址。
 func (c *Caddy) AdminURL() string { return "unix/" + c.adminSock }
+
+// TLSListen 是渲染时传给 render.Options.HTTPSListen 的值。
+func (c *Caddy) TLSListen() string { return "unix/" + c.tlsSock }
+
+// TLSSocketPath 是 :443 那台 server 的 socket 路径，供测试直接握手。
+func (c *Caddy) TLSSocketPath() string { return c.tlsSock }
 
 // VerifyDial 是渲染时传给 render.Options.VerifyAddr 的值，
 // 指向 Agent 校验端点在本机的 socket。
@@ -81,6 +88,7 @@ func New(t *testing.T) *Caddy {
 		dir:        dir,
 		adminSock:  filepath.Join(dir, "a.sock"),
 		edgeSock:   filepath.Join(dir, "e.sock"),
+		tlsSock:    filepath.Join(dir, "s.sock"),
 		verifySock: filepath.Join(dir, "v.sock"),
 		t:          t,
 	}

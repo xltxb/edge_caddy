@@ -119,7 +119,8 @@ func (r *Retrier) run(ctx context.Context, job retryJob) {
 		var still []string
 		for _, node := range pending {
 			r.sched.progress(job.deployID, job.cfgVersion, node, "run", "", true)
-			out := r.sched.Pusher.Push(ctx, node, job.cfgVersion, job.caddyJSON, job.verifyRules, job.counts, PushDeadline)
+			out := r.sched.Pusher.Push(ctx, node, job.cfgVersion, job.caddyJSON, job.verifyRules,
+				job.counts, r.sched.upstreamCertFor(node), PushDeadline)
 
 			switch {
 			case out.OK:

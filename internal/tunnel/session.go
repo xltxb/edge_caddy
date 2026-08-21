@@ -7,6 +7,7 @@ import (
 	"time"
 
 	edgev1 "github.com/xltxb/edge_caddy/gen/edge/v1"
+	"github.com/xltxb/edge_caddy/internal/store"
 )
 
 // session 是一条活着的隧道。
@@ -89,6 +90,22 @@ func (s *session) readLoop(ctx context.Context, srv *Server) error {
 		case *edgev1.AgentMsg_ProbeResult:
 			s.deliverProbe(m.ProbeResult)
 
+		case *edgev1.AgentMsg_Certs:
+			// 回执**整体替换**：一张已经从节点上消失的证书，旧回执留着会让
+			// 证书页一直显示「这台机器加载了」——而实际上没有。
+			var receipts []store.CertNode
+			for _, e := range m.Certs.GetEntries() {
+				receipts = append(receipts, store.CertNode{
+					Domain:      e.GetDomain(),
+					NodeID:      s.nodeID,
+					NotAfter:    time.Unix(e.GetNotAfterUnix(), 0),
+					Fingerprint: e.GetFingerprint(),
+				})
+			}
+			if err := srv.opt.Store.ReplaceCertReceipts(ctx, s.nodeID, receipts); err != nil {
+				srv.log.Error("保存证书回执失败", "node_id", s.nodeID, "err", err)
+			}
+
 		case *edgev1.AgentMsg_Hello:
 			// 重复的 Hello。不是错误，忽略即可——Agent 重连时可能补发。
 
@@ -117,7 +134,7 @@ func (s *session) deliver(r *edgev1.PushResult) {
 }
 
 // push 下发一份配置并等回报。
-func (s *session) push(ctx context.Context, cfgVersion string, caddyJSON, verifyRules []byte, counts ResourceCounts, deadline time.Duration) PushOutcome {
+func (s *session) push(ctx context.Context, cfgVersion string, caddyJSON, verifyRules []byte, counts ResourceCounts, up UpstreamCert, deadline time.Duration) PushOutcome {
 	ch := make(chan *edgev1.PushResult, 1)
 	s.mu.Lock()
 	s.waiters[cfgVersion] = ch
@@ -131,7 +148,11 @@ func (s *session) push(ctx context.Context, cfgVersion string, caddyJSON, verify
 	msg := &edgev1.MasterMsg{M: &edgev1.MasterMsg_Push{Push: &edgev1.PushConfig{
 		CfgVersion: cfgVersion, CaddyJson: caddyJSON, VerifyRules: verifyRules,
 		Routes: counts.Routes, Rules: counts.Rules,
-		DeadlineMs: uint32(deadline.Milliseconds()),
+		UpstreamCertPem:  up.CertPEM,
+		UpstreamKeyPem:   up.KeyPEM,
+		UpstreamCertPath: up.CertPath,
+		UpstreamKeyPath:  up.KeyPath,
+		DeadlineMs:       uint32(deadline.Milliseconds()),
 	}}}
 
 	select {

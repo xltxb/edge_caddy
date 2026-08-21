@@ -69,6 +69,13 @@ func IsUnreachable(err error) bool { return errors.Is(err, errUnreachable) }
 // ResourceCounts 随配置一起下去，Agent 记下并在心跳里报回来。
 type ResourceCounts struct{ Routes, Rules uint32 }
 
+// UpstreamCert 是某个节点回源时出示的客户端证书。
+// 路径由**主控**决定并随内容一起下去（见 proto 里 PushConfig 的说明）。
+type UpstreamCert struct {
+	CertPEM, KeyPEM   []byte
+	CertPath, KeyPath string
+}
+
 // PushOutcome 是一次下发在单个节点上的结果。
 //
 // Responded 是分类重试的**唯一**依据（ADR-0005）：节点回应了但 Caddy 拒绝
@@ -169,14 +176,14 @@ func (s *Server) OnlineNodes() []string {
 }
 
 // Push 把一份配置推给一个节点并等它回报。
-func (s *Server) Push(ctx context.Context, nodeID, cfgVersion string, caddyJSON, verifyRules []byte, counts ResourceCounts, deadline time.Duration) PushOutcome {
+func (s *Server) Push(ctx context.Context, nodeID, cfgVersion string, caddyJSON, verifyRules []byte, counts ResourceCounts, up UpstreamCert, deadline time.Duration) PushOutcome {
 	s.mu.RLock()
 	sess := s.sessions[nodeID]
 	s.mu.RUnlock()
 	if sess == nil {
 		return PushOutcome{OK: false, Detail: "节点不在线", Responded: false}
 	}
-	return sess.push(ctx, cfgVersion, caddyJSON, verifyRules, counts, deadline)
+	return sess.push(ctx, cfgVersion, caddyJSON, verifyRules, counts, up, deadline)
 }
 
 // Channel 是隧道的全部。

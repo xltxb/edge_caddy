@@ -72,3 +72,22 @@ Caddy 日志的 error/warn：  一条 error 都没有
 
 真要回答「流量真的通了吗」，需要一次实际的请求——探活端点是自然的位置，
 但那属于后续工单，不在 #18。
+
+## 又一次兑现（2026-08-21）：回源 mTLS 的字段名写错了
+
+本 ADR 说「Go 层校验拦不住 Caddy schema 层面的错（比如我们把某个 handler
+字段名写错）」。#22 实现回源 mTLS 时正好发生了一次：
+
+渲染器把客户端证书路径写成了 `transport` 上的 `tls_client_certificate_file`，
+而正确位置是 `transport.tls` **对象里面**的 `client_certificate_file`。
+
+```
+json: unknown field "tls_client_certificate_file"
+```
+
+**渲染器的单测（golden 快照）照样通过**——它只能证明「我渲染出了我想渲染的
+东西」。抓到它的是 `internal/caddytest` 那条真 Caddy 的集成测试。
+
+这正是当初决定「不打 //go:build integration 标签、让它默认就跑」的理由：
+一个默认不跑的测试等于没有测试，而这类错误的另一种暴露方式是生产首次下发时
+「全部节点飘红」。

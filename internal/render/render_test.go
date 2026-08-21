@@ -35,7 +35,7 @@ func ok(d, u string) model.Route {
 func TestBodyMaxIsConvertedToBytes(t *testing.T) {
 	r := ok("api.example.com", "127.0.0.1:8080")
 	r.BodyMax = "5MB"
-	b, issues := render.Render([]model.Route{r}, nil, render.Options{})
+	b, issues := render.Render([]model.Route{r}, nil, nil, render.Options{})
 	if len(issues) > 0 {
 		t.Fatalf("不该有校验问题: %v", issues)
 	}
@@ -62,7 +62,7 @@ func TestBodyMaxUnits(t *testing.T) {
 	for in, want := range cases {
 		r := ok("a.example.com", "127.0.0.1:1")
 		r.BodyMax = in
-		b, issues := render.Render([]model.Route{r}, nil, render.Options{})
+		b, issues := render.Render([]model.Route{r}, nil, nil, render.Options{})
 		if len(issues) > 0 {
 			t.Errorf("%s: %v", in, issues)
 			continue
@@ -126,19 +126,116 @@ func TestDuplicateDomainIsRejected(t *testing.T) {
 	}
 }
 
-// 回源 mTLS 属于 #22。开着却没有效果的安全开关，比一个明说「还没做」的报错危险得多。
-func TestMTLSIsRejectedRatherThanSilentlyIgnored(t *testing.T) {
+// **回源 mTLS 是「边缘向源站出示客户端证书」**，不是「要求访问者出示证书」
+// （ADR-0008）。两者方向相反。
+//
+// 渲染成 reverse_proxy.transport.tls，**绝不碰 tls_connection_policies**：
+// 那会让整台 server 转 TLS，同节点上所有没有服务端证书的域名会立即失联。
+func TestMTLSRendersAsUpstreamClientCertNotConnectionPolicy(t *testing.T) {
 	r := ok("m.example.com", "127.0.0.1:1")
 	r.MTLS = true
-	issues := render.Validate([]model.Route{r}, nil)
-	if !hasField(issues, "mtls") {
-		t.Fatal("回源 mTLS 尚未实现时应当拒绝下发，而不是静默忽略这个开关")
+
+	b, issues := render.Render([]model.Route{r}, nil, nil, render.Options{
+		UpstreamClientCert: "/var/lib/edge-agent/edge-mtls.crt",
+		UpstreamClientKey:  "/var/lib/edge-agent/edge-mtls.key",
+	})
+	if len(issues) > 0 {
+		t.Fatalf("不该有校验问题: %v", issues)
+	}
+	out := string(b)
+
+	if !strings.Contains(out, `"client_certificate_file": "/var/lib/edge-agent/edge-mtls.crt"`) {
+		t.Fatalf("应当渲染成回源时出示客户端证书:\n%s", out)
+	}
+	// 没有证书时不该出现 tls_connection_policies —— 那是「要求访问者出示证书」
+	// 那条读法才需要的，而它会让整台 server 转 TLS。
+	if strings.Contains(out, "tls_connection_policies") {
+		t.Fatalf("回源 mTLS 不该碰 tls_connection_policies:\n%s", out)
+	}
+	// 也不该用设计稿的 client_certificate_automate：那要求每台节点持有 CA 私钥，
+	// 6 台节点会各自成为独立的 CA，源站得同时信任 6 个根（ADR-0008）。
+	if strings.Contains(out, "client_certificate_automate") {
+		t.Fatal("不该用 client_certificate_automate —— 它要求节点持有 CA 私钥")
+	}
+}
+
+// 一张证书都没有时**完全不渲染 apps/tls，也不渲染 :443**（ADR-0010）。
+//
+// 渲染空的 tls app 会把节点上外部证书平台写入的内容抹掉——那是上一版真出过
+// 的事故。而一个没有证书的 :443 监听会让每一次握手都失败，比不监听更糟。
+func TestNoCertsMeansNoTLSAppAndNoHTTPSServer(t *testing.T) {
+	b, _ := render.Render([]model.Route{ok("t.example.com", "127.0.0.1:1")}, nil, nil, render.Options{})
+	var cfg struct {
+		Apps struct {
+			TLS  json.RawMessage `json:"tls"`
+			HTTP struct {
+				Servers map[string]json.RawMessage `json:"servers"`
+			} `json:"http"`
+		} `json:"apps"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Apps.TLS != nil {
+		t.Fatal("没有证书时不该渲染 apps/tls")
+	}
+	if _, ok := cfg.Apps.HTTP.Servers["edge_tls"]; ok {
+		t.Fatal("没有证书时不该渲染 :443 那台 server")
+	}
+}
+
+// 有证书时用 load_pem **内联**，并单独渲染一台 :443。
+func TestCertsAreInlinedAndTLSServerAppears(t *testing.T) {
+	certs := []render.Cert{{
+		Domain:  "t.example.com",
+		CertPEM: []byte("-----BEGIN CERTIFICATE-----\nAAA\n-----END CERTIFICATE-----\n"),
+		KeyPEM:  []byte("-----BEGIN EC PRIVATE KEY-----\nBBB\n-----END EC PRIVATE KEY-----\n"),
+	}}
+	b, _ := render.Render([]model.Route{ok("t.example.com", "127.0.0.1:1")}, nil, certs,
+		render.Options{HTTPSListen: ":8443"})
+	out := string(b)
+
+	if !strings.Contains(out, "load_pem") {
+		t.Fatalf("证书应当用 load_pem 内联:\n%s", out)
+	}
+	// 不用 load_files：落盘要求主控渲染的路径与节点上的实际路径一致，
+	// 而那是两个进程各自持有的知识，迟早会不一致（ADR-0010）。
+	if strings.Contains(out, "load_files") {
+		t.Fatal("不该用 load_files 落盘")
+	}
+	if !strings.Contains(out, "-----BEGIN EC PRIVATE KEY-----") {
+		t.Fatal("私钥要内联进去 —— 那正是 load_pem 的含义")
+	}
+
+	var cfg struct {
+		Apps struct {
+			HTTP struct {
+				Servers map[string]struct {
+					Listen   []string `json:"listen"`
+					Policies []any    `json:"tls_connection_policies"`
+				} `json:"servers"`
+			} `json:"http"`
+		} `json:"apps"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	tlsSrv, ok := cfg.Apps.HTTP.Servers["edge_tls"]
+	if !ok {
+		t.Fatal("有证书时应当渲染 :443 那台 server")
+	}
+	if len(tlsSrv.Policies) != 1 {
+		t.Fatalf("那台 server 需要一条空的连接策略才会转 TLS，实际 %+v", tlsSrv.Policies)
+	}
+	// **:80 那台绝不能带连接策略** —— 加上会让所有没有服务端证书的域名立即失联。
+	if plain := cfg.Apps.HTTP.Servers["edge"]; len(plain.Policies) != 0 {
+		t.Fatalf(":80 那台不该有连接策略，实际 %+v", plain.Policies)
 	}
 }
 
 // 白名单为空 = 不限制，不应产生 deny 路由。
 func TestEmptyWhitelistProducesNoDenyRoute(t *testing.T) {
-	b, _ := render.Render([]model.Route{ok("open.example.com", "127.0.0.1:1")}, nil, render.Options{})
+	b, _ := render.Render([]model.Route{ok("open.example.com", "127.0.0.1:1")}, nil, nil, render.Options{})
 	if strings.Contains(string(b), `"not"`) {
 		t.Fatalf("白名单为空却渲染出了 deny 匹配器:\n%s", b)
 	}
@@ -148,7 +245,7 @@ func TestEmptyWhitelistProducesNoDenyRoute(t *testing.T) {
 func TestBareIPIsNormalizedToCIDR(t *testing.T) {
 	r := ok("w.example.com", "127.0.0.1:1")
 	r.Whitelist = []string{"203.0.113.7", "10.8.0.0/24"}
-	b, _ := render.Render([]model.Route{r}, nil, render.Options{})
+	b, _ := render.Render([]model.Route{r}, nil, nil, render.Options{})
 	if !strings.Contains(string(b), `"203.0.113.7/32"`) {
 		t.Errorf("裸 IP 应当补成 /32:\n%s", b)
 	}
@@ -161,8 +258,8 @@ func TestBareIPIsNormalizedToCIDR(t *testing.T) {
 func TestRenderIsOrderIndependent(t *testing.T) {
 	a := []model.Route{ok("b.example.com", "127.0.0.1:1"), ok("a.example.com", "127.0.0.1:2")}
 	b := []model.Route{ok("a.example.com", "127.0.0.1:2"), ok("b.example.com", "127.0.0.1:1")}
-	ra, _ := render.Render(a, nil, render.Options{})
-	rb, _ := render.Render(b, nil, render.Options{})
+	ra, _ := render.Render(a, nil, nil, render.Options{})
+	rb, _ := render.Render(b, nil, nil, render.Options{})
 	if string(ra) != string(rb) {
 		t.Fatal("同一组路由换个顺序渲染出了不同的字节——diff 会虚报变更")
 	}
@@ -171,7 +268,7 @@ func TestRenderIsOrderIndependent(t *testing.T) {
 // 不渲染 apps/tls：一张证书都没有时渲染它会把节点上外部证书平台写入的内容抹掉，
 // 那是上一版真出过的事故（ADR-0010）。
 func TestDoesNotRenderTLSApp(t *testing.T) {
-	b, _ := render.Render([]model.Route{ok("t.example.com", "127.0.0.1:1")}, nil, render.Options{})
+	b, _ := render.Render([]model.Route{ok("t.example.com", "127.0.0.1:1")}, nil, nil, render.Options{})
 	var cfg struct {
 		Apps map[string]json.RawMessage `json:"apps"`
 	}
@@ -185,7 +282,7 @@ func TestDoesNotRenderTLSApp(t *testing.T) {
 
 // 校验不过时不产出配置——一份没通过校验的配置绝不该有机会被下发。
 func TestNoConfigWhenValidationFails(t *testing.T) {
-	b, issues := render.Render([]model.Route{{Domain: "bad", Upstream: "x"}}, nil, render.Options{})
+	b, issues := render.Render([]model.Route{{Domain: "bad", Upstream: "x"}}, nil, nil, render.Options{})
 	if len(issues) == 0 {
 		t.Fatal("这组输入应当校验失败")
 	}
