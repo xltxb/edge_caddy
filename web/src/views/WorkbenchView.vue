@@ -143,6 +143,18 @@ watch(selected, () => {
         </button>
       </header>
 
+      <!--
+        草稿没写到主控上 —— 这条必须说清**后果**，不能只说「保存失败」。
+        下发用的是主控那一份：它缺了，顶栏那个「N 处未下发改动」就在虚报，
+        而人会照着那个数字去点下发，然后推下去一份不含自己刚敲的东西的配置。
+      -->
+      <p v-if="Object.keys(config.unsaved).length" class="unsaved">
+        <b>{{ Object.keys(config.unsaved).join('、') }}</b> 的改动<b>还没存到主控上</b>（{{
+          Object.values(config.unsaved)[0]
+        }}）。现在下发<b>不会包含</b>它 —— 下发读的是主控上的草稿，不是这一屏。
+        改一下任意字段会自动重试。
+      </p>
+
       <!-- 部分资源没取到时，能用的先用起来，但要说清缺了什么 -->
       <p v-if="config.failedParts.length && config.failedParts.length < 5" class="partial">
         {{ config.failedParts.join('、') }} 没有加载成功，这几类资源暂时不可编辑。
@@ -309,6 +321,18 @@ watch(selected, () => {
 .form {
   padding: var(--space-4);
   overflow-y: auto;
+}
+.unsaved {
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 2px solid var(--danger-text);
+  background: var(--surface-sunken, var(--bg-subtle));
+  font-size: var(--fs-2xs);
+  color: var(--danger-text);
+  line-height: 1.7;
+}
+.unsaved b {
+  font-family: var(--font-mono);
 }
 .partial {
   margin: var(--space-3) var(--space-4) 0;

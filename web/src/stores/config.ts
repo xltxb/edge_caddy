@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { http } from '@/api/http'
+import { http, errorText } from '@/api/http'
 import type {
   DraftMeta,
   DraftsWire,
@@ -32,6 +32,14 @@ export const useConfigStore = defineStore('config', () => {
   const rules = ref<RuleWire[]>([])
   const policies = ref<PolicyWire[]>([])
   const patches = ref<Record<string, Patch>>({})
+  /**
+   * 草稿**没能写到主控上**的那些资源，按 key 记原因。
+   *
+   * 与 `patches` 是两回事：`patches` 是本地有什么，这个是**主控上缺什么**。
+   * 下发用的是主控那一份，所以这里非空时，界面上那个「N 处未下发改动」
+   * 正在虚报 —— 它数的是本地的。
+   */
+  const unsaved = ref<Record<string, string>>({})
   const updated = ref<Record<string, DraftMeta>>({})
   const loading = ref(false)
   const error = ref<string | null>(null)
@@ -183,11 +191,28 @@ export const useConfigStore = defineStore('config', () => {
     )
   }
 
+  /**
+   * 把一条草稿写回主控。
+   *
+   * 失败**不打断输入**（人正在打字，弹个错只会碍事），但必须记下来 ——
+   * 这里原先写的是「下一次输入会重试，点下发前还会整体重取一次」，
+   * **后半句是假的**：`runPreview` 拿的是本地的 `dirtyKeys`，后端用**它自己那份**
+   * 草稿渲染。写没成功的话，顶栏照样显示「N 处未下发改动」，而下发出去的东西
+   * 里根本没有那处改动 —— 人看着一个自己刚敲的数字，下发了一份不含它的配置。
+   *
+   * 一句自信的假理由比没有理由更糟：没有理由的地方人会去查，写着理由的地方
+   * 人会放心（这条判据来自后端那次同样的自我修正）。
+   */
   async function persist(key: string): Promise<void> {
-    // Partial 为空对象时后端会删掉该草稿行，等价于「这个资源没有未下发改动」
-    await http.put(`/drafts/${encodeURIComponent(key)}`, patches.value[key] ?? {}).catch(() => {
-      // 草稿写回失败不该打断输入。下一次输入会重试，点下发前还会整体重取一次。
-    })
+    try {
+      // Partial 为空对象时后端会删掉该草稿行，等价于「这个资源没有未下发改动」
+      await http.put(`/drafts/${encodeURIComponent(key)}`, patches.value[key] ?? {})
+      const e = { ...unsaved.value }
+      delete e[key]
+      unsaved.value = e
+    } catch (e) {
+      unsaved.value = { ...unsaved.value, [key]: errorText(e, '写回主控失败') }
+    }
   }
 
   /**
@@ -199,8 +224,9 @@ export const useConfigStore = defineStore('config', () => {
    *
    * `keepalive` 让请求能在页面卸载过程中继续发完（beforeunload 用）。
    */
-  function flush(opts: { keepalive?: boolean } = {}): void {
+  function flush(opts: { keepalive?: boolean } = {}): Promise<void> {
     const keys = [...timers.keys()]
+    const pending: Promise<void>[] = []
     for (const k of keys) {
       const t = timers.get(k)
       if (t) clearTimeout(t)
@@ -215,9 +241,12 @@ export const useConfigStore = defineStore('config', () => {
           keepalive: true,
         }).catch(() => {})
       } else {
-        void persist(k)
+        pending.push(persist(k))
       }
     }
+    // 返回 Promise 是为了让调用方（和测试）能等它落定。keepalive 那一支等不了 ——
+    // 页面正在卸载，await 不会有机会执行完。
+    return Promise.all(pending).then(() => undefined)
   }
 
   /**
@@ -303,6 +332,7 @@ export const useConfigStore = defineStore('config', () => {
     loading,
     error,
     failedParts,
+    unsaved,
     tree,
     totalChanges,
     dirtyKeys,

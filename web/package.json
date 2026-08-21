@@ -13,7 +13,9 @@
     "e2e": "playwright test",
     "dev:real": "vite --mode real",
     "check:premises": "node scripts/check-premises.mjs",
-    "check:probes": "node scripts/probe.mjs"
+    "check:probes": "node scripts/probe.mjs",
+    "check:probes:self": "node scripts/probe.mjs --self-test",
+    "check:templates": "node scripts/check-templates.mjs"
   },
   "dependencies": {
     "pinia": "^2.2.6",

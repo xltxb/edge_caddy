@@ -27,6 +27,87 @@ import { execSync } from 'node:child_process'
  * `invariant` 那个字段是后端加的，我照抄：探针失败的时候人要立刻知道这是在拦
  * 什么，而不是去读那段被改坏的代码反推。
  */
+/*
+ * 自检模式：`node scripts/probe.mjs --self-test`
+ *
+ * 这个脚本的四问此前是我**手工**验的 —— 手工跑一遍然后忘掉，等于没有，
+ * 跟我把改坏固化成脚本之前的状态一模一样。后端指出这一点，照做。
+ *
+ * 下面每一条都是一个**刻意坏掉的探针**，跑它，断言脚本给出正确的判词。
+ * 这五种失败**全都是写这个脚本的过程里真实撞上的**，不是设想出来的：
+ *
+ *   - 改坏没命中原文        （我第一次验「重试中不标」时踩的，结论碰巧对了）
+ *   - 目标测试一条都没跑    （改坏造成语法错误，我上一轮加第二问的起因）
+ *   - 改坏了但一条都没红    （测试确实拦不住）
+ *   - 红了但红在别处        （我验 DNS 归因那条时踩的，想验的那条自始至终是绿的）
+ *   - 还原不干净            （我为了验它故意制造过一次，结果 link.ts 差点被带进提交）
+ *
+ * 「这只是把问题推远一格」—— 在这一层可以停。产品代码的失败模式无穷，
+ * 而这个脚本只有四问、每问一种失败方式，**枚举得完的东西封顶是完备的**。
+ */
+const SELF_TESTS = [
+  {
+    what: '改坏没命中原文',
+    probe: {
+      name: '(自检) 原文写错',
+      invariant: '改坏必须真的落进文件',
+      file: 'src/nodes/flags.ts',
+      from: '这段原文在文件里根本不存在',
+      to: 'x',
+      spec: 'src/nodes/flags.test.ts',
+      expect: '已下线且在线',
+    },
+    expectMsg: '没命中',
+  },
+  {
+    what: '一条测试都没跑（改坏造成语法错误）',
+    probe: {
+      name: '(自检) 语法错误',
+      invariant: '目标测试必须真的执行过',
+      file: 'src/nodes/flags.ts',
+      from: '  if (n.drainedAt) {',
+      to: '  if (n.drainedAt &&&& {',
+      spec: 'src/nodes/flags.test.ts',
+      expect: '已下线且在线',
+    },
+    expectMsg: '一条测试都没执行',
+  },
+  {
+    what: '改坏无害，一条都没红',
+    probe: {
+      name: '(自检) 无害改动',
+      invariant: '测试必须拦得住这个改坏',
+      file: 'src/nodes/flags.ts',
+      from: 'export interface NodeFlag {',
+      to: '/* 无害注释 */\nexport interface NodeFlag {',
+      spec: 'src/nodes/flags.test.ts',
+      expect: '已下线且在线',
+    },
+    expectMsg: '一条都没红',
+  },
+  {
+    what: '红了，但红在别处',
+    probe: {
+      name: '(自检) 打偏',
+      invariant: '红的必须是想验的那一条',
+      file: 'src/nodes/flags.ts',
+      // 改「已退出解析」那句：它会让「同步过」那条红，而「已下线且在线」照样绿。
+      // 期望却写成后者 —— 于是脚本必须说「打偏了」，而不是「通过」。
+      // 第一版我选的改坏是删掉 drift 旗标，而那条根本没有测试覆盖，
+      // 结果是「一条都没红」——**自检自己也会打偏**，同一个形状。
+      from: "      text: dnsSyncOk === false ? '已标记退出（解析未变）' : '已退出解析',",
+      to: "      text: dnsSyncOk === false ? '已标记退出（解析未变）' : '退出了解析',",
+      spec: 'src/nodes/flags.test.ts',
+      expect: '已下线且在线',
+    },
+    expectMsg: '打偏了',
+  },
+]
+
+function probesToRun() {
+  return PROBES
+}
+
 const PROBES = [
   {
     name: '把下线揉进 status 那一格',
@@ -165,8 +246,13 @@ const PROBES = [
 const touched = [...new Set(PROBES.map((p) => p.file))]
 const before = new Map(touched.map((f) => [f, readFileSync(f, 'utf8')]))
 
-let bad = 0
-for (const p of PROBES) {
+/**
+ * 跑一条探针，返回判词。
+ *
+ * 抽成函数是为了让 `--self-test` 能复用它 —— 自检必须验的是**真正会跑的那份
+ * 逻辑**，复制一份出来验等于没验。
+ */
+function runProbe(p) {
   const bak = `/tmp/probe-${p.file.replace(/\W/g, '_')}.bak`
   copyFileSync(p.file, bak)
   try {
@@ -185,10 +271,13 @@ for (const p of PROBES) {
     const after = readFileSync(p.file, 'utf8')
     if (after === src) throw new Error('写回之后文件没变')
 
-    // 第二 + 第三问：红了吗、红的是不是那一条
     let out = ''
     try {
-      out = execSync(`npx vitest run ${p.spec} 2>&1`, { encoding: 'utf8' })
+      // --reporter=verbose：默认 reporter 在**全绿**时只打印文件级的一行
+      // 「✓ flags.test.ts (10 tests)」，不打印每条测试名。于是第二问（目标测试
+      // 跑了吗）在全绿时永远拿不到名字 —— 而全绿正是第三问该开火的场合。
+      // 这个洞是 --self-test 抓出来的，不是我看出来的。
+      out = execSync(`npx vitest run --reporter=verbose ${p.spec} 2>&1`, { encoding: 'utf8' })
     } catch (e) {
       out = String(e.stdout ?? '') + String(e.stderr ?? '')
     }
@@ -196,7 +285,7 @@ for (const p of PROBES) {
     const greens = [...out.matchAll(/^\s+✓\s+(.+?)(?:\s+\d+ms)?$/gm)].map((m) => m[1].trim())
 
     /*
-     * 先证明**目标测试真的跑了**。
+     * 第二问：**目标测试真的跑了吗**。
      *
      * 改坏若造成语法错误，整个 spec 文件加载失败，一条测试都不会执行 —— 那时
      * 「一条都没红」和「测试拦不住」产生**同一个观测**，而结论完全相反：前者是
@@ -212,18 +301,18 @@ for (const p of PROBES) {
     if (!ran.some((r) => r.includes(p.expect))) {
       throw new Error(`目标测试没出现在这次运行里（改名了？被 skip 了？）：预期含「${p.expect}」`)
     }
+    // 第三问：红了吗
     if (reds.length === 0) throw new Error('目标测试跑了，但一条都没红 —— 测试拦不住这个改坏')
-    const hit = reds.some((r) => r.includes(p.expect))
-    if (!hit) {
+    // 第四问：红的是不是那一条
+    if (!reds.some((r) => r.includes(p.expect))) {
       throw new Error(
         `打偏了：红的是 [${reds.join(' | ')}]，而预期含「${p.expect}」\n` +
           `      红色只说明「有东西拦住了」，不说明「我想验的那条拦住了」`,
       )
     }
-    console.log(`✓ ${p.name}\n    红 ${reds.length} 条，命中：${reds.find((r) => r.includes(p.expect))}`)
+    return { ok: true, detail: `红 ${reds.length} 条，命中：${reds.find((r) => r.includes(p.expect))}` }
   } catch (e) {
-    bad += 1
-    console.error(`✗ ${p.name}\n    守的是：${p.invariant}\n    ${e.message}`)
+    return { ok: false, detail: e instanceof Error ? e.message : String(e) }
   } finally {
     copyFileSync(bak, p.file)
     try {
@@ -233,6 +322,45 @@ for (const p of PROBES) {
     }
   }
 }
+
+/** `--self-test`：用刻意坏掉的探针跑一遍，断言脚本给出正确的判词。 */
+function runSelfTest() {
+  let bad = 0
+  for (const t of SELF_TESTS) {
+    const r = runProbe(t.probe)
+    if (r.ok) {
+      bad += 1
+      console.error(`✗ 自检「${t.what}」：脚本说它通过了 —— 这一问已经失效`)
+    } else if (!r.detail.includes(t.expectMsg)) {
+      bad += 1
+      console.error(
+        `✗ 自检「${t.what}」：判词不对\n    预期含「${t.expectMsg}」，实际：${r.detail.split('\n')[0]}`,
+      )
+    } else {
+      console.log(`✓ 自检「${t.what}」→ ${r.detail.split('\n')[0]}`)
+    }
+  }
+  console.log('')
+  if (bad) {
+    console.error(`${bad} / ${SELF_TESTS.length} 条自检没过 —— **上面那些探针的结论都不作数**。\n`)
+    process.exit(3)
+  }
+  console.log(`${SELF_TESTS.length} 条自检全过：四问都还拦得住它们各自要拦的那种失败。\n`)
+  process.exit(0)
+}
+
+if (process.argv.includes('--self-test')) runSelfTest()
+
+let bad = 0
+for (const p of probesToRun()) {
+  const r = runProbe(p)
+  if (r.ok) console.log(`✓ ${p.name}\n    ${r.detail}`)
+  else {
+    bad += 1
+    console.error(`✗ ${p.name}\n    守的是：${p.invariant}\n    ${r.detail}`)
+  }
+}
+
 /*
  * 收尾自检：**证明探针没把源码改残**。
  *
