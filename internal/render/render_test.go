@@ -1,0 +1,195 @@
+package render_test
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/xltxb/edge_caddy/internal/model"
+	"github.com/xltxb/edge_caddy/internal/render"
+)
+
+func issueFields(is []render.Issue) []string {
+	out := make([]string, 0, len(is))
+	for _, i := range is {
+		out = append(out, i.Field)
+	}
+	return out
+}
+
+func hasField(is []render.Issue, field string) bool {
+	for _, i := range is {
+		if i.Field == field {
+			return true
+		}
+	}
+	return false
+}
+
+func ok(d, u string) model.Route {
+	return model.Route{Domain: d, Upstream: u, BlockMode: model.BlockAbort}
+}
+
+// body_max 在 API 与库里是人类可读字符串，Caddy 的 max_size 要 int64 字节数。
+// 这个转换只有渲染器这一处——ADR-0007 举的正是这个例子：原样下发会被整份拒绝。
+func TestBodyMaxIsConvertedToBytes(t *testing.T) {
+	r := ok("api.example.com", "127.0.0.1:8080")
+	r.BodyMax = "5MB"
+	b, issues := render.Render([]model.Route{r}, render.Options{})
+	if len(issues) > 0 {
+		t.Fatalf("不该有校验问题: %v", issues)
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	raw := string(b)
+	if strings.Contains(raw, `"max_size": "5MB"`) {
+		t.Fatal("max_size 仍是字符串——这份配置会被 Caddy 整份拒绝")
+	}
+	if !strings.Contains(raw, `"max_size": 5242880`) {
+		t.Fatalf("max_size 应当是 5242880 字节（5 × 1024²），实际产出:\n%s", raw)
+	}
+}
+
+func TestBodyMaxUnits(t *testing.T) {
+	cases := map[string]string{
+		"512KB": "524288",
+		"1GB":   "1073741824",
+		"1024":  "1024", // 无单位即字节
+	}
+	for in, want := range cases {
+		r := ok("a.example.com", "127.0.0.1:1")
+		r.BodyMax = in
+		b, issues := render.Render([]model.Route{r}, render.Options{})
+		if len(issues) > 0 {
+			t.Errorf("%s: %v", in, issues)
+			continue
+		}
+		if !strings.Contains(string(b), `"max_size": `+want) {
+			t.Errorf("%s 应当转成 %s 字节", in, want)
+		}
+	}
+}
+
+// 校验必须一次报出**全部**问题。只报第一个会让人改一处推一次，来回好几轮，
+// 而「改配置怕推错」正是这套东西要解决的痛点。
+func TestValidateReportsAllIssuesNotJustTheFirst(t *testing.T) {
+	issues := render.Validate([]model.Route{
+		{Domain: "not a domain", Upstream: "no-port", BlockMode: "毁灭", BodyMax: "五兆",
+			Whitelist: []string{"10.8.0.0/33"}},
+	})
+	for _, want := range []string{"domain", "upstream", "block_mode", "body_max", "whitelist[0]"} {
+		if !hasField(issues, want) {
+			t.Errorf("缺少字段 %s 的问题；实际报了 %v", want, issueFields(issues))
+		}
+	}
+}
+
+// 字段路径要能对上前端表单，数组下标用 [n]（api-contract §0.3）。
+func TestIssueFieldPathUsesArrayIndex(t *testing.T) {
+	issues := render.Validate([]model.Route{{
+		Domain: "a.example.com", Upstream: "127.0.0.1:1", BlockMode: model.BlockAbort,
+		Whitelist: []string{"10.0.0.0/8", "不是IP", "192.168.1.1"},
+	}})
+	if !hasField(issues, "whitelist[1]") {
+		t.Fatalf("应当把问题定位到 whitelist[1]，实际 %v", issueFields(issues))
+	}
+	if hasField(issues, "whitelist[0]") || hasField(issues, "whitelist[2]") {
+		t.Errorf("合法的条目被误报了: %v", issueFields(issues))
+	}
+}
+
+func TestUpstreamMustBeHostPort(t *testing.T) {
+	for _, bad := range []string{"", "example.com", "example.com:", "example.com:0", "example.com:99999", "example.com:abc"} {
+		issues := render.Validate([]model.Route{{Domain: "a.example.com", Upstream: bad, BlockMode: model.BlockAbort}})
+		if !hasField(issues, "upstream") {
+			t.Errorf("回源地址 %q 应当被拒绝", bad)
+		}
+	}
+	for _, good := range []string{"127.0.0.1:8080", "origin.internal:443", "10.8.0.12:80"} {
+		issues := render.Validate([]model.Route{{Domain: "a.example.com", Upstream: good, BlockMode: model.BlockAbort}})
+		if hasField(issues, "upstream") {
+			t.Errorf("回源地址 %q 是合法的，却被拒绝: %v", good, issues)
+		}
+	}
+}
+
+func TestDuplicateDomainIsRejected(t *testing.T) {
+	issues := render.Validate([]model.Route{
+		ok("dup.example.com", "127.0.0.1:1"),
+		ok("dup.example.com", "127.0.0.1:2"),
+	})
+	if !hasField(issues, "domain") {
+		t.Fatal("重复域名应当被拒绝")
+	}
+}
+
+// 回源 mTLS 属于 #22。开着却没有效果的安全开关，比一个明说「还没做」的报错危险得多。
+func TestMTLSIsRejectedRatherThanSilentlyIgnored(t *testing.T) {
+	r := ok("m.example.com", "127.0.0.1:1")
+	r.MTLS = true
+	issues := render.Validate([]model.Route{r})
+	if !hasField(issues, "mtls") {
+		t.Fatal("回源 mTLS 尚未实现时应当拒绝下发，而不是静默忽略这个开关")
+	}
+}
+
+// 白名单为空 = 不限制，不应产生 deny 路由。
+func TestEmptyWhitelistProducesNoDenyRoute(t *testing.T) {
+	b, _ := render.Render([]model.Route{ok("open.example.com", "127.0.0.1:1")}, render.Options{})
+	if strings.Contains(string(b), `"not"`) {
+		t.Fatalf("白名单为空却渲染出了 deny 匹配器:\n%s", b)
+	}
+}
+
+// 裸 IP 补成 /32，让渲染产出稳定——写法差异不该在 diff 里跳行。
+func TestBareIPIsNormalizedToCIDR(t *testing.T) {
+	r := ok("w.example.com", "127.0.0.1:1")
+	r.Whitelist = []string{"203.0.113.7", "10.8.0.0/24"}
+	b, _ := render.Render([]model.Route{r}, render.Options{})
+	if !strings.Contains(string(b), `"203.0.113.7/32"`) {
+		t.Errorf("裸 IP 应当补成 /32:\n%s", b)
+	}
+	if !strings.Contains(string(b), `"10.8.0.0/24"`) {
+		t.Error("已经是 CIDR 的条目不该被改动")
+	}
+}
+
+// 渲染产出必须与输入顺序无关，否则 diff 会因为「谁先谁后」而虚报变更。
+func TestRenderIsOrderIndependent(t *testing.T) {
+	a := []model.Route{ok("b.example.com", "127.0.0.1:1"), ok("a.example.com", "127.0.0.1:2")}
+	b := []model.Route{ok("a.example.com", "127.0.0.1:2"), ok("b.example.com", "127.0.0.1:1")}
+	ra, _ := render.Render(a, render.Options{})
+	rb, _ := render.Render(b, render.Options{})
+	if string(ra) != string(rb) {
+		t.Fatal("同一组路由换个顺序渲染出了不同的字节——diff 会虚报变更")
+	}
+}
+
+// 不渲染 apps/tls：一张证书都没有时渲染它会把节点上外部证书平台写入的内容抹掉，
+// 那是上一版真出过的事故（ADR-0010）。
+func TestDoesNotRenderTLSApp(t *testing.T) {
+	b, _ := render.Render([]model.Route{ok("t.example.com", "127.0.0.1:1")}, render.Options{})
+	var cfg struct {
+		Apps map[string]json.RawMessage `json:"apps"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.Apps["tls"]; ok {
+		t.Fatal("主控还没有任何证书时不该渲染 apps/tls")
+	}
+}
+
+// 校验不过时不产出配置——一份没通过校验的配置绝不该有机会被下发。
+func TestNoConfigWhenValidationFails(t *testing.T) {
+	b, issues := render.Render([]model.Route{{Domain: "bad", Upstream: "x"}}, render.Options{})
+	if len(issues) == 0 {
+		t.Fatal("这组输入应当校验失败")
+	}
+	if b != nil {
+		t.Fatal("校验失败时不该产出配置")
+	}
+}
