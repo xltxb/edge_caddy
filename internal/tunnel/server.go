@@ -281,8 +281,8 @@ func (s *Server) identify(ctx context.Context, hello *edgev1.Hello) (string, *ed
 	}
 
 	if hello.GetToken() == "" {
-		return "", nil, status.Error(codes.Unauthenticated,
-			"没有客户端证书也没有接入 Token")
+		return "", nil, s.refuseEnroll(ctx, "",
+			"接入被拒：没有客户端证书也没有接入 Token", codes.Unauthenticated)
 	}
 
 	// **先查验，最后才消耗。** 中间这几步都可能失败，而 Token 一旦烧掉，
@@ -292,11 +292,14 @@ func (s *Server) identify(ctx context.Context, hello *edgev1.Hello) (string, *ed
 	spec, err := s.opt.Store.PeekEnrollToken(ctx, hello.GetToken())
 	switch {
 	case errors.Is(err, store.ErrTokenInvalid):
-		return "", nil, status.Error(codes.Unauthenticated, "接入 Token 无效")
+		// node 传空：这张 Token 认不出来，我们不知道它想接入哪台机器。
+		return "", nil, s.refuseEnroll(ctx, "", "接入被拒：Token 无效", codes.Unauthenticated)
 	case errors.Is(err, store.ErrTokenExpired):
-		return "", nil, status.Error(codes.Unauthenticated, "接入 Token 已过期")
+		return "", nil, s.refuseEnroll(ctx, hello.GetNodeId(),
+			"接入被拒：Token 已过期（签发后 30 分钟内有效）", codes.Unauthenticated)
 	case errors.Is(err, store.ErrTokenUsed):
-		return "", nil, status.Error(codes.Unauthenticated, "接入 Token 已被使用")
+		return "", nil, s.refuseEnroll(ctx, hello.GetNodeId(),
+			"接入被拒：Token 已被使用过", codes.Unauthenticated)
 	case err != nil:
 		return "", nil, status.Errorf(codes.Internal, "校验接入 Token: %v", err)
 	}
@@ -343,6 +346,33 @@ func (s *Server) identify(ctx context.Context, hello *edgev1.Hello) (string, *ed
 //
 // **两条接入路径都要过这里。** 只挡 mTLS 那条的话，给一台已下线的机器签张新
 // Token 就能绕过去 —— 而「重装一台机器」正是人最可能顺手做的事。
+// refuseEnroll 记一条事件并返回给 Agent 的错误。
+//
+// **接入被拒此前只写主控自己的日志，控制台上一片安静。**
+//
+// 人在一台新机器上跑完安装脚本，回到控制台等它上线——如果 Token 填错了、
+// 过期了、已经用过了，或者这台机器之前被下线过，**他什么也看不到**：
+// 没有报错、没有提示、节点列表里不会多一行。唯一的线索在那台机器的
+// journalctl 里，而他人在控制台前面。
+//
+// 更安静的是另一种：一台被下线的机器，Agent 还在跑（Restart=always），
+// 每隔几十秒敲一次门被拒，**而控制台完全看不到它在敲**。
+//
+// kind 用 warn，判据是「**这个状态会不会自己好起来**」：不会自愈的最低 warn，
+// 会自愈的才可以 info（心跳抖动、单次探活失败属于后者）。
+// 接入被拒不会自愈——要么人去改 Token，要么人去重新上线，要么去关掉那台
+// 机器的 Agent。而 crit 也不对：它不影响正在服务的流量。
+func (s *Server) refuseEnroll(ctx context.Context, nodeID, msg string, code codes.Code) error {
+	s.log.Warn("拒绝接入", "node_id", nodeID, "reason", msg)
+	// node 为空表示系统级事件（契约 §2）：凭 Token 接入被拒时那台机器
+	// **还不是一个节点**，把它挂到一个不存在的 node_id 上，
+	// 会让事件流里出现一行点不开的节点名。
+	if _, err := s.opt.Store.InsertEvent(ctx, nodeID, "warn", msg); err != nil {
+		s.log.Error("写接入被拒事件失败", "err", err)
+	}
+	return status.Error(code, msg)
+}
+
 func (s *Server) refuseIfDrained(ctx context.Context, nodeID string) error {
 	drained, err := s.opt.Store.IsNodeDrained(ctx, nodeID)
 	if err != nil {
@@ -351,9 +381,9 @@ func (s *Server) refuseIfDrained(ctx context.Context, nodeID string) error {
 	if drained {
 		// 理由要说全：Agent 侧只看得到这句话，而「被拒绝」和「连不上」
 		// 在日志里长得一样，人会去查网络。
-		s.log.Warn("拒绝已下线节点接入", "node_id", nodeID)
-		return status.Error(codes.PermissionDenied,
-			"该节点已被下线，先在控制台「重新上线」再接入")
+		return s.refuseEnroll(ctx, nodeID,
+			"接入被拒：该节点已被下线，先在控制台「重新上线」再接入",
+			codes.PermissionDenied)
 	}
 	return nil
 }

@@ -655,3 +655,113 @@ func TestNodeLogsTravelTheWholeChain(t *testing.T) {
 		t.Errorf("应当能看到 Agent 自己那条「接入完成」，实际 %+v", items)
 	}
 }
+
+// **接入被拒时控制台上要看得到。**
+//
+// 人在一台新机器上跑完安装脚本，回到控制台等它上线——如果 Token 填错了、
+// 过期了、已经用过了，或者这台机器之前被下线过，此前他**什么也看不到**：
+// 没有报错、没有提示、节点列表里不会多一行。唯一的线索在那台机器的
+// journalctl 里，而他人在控制台前面。
+func TestRefusedEnrollShowsUpInEvents(t *testing.T) {
+	r := newRig(t)
+
+	events := func() []struct {
+		Kind string  `json:"kind"`
+		Msg  string  `json:"msg"`
+		Node *string `json:"node"`
+	} {
+		t.Helper()
+		e := r.mustDo("GET", "/overview", nil)
+		var d struct {
+			Events []struct {
+				Kind string  `json:"kind"`
+				Msg  string  `json:"msg"`
+				Node *string `json:"node"`
+			} `json:"events"`
+		}
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			t.Fatal(err)
+		}
+		return d.Events
+	}
+
+	// 拿一张编造的 Token 去接入。
+	r.startAgent("node-hk-01", "ec_这张token根本不存在", t.TempDir())
+
+	deadline := time.Now().Add(10 * time.Second)
+	var seen bool
+	for time.Now().Before(deadline) && !seen {
+		for _, ev := range events() {
+			if strings.Contains(ev.Msg, "接入被拒") {
+				seen = true
+				// **kind 是 warn，不是 info。**
+				//
+				// 判据是「这个状态会不会自己好起来」：接入被拒不会自愈
+				// ——要么人去改 Token，要么人去重新上线，要么去关掉那台
+				// 机器的 Agent。发 info 会让它淹在心跳事件里。
+				// 而 crit 也不对：它不影响正在服务的流量。
+				if ev.Kind != "warn" {
+					t.Errorf("接入被拒应当是 warn，实际 %q（%s）", ev.Kind, ev.Msg)
+				}
+				if !strings.Contains(ev.Msg, "无效") {
+					t.Errorf("要说清是哪一种拒绝：%q", ev.Msg)
+				}
+			}
+		}
+		if !seen {
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+	if !seen {
+		t.Fatalf("10 秒内没有「接入被拒」事件 —— 人在控制台前面等，而什么也没发生：%+v", events())
+	}
+}
+
+// **一台已下线的机器在反复敲门，控制台要看得见。**
+//
+// Agent 的 Restart=always 保证它一直敲，直到有人动手（重新上线，
+// 或者去关掉那台机器的 Agent）。此前那件事完全不可见。
+func TestDrainedNodeKnockingShowsUpInEvents(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	dir := t.TempDir()
+	stop := r.startAgent("node-hk-01", token, dir)
+	r.waitOnline("node-hk-01")
+
+	r.mustDo("POST", "/nodes/node-hk-01/drain", map[string]any{"confirm": true})
+	stop()
+	r.waitOffline("node-hk-01")
+
+	// 它带着 mTLS 证书回来敲门。
+	r.startAgent("node-hk-01", "", dir)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		e := r.mustDo("GET", "/overview", nil)
+		var d struct {
+			Events []struct {
+				Kind string  `json:"kind"`
+				Msg  string  `json:"msg"`
+				Node *string `json:"node"`
+			} `json:"events"`
+		}
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			t.Fatal(err)
+		}
+		for _, ev := range d.Events {
+			if strings.Contains(ev.Msg, "已被下线") {
+				if ev.Kind != "warn" {
+					t.Errorf("kind = %q，想要 warn", ev.Kind)
+				}
+				// 这一条**认得出是哪台机器**（凭 mTLS 证书的 CN），
+				// 所以事件要挂在那个节点上，人能点进去。
+				if ev.Node == nil || *ev.Node != "node-hk-01" {
+					t.Errorf("这条认得出节点，应当挂在它身上，实际 %v", ev.Node)
+				}
+				return
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatal("10 秒内没有看到那台机器在敲门")
+}
