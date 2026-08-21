@@ -410,6 +410,9 @@ func proxyRoute(r model.Route, rules []model.Rule, pol Policies, opt Options) ma
 
 // normalizeRanges 把裸 IP 补成 /32 或 /128。Caddy 的 remote_ip 接受两种写法，
 // 但统一成 CIDR 让渲染产出稳定，diff 里不会因为写法差异跳行。
+//
+// 「Caddy 两种都接受」这句由 TestBareIPIsNormalizedToCIDR 与真 Caddy 的
+// 白名单测试一起守着 —— 它是关于外部行为的断言，不该只靠这行注释。
 func normalizeRanges(list []string) []string {
 	out := make([]string, 0, len(list))
 	for _, e := range list {
@@ -603,7 +606,7 @@ var bodyMaxRE = regexp.MustCompile(`^\s*(\d+(?:\.\d+)?)\s*([KMGT]?B?)\s*$`)
 
 // parseBodyMax 用 1024 进制。歧义无法避免（"MB" 在不同工具里各有含义），
 // 选二进制是因为它与 Caddy 文档和运维直觉一致；这个选择写在这里，
-// 而不是散落在调用方的猜测里。
+// 而不是散落在调用方的猜测里。契约 §6.1 写明了它，TestBodyMaxUnits 钉着换算结果。
 func parseBodyMax(s string) (int64, bool) {
 	m := bodyMaxRE.FindStringSubmatch(strings.ToUpper(s))
 	if m == nil {

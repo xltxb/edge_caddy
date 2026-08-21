@@ -18,6 +18,8 @@ import (
 
 // VerifyServer 是 Agent 在回环地址上暴露的**校验端点**。
 //
+// **这条委托是 ADR-0003 的决定**（docs/adr/0003-edge-auth-via-agent-forward-auth.md）。
+//
 // 官方 Caddy 既没有 JWT 模块也没有 HMAC 模块，所以受保护域名的请求先经
 // forward_auth 委托到这里，由 Agent 用 Go 真正验签，Caddy 按状态码放行或拒绝
 // （docs/adr/0003-edge-auth-via-agent-forward-auth.md）。

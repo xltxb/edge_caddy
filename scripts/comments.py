@@ -54,6 +54,71 @@ def scan(paths):
     return found
 
 
+# 「陈述外部行为的理由」要挂在**会通知你**的东西上。
+#
+# 前端 agent 先做的这一条（他那边扫的是「陈述后端行为」，我这边扫的是
+# 「陈述 Caddy / PostgreSQL 行为」——各自的「对方」不同）。
+#
+# **锚有三种，第三种是我一直在用而没说出口的：**
+#
+#   契约  —— 改了等于改接口，对方会知道
+#   ADR   —— 改了要写 supersedes
+#   测试  —— 改了会红，而且它是**自动的**
+#
+# 第三种最强，但它此前不可检：一条「由某个测试守着」的理由，
+# 除非注释里点了那条测试的名字，否则跟没有锚一样。所以 ANCHOR 认 `Test\w+`
+# ——把「有没有锚」变成一个可查的信号。
+MENTIONS = re.compile(r"Caddy|官方包|PostgreSQL|Postgres|pgx|slog")
+JUSTIFY = re.compile(r"因为|所以|理由|之所以|才|不然|否则|正是|这样")
+ANCHOR = re.compile(r"ADR-\d|adr/\d|api-contract|契约\s*§|CONTEXT\.md|§\d|Test[A-Z]\w+")
+
+
+def blocks(path):
+    """按注释块切，块内再按句切。
+
+    **句子级，不是块级。** 前端在这一步栽过：他第一版按块判，
+    于是一个讲纯前端取舍的块因为顺带提了一句后端就被误报——
+    两句无关，而检查器把它们算作一句。
+
+    这个毛病他连撞三次，每次换一层尺度：单行看不见多行结构 →
+    单行看不见同一块里的别的行 → 整块看不见句子边界。
+    **每一次都是检查的粒度和被检查对象的结构不匹配。**
+    """
+    lines = path.read_text(encoding="utf-8").split("\n")
+    i = 0
+    while i < len(lines):
+        if not lines[i].strip().startswith("//"):
+            i += 1
+            continue
+        start, buf = i, []
+        while i < len(lines) and lines[i].strip().startswith("//"):
+            buf.append(lines[i].strip().lstrip("/").strip())
+            i += 1
+        yield start + 1, " ".join(buf)
+
+
+def check_anchors(paths):
+    """陈述外部行为的理由，有没有挂在会通知你的东西上。"""
+    bad = 0
+    for f in paths:
+        if f.name.endswith("_test.go"):
+            continue
+        for ln, text in blocks(f):
+            if ANCHOR.search(text):
+                continue
+            for sent in re.split(r"[。；\n]", text):
+                if MENTIONS.search(sent) and JUSTIFY.search(sent) and len(sent) > 12:
+                    print(f"  ✗ {f.relative_to(ROOT)}:{ln}\n     {sent.strip()[:90]}")
+                    bad += 1
+                    break
+    if not bad:
+        print("  ✓ 每条陈述外部行为的理由都挂着契约 / ADR / 测试")
+    else:
+        print("\n  把它挂到会通知你的东西上：契约（改了等于改接口）、"
+              "ADR（改了要写 supersedes）、或者点名那条守着它的测试。")
+    return bad
+
+
 def check_index():
     """scripts/README.md 那份索引必须与真实存在的脚本**双向**一致。
 
@@ -152,7 +217,9 @@ def main():
               "它只是不该占第一句。")
 
     print()
-    bad = check_index()
+    bad = check_anchors(files)
+    print()
+    bad += check_index()
     return 1 if (found or bad) else 0
 
 

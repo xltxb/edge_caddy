@@ -138,6 +138,10 @@ func serverProtocols(p Policies, tls bool) []string {
 
 // responseHeaderHandler 产出 HSTS 与去掉指纹响应头的 handler。
 // 两件事共用一个 handler，因为 Caddy 的 headers 模块本来就同时管增删。
+//
+// **这是一条关于 Caddy 行为的断言，守着它的是测试而不是文档**：
+// TestGlobalPoliciesActuallyTakeEffect（internal/e2e）拿真 Caddy 验
+// HSTS 加上了、Server 头没了。Caddy 哪天拆开这个模块，那条会红。
 func responseHeaderHandler(p Policies, tls bool) map[string]any {
 	set := map[string]any{}
 	var del []string
@@ -162,6 +166,7 @@ func responseHeaderHandler(p Policies, tls bool) map[string]any {
 
 	resp := map[string]any{
 		// deferred：Server 头是 Caddy 在写响应时才加的，不延后就删不掉。
+		// 同上，这个时序由 TestGlobalPoliciesActuallyTakeEffect 守着。。
 		"deferred": true,
 	}
 	if len(set) > 0 {
