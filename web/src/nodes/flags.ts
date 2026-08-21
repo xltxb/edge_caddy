@@ -49,7 +49,8 @@ export function nodeFlags(n: EdgeNode, dnsSyncOk: boolean | null): NodeFlag[] {
 /**
  * 「恢复解析」能不能按。
  *
- * 已下线的节点开解析后端回 2001。置灰而不是让人点了再被拒 —— **一道人人都会
+ * 已下线的节点开解析会被拒（契约 §4：`2001`，msg 说明先「重新上线」）。
+ * 置灰而不是让人点了再被拒 —— **一道人人都会
  * 撞到的拒绝，说明那个按钮不该能按**。关解析不拒，所以只在「要开」的方向拦。
  */
 export function canEnableDns(n: EdgeNode): { ok: boolean; reason: string } {

@@ -270,6 +270,46 @@ await check(
   },
 )
 
+// ── 契约里没写、但前端的清理逻辑压在上面的一条 ──
+await check(
+  '删规则会连它的草稿一起清掉',
+  'src/stores/config.ts 的 deleteRule（本地跟着清 patches）',
+  async () => {
+    const ID = '__premise_draft_gc__'
+    const put = await call(`/rules/${ID}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        name: '前提核查（草稿清理）',
+        type: 'ip_whitelist',
+        enabled: true,
+        apply_to: [],
+        spec: { ips: ['203.0.113.1'] },
+      }),
+    })
+    must(put.body?.code === 0, `建规则失败：${put.body?.msg}`)
+
+    const key = `rule:${ID}`
+    await call(`/drafts/${encodeURIComponent(key)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ spec: { ips: ['203.0.113.9'] } }),
+    })
+    const before = await call('/drafts')
+    must(before.body?.data?.items?.[key], '草稿没建起来，后面的断言不作数')
+
+    const del = await call(`/rules/${ID}`, { method: 'DELETE' })
+    must(del.body?.code === 0, `删除失败：${del.body?.msg}`)
+
+    const after = await call('/drafts')
+    must(
+      !after.body?.data?.items?.[key],
+      '**规则删了而草稿还在** —— 顶栏的「N 处未下发改动」会一直算着一个再也下发' +
+        '不出去的东西。前端 deleteRule 里本地跟着清的那段，理由就压在这条上；' +
+        '契约 §6.2 没写这一点，所以它变了不会有人来通知我。',
+    )
+    return '草稿跟着规则一起没了'
+  },
+)
+
 /* ── 报告 ── */
 const bad = results.filter((r) => !r.ok)
 console.log('')

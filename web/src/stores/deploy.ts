@@ -83,7 +83,8 @@ export const useDeployStore = defineStore('deploy', () => {
   /**
    * 把校验错误按 res_key → 字段路径索引，供表单落红框。
    *
-   * 后端对数组元素报的是带下标的路径（`whitelist[0]`），而字段表里的路径是
+   * 契约 §0.3 规定 `field` 用点号路径、**数组下标用 `[n]`**，
+   * 所以数组元素的错误是 `whitelist[0]` 这种，而字段表里的路径是
    * `whitelist` —— 只按原样索引的话，红框永远落不到那个输入框上，人只能在
    * 弹层里看到一条报错却不知道去哪儿改。所以两个键都登记：带下标的留着，
    * 基路径也指向同一条原因。
@@ -144,7 +145,7 @@ export const useDeployStore = defineStore('deploy', () => {
     /*
      * 立刻同步一次，不要指望「每一帧都接得住」。
      *
-     * 后端的 POST /deploys 在**首轮结束时**才返回，也就是说逐节点的
+     * 契约 §7 写明 POST /deploys 在**首轮结束时**才返回，也就是说逐节点的
      * deploy_progress 帧很可能在 HTTP 响应回来之前就推完了 —— 那时 current
      * 还不存在，applyProgress 会把它们全丢掉，进度永远停在 0/N。
      * mock 里因为进度是响应之后才开始推的，这条路径一直没被走到。
@@ -240,7 +241,7 @@ export const useDeployStore = defineStore('deploy', () => {
     if (!c) return stopPolling()
     try {
       // 详情的 results[] 与 WS 帧一一对应，所以进度组件两条数据源共用一套渲染。
-      // 但进行中时它是**部分**结果（后端逐条落库），整体替换会把还没回报的
+      // 但进行中时它是**部分**结果（契约 §7.3），整体替换会把还没回报的
       // 节点整行抹掉 —— 那正好是降级时最需要看见的「还有谁没回来」。
       const d = await http.get<DeployDetailWire>(`/deploys/${c.id}`)
       c.rows = mergeRows(d.targets, d.results)
