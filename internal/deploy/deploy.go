@@ -632,6 +632,11 @@ func (s *Scheduler) certsForRender(ctx context.Context) ([]render.Cert, error) {
 // commit 把本次勾选的资源的**合并结果**写回 live。
 //
 // 只写本次勾选的：未勾选的草稿仍然是草稿，它们的值不该被顺手落地。
+//
+// **它不动 version，也不删草稿**——那两件由调用方分别做（BumpXVersions 与
+// DeleteDrafts）。这里点明是因为「下发」在契约 §7.2 里是三件事，
+// 而这个函数只做其中一件；一个只读到这里的人容易以为「合入 live」
+// 顺带把另外两件也办了。
 func (s *Scheduler) commit(ctx context.Context, resKeys []string, routes []model.Route, rules []model.Rule) error {
 	selected := map[string]bool{}
 	for _, k := range resKeys {

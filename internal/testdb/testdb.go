@@ -29,7 +29,7 @@ func adminURL() string {
 	return "postgres://localhost:5432/postgres?sslmode=disable"
 }
 
-// newTestStore 为每个测试开一个独立的库并迁到最新，测试结束后删掉。
+// New 为每个测试开一个独立的库并迁到最新，测试结束后删掉。
 //
 // 独立库而不是共享库 + 事务回滚：迁移本身要建 TYPE 和 TABLE，
 // 而我们恰恰想测迁移。共享库里跑迁移会让并行的测试互相看见对方的 DDL。
