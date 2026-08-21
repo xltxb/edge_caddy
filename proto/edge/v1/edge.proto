@@ -1,0 +1,122 @@
+syntax = "proto3";
+
+package edge.v1;
+
+// EdgeTunnel 是 Agent 与主控之间唯一的通道：Agent 主动外连（穿透 NAT），
+// 一条双向流承载全部往来。
+//
+// 首帧必须是 Hello。新节点凭一次性 Token（服务端单向 TLS），主控在这次交换里
+// 签发隧道客户端证书并用 Enrolled 下发；此后该节点全部连接走 mTLS。
+// 见 docs/adr/0009-internal-pki-two-cas.md。
+service EdgeTunnel {
+  rpc Channel(stream AgentMsg) returns (stream MasterMsg);
+}
+
+message AgentMsg {
+  oneof m {
+    Hello hello = 1;
+    Heartbeat hb = 2;
+    PushResult push_result = 3;
+    LogBatch logs = 4;
+    CertList certs = 5;
+    ProbeResult probe_result = 6;  // 增补：后端文档 §5 有 Probe 下行却没有回执
+  }
+}
+
+message MasterMsg {
+  oneof m {
+    PushConfig push = 1;
+    Probe probe = 2;
+    Drain drain = 3;
+    RenewCert renew = 4;
+    Enrolled enrolled = 5;  // 增补：接入握手的应答，承载隧道客户端证书
+  }
+}
+
+// ---- 接入 ----
+
+message Hello {
+  string token = 1;    // 一次性接入 Token；已接入的节点留空，身份由 mTLS 证书决定
+  string node_id = 2;
+  string version = 3;  // Agent 版本
+}
+
+// Enrolled 是主控对 Hello 的应答。只在凭 Token 首连时携带证书；
+// 已用 mTLS 连上的节点收到的 Enrolled 证书字段为空，仅表示握手被接受。
+message Enrolled {
+  bytes tunnel_cert_pem = 1;  // 隧道客户端证书（长期，见 ADR-0009）
+  bytes tunnel_key_pem = 2;
+  bytes tunnel_ca_pem = 3;    // 隧道 CA，用于校验主控
+  string cfg_version = 4;     // 当前基线，Agent 据此判断是否需要等待一次下发
+}
+
+// ---- 心跳 ----
+
+message Heartbeat {
+  string node_id = 1;
+  double cpu = 2;
+  double mem = 3;
+  uint32 conns = 4;
+  string cfg_version = 5;
+
+  // 增补，供控制台的两处呈现（docs/api-contract.md §2 §3）：
+  uint32 routes = 6;  // 该节点当前生效配置里的路由数——漂移的节点会报旧数字
+  uint32 rules = 7;   // 同上，访问规则数
+
+  // 回源率（api-contract §3）：origin_total / req_total。
+  // 注意这不是缓存命中率——官方 Caddy 没有缓存模块，没到达 upstream 的请求
+  // 是被访问规则拦下或由静态响应处理掉的。
+  uint64 req_total = 8;
+  uint64 origin_total = 9;
+}
+
+// ---- 下发 ----
+
+message PushConfig {
+  string cfg_version = 1;
+  bytes caddy_json = 2;      // 主控渲染的全量配置。证书以 load_pem 内联其中（ADR-0010）
+  uint32 deadline_ms = 3;    // 默认 5000
+}
+
+// PushResult 的 ok=false 分两种，主控靠「有没有收到这条消息」区分，不靠 detail 的措辞：
+// 收到 → Caddy 拒绝了配置，不重试，detail 是 Caddy 原文；
+// 没收到（超时/断流）→ 传输层失败，重试。见 ADR-0005。
+message PushResult {
+  string cfg_version = 1;
+  bool ok = 2;
+  string detail = 3;  // "31ms" 或错误原文
+}
+
+// ---- 运维 ----
+
+message Probe { string id = 1; }
+
+message ProbeResult {
+  string id = 1;
+  bool caddy_admin = 2;   // 本机 127.0.0.1:2019 可达性，与隧道可达性分开报
+  string cfg_version = 3;
+}
+
+message Drain { string id = 1; }
+
+message RenewCert { string domain = 1; }
+
+// ---- 日志与证书 ----
+
+message LogBatch { repeated LogLine lines = 1; }
+
+message LogLine {
+  int64 at_unix_ms = 1;
+  string level = 2;  // debug | info | warn | error
+  string msg = 3;
+}
+
+// CertList 是回执，不是账本：主控自己持有全部签发记录，这条回答的是
+// 「下发到了之后节点有没有真的加载」。见 ADR-0010 的补充。
+message CertList { repeated CertEntry entries = 1; }
+
+message CertEntry {
+  string domain = 1;
+  int64 not_after_unix = 2;
+  string fingerprint = 3;
+}

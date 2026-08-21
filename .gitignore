@@ -5,9 +5,6 @@ web/dist/
 web/node_modules/
 
 # 本地数据与凭据
-*.sqlite
-*.sqlite-wal
-*.sqlite-shm
 *.pem
 *.key
 /data/

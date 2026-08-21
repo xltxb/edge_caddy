@@ -1,0 +1,73 @@
+package api
+
+import (
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/xltxb/edge_caddy/internal/store"
+	"github.com/xltxb/edge_caddy/internal/ws"
+)
+
+type Server struct {
+	store        *store.Store
+	log          *slog.Logger
+	sessionTTL   time.Duration
+	secureCookie bool
+}
+
+type Options struct {
+	Store       *store.Store
+	Hub         *ws.Hub
+	Log         *slog.Logger
+	SessionTTL  time.Duration
+	OpsBotToken string
+
+	// SecureCookie 应当与「控制台跑在 TLS 上」一致。ADR-0013 下默认关闭：
+	// 首版绑内网 HTTP，Secure Cookie 在 http:// 下不会被浏览器存下来。
+	SecureCookie bool
+}
+
+// New 装配路由。契约见 docs/api-contract.md。
+//
+// 这里只装配 #17 骨架涉及的部分：会话与审计查询。其余端点随各自的 issue 落地，
+// 未实现的路径**不注册**——注册一个返回空数据的桩会让前端以为它通了，
+// 而那正是上一版「16 个 issue 每个都做了一点」的失败形态。
+func New(o Options) *gin.Engine {
+	if o.Log == nil {
+		o.Log = slog.Default()
+	}
+	gin.SetMode(gin.ReleaseMode)
+
+	r := gin.New()
+	r.Use(Recover(o.Log))
+
+	s := &Server{
+		store:        o.Store,
+		log:          o.Log,
+		sessionTTL:   o.SessionTTL,
+		secureCookie: o.SecureCookie,
+	}
+
+	v1 := r.Group("/api/v1")
+
+	// 公开：登录本身不能要求已登录。
+	v1.POST("/auth/login", Audit(o.Store, o.Log), audited("登录", s.handleLogin))
+
+	authed := v1.Group("", Auth(o.Store, o.OpsBotToken), Audit(o.Store, o.Log))
+	authed.POST("/auth/logout", audited("登出", s.handleLogout))
+	authed.GET("/auth/session", s.handleSession)
+
+	// WS 复用会话 Cookie，因此挂在 authed 组里：未登录直接 401，不升级（契约 §0.6）。
+	if o.Hub != nil {
+		authed.GET("/ws", gin.WrapF(ws.Handler(o.Hub, o.Log)))
+	}
+
+	// 端点不存在用 HTTP 404，而不是 CodeNotFound——后者表示**资源**不存在。
+	// 混在一起前端就分不清「路由写错了」和「这条路由被别人删了」。
+	r.NoRoute(func(c *gin.Context) {
+		c.JSON(http.StatusNotFound, Envelope{Code: CodeOK, Data: nil, Msg: "端点不存在"})
+	})
+	return r
+}
