@@ -17,7 +17,8 @@
     "check:probes:self": "node scripts/probe.mjs --self-test",
     "check:templates": "node scripts/check-templates.mjs",
     "check": "node scripts/test.mjs",
-    "check:fast": "node scripts/test.mjs --fast"
+    "check:fast": "node scripts/test.mjs --fast",
+    "check:comments": "node scripts/check-comments.mjs"
   },
   "dependencies": {
     "pinia": "^2.2.6",

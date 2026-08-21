@@ -43,6 +43,12 @@ const STEPS = [
     args: ['scripts/check-templates.mjs'],
     ranRe: /(\d+) 个模板/,
   },
+  {
+    name: '复盘注释首句',
+    cmd: 'node',
+    args: ['scripts/check-comments.mjs'],
+    ranRe: /(\d+) 个复盘块/,
+  },
   ...(fast
     ? []
     : [
