@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xltxb/edge_caddy/internal/api"
 )
@@ -158,10 +159,11 @@ func TestDrainRequiresConfirmAndEveryStepExplainsItself(t *testing.T) {
 			t.Errorf("%s 应当说明为什么", st.Step)
 		}
 	}
-	// 尚未实现的两步必须报 ok=false —— 回一个 true 会让人以为流量已经排干净了。
-	for _, st := range d.Steps[1:] {
-		if st.OK {
-			t.Errorf("%s 尚未实现，不该报成功", st.Step)
+	// conns_drained 尚未实现，必须报 ok=false ——
+	// 回一个 true 会让人以为流量已经排干净了，然后关掉那台机器，而连接还在。
+	for _, st := range d.Steps {
+		if st.Step == "conns_drained" && st.OK {
+			t.Error("conns_drained 尚未实现，不该报成功")
 		}
 	}
 }
@@ -355,5 +357,140 @@ func TestDrainDoesNotClaimDNSRemovedWithoutSyncing(t *testing.T) {
 	// 过期的欠条比没有欠条更糟：它看起来是有人管着的。
 	if strings.Contains(dns.Detail, "#21") {
 		t.Errorf("#21 已经完成，detail 不该再指着它: %q", dns.Detail)
+	}
+}
+
+// **下线之后节点不能自己连回来。**
+//
+// Agent 断了就重连，所以「关闭隧道」如果只是断开会话，那是个假动作：
+// 三秒后隧道又开了，节点照旧接下发、照旧参与解析，而 tunnel_closed 报了 true。
+// 下线必须是主控侧的一个持久事实（ADR-0014）。
+func TestDrainedNodeIsRefusedUntilRejoined(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	dir := t.TempDir()
+	stop := r.startAgent("node-hk-01", token, dir)
+	r.waitOnline("node-hk-01")
+
+	r.mustDo("POST", "/nodes/node-hk-01/drain", map[string]any{"confirm": true})
+
+	// 停掉再起。Agent 本来就会自己重连，这里只是把那个过程压缩掉，
+	// 不必等隧道被动断开。token 留空 —— 已接入过的节点凭 mTLS 连。
+	stop()
+	r.waitOffline("node-hk-01")
+	r.startAgent("node-hk-01", "", dir)
+	r.stayOffline("node-hk-01", 2*time.Second)
+
+	// 列表上要能看出这是「我让它下线的」，而不是「它自己挂了」。
+	nodes := r.mustDo("GET", "/nodes", nil)
+	var d struct {
+		Items []struct {
+			ID        string  `json:"id"`
+			DrainedAt *string `json:"drained_at"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(nodes.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Items) == 0 || d.Items[0].DrainedAt == nil {
+		t.Fatalf("已下线的节点应当带 drained_at，实际 %+v", d.Items)
+	}
+
+	// 放回来。
+	r.mustDo("POST", "/nodes/node-hk-01/rejoin", nil)
+	r.startAgent("node-hk-01", "", dir)
+	r.waitOnline("node-hk-01")
+
+	after := r.mustDo("GET", "/nodes", nil)
+	var d2 struct {
+		Items []struct {
+			DrainedAt *string `json:"drained_at"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(after.Data, &d2); err != nil {
+		t.Fatal(err)
+	}
+	// **重新上线要真的清掉标记，不能只是「这次放它进来」。**
+	// 留着标记而放行，下一次谁读这一列都会读到一个跟事实相反的值。
+	if d2.Items[0].DrainedAt != nil {
+		t.Errorf("重新上线之后 drained_at 应当清掉，实际 %q", *d2.Items[0].DrainedAt)
+	}
+}
+
+// **已下线的节点不能被重新放进解析。**
+//
+// 下线会关掉 dns_enabled，归一化因此自然排除了它。但那道排除是**间接**的：
+// 只要有人点一下「恢复解析」，标志位就回来了，而机器还连不上来——
+// 解析于是指向一台主控明确拒绝它接入的机器。
+//
+// 排除必须直接钉在「已下线」这个事实上，而不是搭在另一个标志位的当前值上。
+func TestDrainedNodeCannotBePutBackIntoDNS(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	r.mustDo("POST", "/nodes/node-hk-01/drain", map[string]any{"confirm": true})
+
+	_, e := r.do("POST", "/nodes/node-hk-01/dns", map[string]any{"enabled": true})
+	if e.Code != api.CodeStateConflict {
+		t.Fatalf("给已下线的节点开解析应当被拒，code = %d msg = %q", e.Code, e.Msg)
+	}
+	if !strings.Contains(e.Msg, "下线") {
+		t.Errorf("拒绝理由要说清是因为下线: %q", e.Msg)
+	}
+
+	// 关解析仍然要允许 —— 那个方向不会把流量送到一台连不上的机器上，
+	// 而且下线本来就该让它留在解析外面。
+	r.mustDo("POST", "/nodes/node-hk-01/dns", map[string]any{"enabled": false})
+}
+
+// 已下线的节点不该拿到新的接入 Token —— 否则「重装一台机器」就绕过了下线。
+func TestDrainedNodeGetsNoEnrollToken(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+	r.mustDo("POST", "/nodes/node-hk-01/drain", map[string]any{"confirm": true})
+
+	_, e := r.do("POST", "/nodes/token", map[string]any{
+		"node_id": "node-hk-01", "city": "香港", "vendor": "DMIT", "line": "CN2 GIA",
+		"public_ip": "203.0.113.7",
+	})
+	if e.Code != api.CodeStateConflict {
+		t.Fatalf("已下线的节点不该拿到 Token，code = %d msg = %q", e.Code, e.Msg)
+	}
+}
+
+// **已下线的节点不该出现在下发目标里。**
+//
+// 它现在确实不会：下线断开了会话并拒绝重连，OnlineNodes 自然不含它。
+// 但那是**间接**成立的——谁改了「断开」或「拒绝重连」中的任何一环，
+// 这条就会静默破掉，表现是每次下发都多一条永远失败的目标记录。
+//
+// 钉一条测试在这里，是因为间接成立的事实没人会想起来去验。
+func TestDrainedNodeIsNotADeployTarget(t *testing.T) {
+	r := newRig(t)
+	for _, id := range []string{"node-a", "node-b"} {
+		tk, _ := r.issueTokenFor(id)
+		r.startAgent(id, tk, t.TempDir())
+		r.waitOnline(id)
+	}
+
+	r.mustDo("POST", "/nodes/node-b/drain", map[string]any{"confirm": true})
+	r.waitOffline("node-b")
+
+	r.mustDo("PUT", "/drafts/route:drained.example.com", map[string]any{"upstream": r.upstream})
+	e := r.mustDo("POST", "/deploys", map[string]any{
+		"res_keys": []string{"route:drained.example.com"},
+	})
+	var d struct {
+		Targets []string `json:"targets"`
+	}
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Targets) != 1 || d.Targets[0] != "node-a" {
+		t.Fatalf("目标应当只剩 node-a，实际 %+v", d.Targets)
 	}
 }

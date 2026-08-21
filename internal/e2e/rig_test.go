@@ -262,6 +262,34 @@ func (r *rig) waitOnline(nodeID string) {
 	r.t.Fatalf("节点 %s 在 10 秒内没有上线", nodeID)
 }
 
+// waitOffline 等节点从在线变成不在线。
+func (r *rig) waitOffline(nodeID string) {
+	r.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if !r.isOnline(nodeID) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	r.t.Fatalf("节点 %s 在 10 秒内没有离线", nodeID)
+}
+
+// stayOffline 断言节点在一段时间内**一直**没连上来。
+//
+// 这里必须是「持续为假」而不是「此刻为假」：Agent 本来就是断了就重连的，
+// 一个瞬时的快照什么也证明不了——它可能只是拍在两次重连的空档里。
+func (r *rig) stayOffline(nodeID string, d time.Duration) {
+	r.t.Helper()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if r.isOnline(nodeID) {
+			r.t.Fatalf("节点 %s 已下线，却又连回来了", nodeID)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // curlVia 是最终验收：一个真请求进 Caddy，按路由回源，拿到上游的响应。
 func (r *rig) curlVia(host string) (int, string) {
 	r.t.Helper()

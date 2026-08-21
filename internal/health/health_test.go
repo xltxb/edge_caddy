@@ -274,3 +274,37 @@ func TestLoadRecoveryReturnsToOK(t *testing.T) {
 		t.Fatalf("负载回落后应当回到 ok，实际 %q", got)
 	}
 }
+
+// **已下线的节点不该报离线告警。** 那不是故障，是我们自己关的（ADR-0014）。
+//
+// 下线之后节点必然停止心跳——主控断了它的隧道并拒绝它重连。所以离线判定
+// 一定会命中，而它命中的是一件我们主动做的事。
+//
+// 这条不是「顺手做得更好」：一个下线之后仍然每分钟报警的系统，会教会运维
+// 忽略那一类告警，而下次真有机器挂了的时候他们照旧会忽略。
+func TestDrainedNodeDoesNotRaiseOfflineAlert(t *testing.T) {
+	a := &recordingAlerter{}
+	d := &fakeDNS{}
+	m, st := newMonitor(t, a, d)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := st.SetNodeDrained(ctx, "node-a", true); err != nil {
+		t.Fatal(err)
+	}
+	go m.Run(ctx)
+
+	m.Observe(hb(12))
+	// 等足够久：不下线的话这段时间里 TestNodeGoesDownAfterThresholdMisses
+	// 早就收到告警了。
+	time.Sleep(600 * time.Millisecond)
+
+	if got := a.all(); len(got) != 0 {
+		t.Fatalf("已下线的节点不该报告警，实际 %v", got)
+	}
+	detached, _ := d.took()
+	if len(detached) != 0 {
+		t.Errorf("已下线的节点解析早就摘了，不该再摘一次：%v", detached)
+	}
+}

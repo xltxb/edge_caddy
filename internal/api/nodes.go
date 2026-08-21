@@ -31,6 +31,10 @@ type nodeResp struct {
 	// CPUSeries 没有数据时是 null，不是一串 0 —— 0 会被读成「负载为零」。
 	CPUSeries []int     `json:"cpu_series"`
 	CreatedAt time.Time `json:"created_at"`
+	// DrainedAt 非 null 表示这台机器是**被人下线的**（ADR-0014）。
+	// 它和 Status 是两个正交的事实：可以「已下线且在线」（刚下线，隧道还没断干净），
+	// 也可以「未下线但离线」（它自己挂了）。前端别把它们合成一个徽标。
+	DrainedAt *string `json:"drained_at"`
 }
 
 func (s *Server) handleListNodes(c *gin.Context) {
@@ -78,6 +82,10 @@ func (s *Server) handleListNodes(c *gin.Context) {
 			age := time.Since(*n.LastHBAt).Milliseconds()
 			item.LastHBAt, item.HBAgeMS = &ts, &age
 		}
+		if n.DrainedAt != nil {
+			ts := n.DrainedAt.Format(time.RFC3339)
+			item.DrainedAt = &ts
+		}
 		items = append(items, item)
 	}
 	// dns_sync 是**常驻**的：界面上那个「已退出解析」徽标也是常驻的，
@@ -106,6 +114,21 @@ func (s *Server) handleIssueToken(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		Fail(c, CodeBadParam, "请求格式错误")
 		return
+	}
+	// 已下线的节点不该拿到新 Token。挡在这里是为了把话说明白 ——
+	// 接入路径也会挡（tunnel.refuseIfDrained），但那时人已经跑完安装脚本了，
+	// 而错误只出现在那台机器的日志里。
+	if req.NodeID != "" {
+		drained, err := s.store.IsNodeDrained(c.Request.Context(), req.NodeID)
+		if err != nil {
+			s.log.Error("查下线状态失败", "node", req.NodeID, "err", err)
+			Fail(c, CodeDownstream, "签发接入 Token 失败")
+			return
+		}
+		if drained {
+			Fail(c, CodeStateConflict, "该节点已被下线，先「重新上线」再签发接入 Token")
+			return
+		}
 	}
 	if req.NodeID == "" {
 		Fail(c, CodeBadParam, "node_id 不能为空")

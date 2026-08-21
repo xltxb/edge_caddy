@@ -248,6 +248,25 @@ func (m *Monitor) tick(ctx context.Context) {
 }
 
 func (m *Monitor) markDown(ctx context.Context, nodeID string) {
+	// **被人下线的节点不报离线。** 它必然停止心跳——主控断了它的隧道并拒绝
+	// 它重连——所以离线判定一定会命中，而它命中的是一件我们主动做的事
+	// （ADR-0014）。
+	//
+	// 一个下线之后仍然每分钟报警的系统，会教会运维忽略那一类告警，
+	// 而下次真有机器挂了的时候他们照旧会忽略。
+	//
+	// 查库放在这里而不是 sweep 的循环里：sweep 每个周期都跑，
+	// 这条路径只在真要标记的那一次走到。
+	drained, err := m.Store.IsNodeDrained(ctx, nodeID)
+	if err != nil {
+		// 查不出来就按「没下线」办：漏报一次真故障，比因为一次数据库抖动
+		// 把告警吞掉要好。
+		m.Log.Error("查下线状态失败，按未下线处理", "node", nodeID, "err", err)
+	} else if drained {
+		m.Log.Info("节点已被下线，心跳停止是预期的，不报离线", "node", nodeID)
+		return
+	}
+
 	m.Log.Warn("节点心跳超时，判定离线", "node", nodeID,
 		"interval", m.Interval, "threshold", m.Threshold)
 

@@ -165,6 +165,21 @@ func (s *Server) ListenAndServe(addr string) error {
 func (s *Server) Stop() { s.grpc.GracefulStop() }
 
 // OnlineNodes 返回当前持有活动隧道的节点。
+// Disconnect 主动断开一个节点的会话，返回它当时是不是连着的。
+//
+// 这只断这一次连接 —— Agent 会立刻重连。它单独存在没有意义，必须与
+// 下线标记一起用：标记决定「此后不许进来」，这个决定「现在就出去」。
+func (s *Server) Disconnect(nodeID string) bool {
+	s.mu.Lock()
+	sess := s.sessions[nodeID]
+	s.mu.Unlock()
+	if sess == nil {
+		return false
+	}
+	sess.close()
+	return true
+}
+
 func (s *Server) OnlineNodes() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -232,6 +247,9 @@ func (s *Server) identify(ctx context.Context, hello *edgev1.Hello) (string, *ed
 
 	if cn := clientCertCN(ctx); cn != "" {
 		// 老节点：身份由证书决定，不需要 Token，也不重新签发。
+		if err := s.refuseIfDrained(ctx, cn); err != nil {
+			return "", nil, err
+		}
 		return cn, &edgev1.Enrolled{CfgVersion: baseline}, nil
 	}
 
@@ -252,6 +270,12 @@ func (s *Server) identify(ctx context.Context, hello *edgev1.Hello) (string, *ed
 		return "", nil, status.Errorf(codes.Internal, "校验接入 Token: %v", err)
 	}
 
+	// Token 已经被消耗掉了 —— 那是对的：它本来就不该被用在一台已下线的机器上。
+	// 要重新接入，先「重新上线」再签一张新的。
+	if err := s.refuseIfDrained(ctx, spec.NodeID); err != nil {
+		return "", nil, err
+	}
+
 	if err := s.opt.Store.UpsertNode(ctx, spec); err != nil {
 		return "", nil, status.Errorf(codes.Internal, "写入节点: %v", err)
 	}
@@ -265,6 +289,28 @@ func (s *Server) identify(ctx context.Context, hello *edgev1.Hello) (string, *ed
 		TunnelCaPem:   s.opt.CA.CertPEM,
 		CfgVersion:    baseline,
 	}, nil
+}
+
+// refuseIfDrained 挡住已下线节点的接入。
+//
+// 没有这一道，「关闭隧道」就是个假动作：Agent 断了就重连，三秒后隧道又开了，
+// 节点照旧接下发、照旧参与解析，而下线那一步报了 true（ADR-0014）。
+//
+// **两条接入路径都要过这里。** 只挡 mTLS 那条的话，给一台已下线的机器签张新
+// Token 就能绕过去 —— 而「重装一台机器」正是人最可能顺手做的事。
+func (s *Server) refuseIfDrained(ctx context.Context, nodeID string) error {
+	drained, err := s.opt.Store.IsNodeDrained(ctx, nodeID)
+	if err != nil {
+		return status.Errorf(codes.Internal, "查下线状态: %v", err)
+	}
+	if drained {
+		// 理由要说全：Agent 侧只看得到这句话，而「被拒绝」和「连不上」
+		// 在日志里长得一样，人会去查网络。
+		s.log.Warn("拒绝已下线节点接入", "node_id", nodeID)
+		return status.Error(codes.PermissionDenied,
+			"该节点已被下线，先在控制台「重新上线」再接入")
+	}
+	return nil
 }
 
 func clientCertCN(ctx context.Context) string {

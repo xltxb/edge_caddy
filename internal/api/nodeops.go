@@ -50,6 +50,12 @@ func (s *Server) handleNodePush(c *gin.Context) {
 	OK(c, gin.H{"cfg_version": cfgVersion, "detail": detail})
 }
 
+// errNodeDrained 表示这次操作对一台已下线的机器说不通。
+//
+// 单独一个错误：调用方据此报「状态冲突」而不是「下游失败」——
+// 后者会让人去查网络、查凭证，而问题是他自己十分钟前把那台机器下线了。
+var errNodeDrained = errors.New("节点已下线")
+
 type dnsToggleReq struct {
 	Enabled *bool `json:"enabled"`
 }
@@ -64,6 +70,22 @@ type dnsToggleReq struct {
 // 只要「改标志位」和「同步服务商」是两个可以分开调的动作，就还会有第三个调用方
 // 只调前一个。**把它们焊死在一个函数里，才是这个 bug 真正的修法。**
 func (s *Server) setNodeDNS(ctx context.Context, nodeID string, enabled bool) (synced bool, detail string, err error) {
+	// **已下线的节点不能被重新放进解析。**
+	//
+	// 下线会关掉 dns_enabled，归一化因此自然排除了它——但那道排除是间接的，
+	// 搭在另一个标志位的当前值上。点一下「恢复解析」标志位就回来了，
+	// 而主控明确拒绝那台机器接入：解析于是指向一台连不上来的机器。
+	//
+	// 关的方向不挡：它不会把流量送过去，而下线本来就该让它留在解析外面。
+	if enabled {
+		drained, err := s.store.IsNodeDrained(ctx, nodeID)
+		if err != nil {
+			return false, "查下线状态失败：" + err.Error(), err
+		}
+		if drained {
+			return false, "该节点已被下线，先「重新上线」再恢复解析", errNodeDrained
+		}
+	}
 	if err := s.store.SetNodeDNS(ctx, nodeID, enabled); err != nil {
 		return false, "改解析标志位失败：" + err.Error(), err
 	}
@@ -101,7 +123,12 @@ func (s *Server) handleNodeDNS(c *gin.Context) {
 
 	ctx := c.Request.Context()
 	synced, detail, err := s.setNodeDNS(ctx, nodeID, *req.Enabled)
-	if err != nil {
+	switch {
+	case errors.Is(err, errNodeDrained):
+		// 不是下游故障，是一次说不通的操作 —— 措辞要让人知道下一步该做什么。
+		Fail(c, CodeStateConflict, detail)
+		return
+	case err != nil:
 		s.log.Error("切换解析失败", "node", nodeID, "err", err)
 		Fail(c, CodeDownstream, "切换解析失败")
 		return
@@ -164,13 +191,53 @@ func (s *Server) handleNodeDrain(c *gin.Context) {
 	}
 	steps = append(steps, step("dns_removed", synced, detail))
 
-	// 连接排空与关闭隧道属于后续工单：这里如实说没做，
+	// 连接排空属于后续步骤：这里如实说没做，
 	// 而不是回一个 ok=true 让人以为流量已经排干净了。
 	steps = append(steps, step("conns_drained", false, "尚未实现，连接不会被主动排空"))
-	steps = append(steps, step("tunnel_closed", false, "尚未实现，隧道仍然保持"))
 
-	setAuditPartial(c, "仅停止解析，排空与断隧道尚未实现")
+	// **先落下线标记，再断隧道。** 反过来的话，断开与写库之间有一个窗口，
+	// 而 Agent 恰恰在那个窗口里重连 —— 它会被放进来，然后一直待到下次有人再点。
+	if err := s.store.SetNodeDrained(ctx, nodeID, true); err != nil {
+		s.log.Error("落下线标记失败", "node", nodeID, "err", err)
+		steps = append(steps, step("tunnel_closed", false, "落下线标记失败："+err.Error()))
+		setAuditPartial(c, "下线标记没落成，节点会自己连回来")
+		OK(c, gin.H{"steps": steps})
+		return
+	}
+	closed := s.tunnel != nil && s.tunnel.Disconnect(nodeID)
+	detail = "隧道已断开，此后拒绝该节点重连"
+	if !closed {
+		// 节点本来就不在线也算数：要紧的是**此后拒绝它重连**，
+		// 而那一条已经落库了。报 true 是诚实的。
+		detail = "节点当时不在线；下线标记已落，此后拒绝该节点重连"
+	}
+	steps = append(steps, step("tunnel_closed", true, detail))
+
+	setAuditPartial(c, "已下线；连接未主动排空")
 	OK(c, gin.H{"steps": steps})
+}
+
+// handleNodeRejoin 撤销下线。
+//
+// 没有这个端点，下线就是个单程操作 —— 人只能去数据库改字段。
+// 而下线是个会被误点的按钮（它就在节点卡片上），单程的误点代价太大。
+func (s *Server) handleNodeRejoin(c *gin.Context) {
+	nodeID := c.Param("id")
+	setAuditTarget(c, nodeID)
+
+	if err := s.store.SetNodeDrained(c.Request.Context(), nodeID, false); err != nil {
+		s.log.Error("重新上线失败", "node", nodeID, "err", err)
+		Fail(c, CodeDownstream, "重新上线失败")
+		return
+	}
+	// **解析不自动打开。** 一台机器能接入不等于它该马上分流量：它刚回来，
+	// 配置可能还是旧的。解析由人另外点，或者由下一次成功下发带起来。
+	OK(c, gin.H{
+		"id":          nodeID,
+		"drained_at":  nil,
+		"dns_enabled": false,
+		"detail":      "已允许重新接入；解析仍是关闭的，确认配置无误后再打开",
+	})
 }
 
 func step(name string, ok bool, detail string) gin.H {

@@ -29,6 +29,7 @@ var contractEndpoints = []string{
 	"POST /api/v1/nodes/:id/dns",
 	"POST /api/v1/nodes/:id/probe",
 	"POST /api/v1/nodes/:id/drain",
+	"POST /api/v1/nodes/:id/rejoin",
 	// §6 配置资源
 	"GET /api/v1/routes",
 	"POST /api/v1/routes",

@@ -23,6 +23,7 @@ import (
 type Tunneler interface {
 	OnlineNodes() []string
 	Probe(ctx context.Context, nodeID string, timeout time.Duration) (tunnel.ProbeOutcome, error)
+	Disconnect(nodeID string) bool
 }
 
 // Healther 是观测状态在 HTTP 面这一层的最小面貌。
@@ -133,6 +134,7 @@ func New(o Options) *gin.Engine {
 	authed.POST("/nodes/:id/dns", s.handleNodeDNS)
 	authed.POST("/nodes/:id/probe", s.handleNodeProbe)
 	authed.POST("/nodes/:id/drain", audited("下线节点", s.handleNodeDrain))
+	authed.POST("/nodes/:id/rejoin", audited("重新上线", s.handleNodeRejoin))
 
 	authed.GET("/certs", s.handleListCerts)
 	authed.POST("/certs/:domain/renew", audited("续期证书", s.handleRenewCert))

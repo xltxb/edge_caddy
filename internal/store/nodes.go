@@ -2,7 +2,10 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Node 是边缘节点在主控这边的记录。
@@ -17,6 +20,9 @@ type Node struct {
 	DNSEnabled bool       `json:"dns_enabled"`
 	LastHBAt   *time.Time `json:"last_hb_at"`
 	CreatedAt  time.Time  `json:"created_at"`
+	// DrainedAt 非 nil 表示这台机器是**被人下线的**，与 Status 无关（ADR-0014）。
+	// nil 时前端不该显示任何下线痕迹 —— 那会跟「它自己挂了」混成一件事。
+	DrainedAt *time.Time `json:"drained_at"`
 }
 
 // UpsertNode 在接入时写入或更新节点。同一台机器重新接入时更新元信息，
@@ -35,7 +41,7 @@ func (s *Store) UpsertNode(ctx context.Context, spec NodeSpec) error {
 func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 	rows, err := s.Pool.Query(ctx,
 		`SELECT id, city, vendor, line, host(public_ip), status::text,
-		        cfg_version, dns_enabled, last_hb_at, created_at
+		        cfg_version, dns_enabled, last_hb_at, created_at, drained_at
 		 FROM edge_nodes ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -46,7 +52,8 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 	for rows.Next() {
 		var n Node
 		if err := rows.Scan(&n.ID, &n.City, &n.Vendor, &n.Line, &n.PublicIP,
-			&n.Status, &n.CfgVersion, &n.DNSEnabled, &n.LastHBAt, &n.CreatedAt); err != nil {
+			&n.Status, &n.CfgVersion, &n.DNSEnabled, &n.LastHBAt, &n.CreatedAt,
+			&n.DrainedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, n)
@@ -98,6 +105,43 @@ func (s *Store) SetNodeDown(ctx context.Context, nodeID string) error {
 	_, err := s.Pool.Exec(ctx,
 		`UPDATE edge_nodes SET status = 'down', dns_enabled = FALSE WHERE id = $1`, nodeID)
 	return err
+}
+
+// SetNodeDrained 记下或撤销一次下线。
+//
+// 下线同时关掉解析：这两件事在一条语句里，理由与 SetNodeDown 相同——
+// 分开写会出现「已下线但还在解析里」的中间态，而流量恰恰在那个窗口里
+// 继续往一台正在退出的机器上打。
+//
+// **重新上线不自动打开解析。** 一台机器能接入不等于它该马上分流量：
+// 它刚回来，配置可能还是旧的。解析由人另外点，或者由下一次成功下发带起来。
+func (s *Store) SetNodeDrained(ctx context.Context, nodeID string, drained bool) error {
+	if drained {
+		_, err := s.Pool.Exec(ctx,
+			`UPDATE edge_nodes SET drained_at = now(), dns_enabled = FALSE WHERE id = $1`, nodeID)
+		return err
+	}
+	_, err := s.Pool.Exec(ctx,
+		`UPDATE edge_nodes SET drained_at = NULL WHERE id = $1`, nodeID)
+	return err
+}
+
+// IsNodeDrained 回答「这台机器是不是被人下线了」。
+//
+// 接入路径要用它挡住重连：Agent 断了就重连，不挡的话「关闭隧道」是个假动作。
+// 节点不存在时返回 false —— 那是「没见过」，不是「下线了」，
+// 两者的处置不同（前者该走正常的接入流程去创建）。
+func (s *Store) IsNodeDrained(ctx context.Context, nodeID string) (bool, error) {
+	var at *time.Time
+	err := s.Pool.QueryRow(ctx,
+		`SELECT drained_at FROM edge_nodes WHERE id = $1`, nodeID).Scan(&at)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return at != nil, nil
 }
 
 func (s *Store) SetNodeDNS(ctx context.Context, nodeID string, enabled bool) error {
