@@ -352,7 +352,7 @@ WS 断开时前端按指数退避重连；重连期间对进行中的下发降�
   "token": "ec_1f9a…（仅此一次可见）",
   "expires_at": "2026-08-21T11:12:07+08:00",
   "ca_pin": "9e8f22a3430a2f859aee5b47…（隧道 CA 证书的 SHA-256）",
-  "install_cmd": "edge-agent --master ec.internal:9000 --node-id node-sg-01 --token ec_1f9a… --ca-pin 9e8f22a3…"
+  "install_cmd": "sudo ./edge-node.sh install --master ec.internal:9000 --node-id node-sg-01 --token ec_1f9a… --ca-pin 9e8f22a3… --agent-bin ./edge-agent"
 }
 ```
 
@@ -365,7 +365,15 @@ Token **30 分钟 TTL、单次使用**，用后即失效。节点凭它完成首
 唯一堵法，**保护来自这条命令本身，不来自任何安装脚本**——界面上说明它时
 别把功劳记在一个不存在的东西上，否则嫌它太长而删掉的人正好落进它要防的事里。
 
-**这条命令假定机器上已经有 `edge-agent` 二进制，它不负责下载。**
+**`install_cmd` 给的是部署脚本，不是裸的 `edge-agent` 命令。**
+
+> 裸命令跑得起来，但跑起来是前台进程、没有 systemd 单元、**没有 `Restart=always`**
+> ——而受保护域名的 fail-closed 依赖 Agent 存活（ADR-0003）：它挂掉那一刻那些
+> 域名整体 502，没有任何东西把它拉回来。发一条绕过它的命令，等于让人有机会
+> 省掉部署脚本存在的理由。这与「`--ca-pin` 必填、不给默认值」是同一条判据。
+
+**`--agent-bin` 留在命令里并给占位**，而不是省掉走默认值：脚本**不负责下载**
+二进制，那是唯一一个「你必须自己先办好」的事，写在命令里比藏在文档里更难被跳过。
 到期时间以响应里的 `expires_at` 为准，不要在界面上写死「30 分钟」——
 写死的数字变错了不会有任何报错，只会有人照着它算。
 

@@ -4,6 +4,8 @@
 
 ## 边缘节点
 
+**控制台「添加节点」直接给出这条命令**（`install_cmd` 字段），复制粘贴即可：
+
 ```bash
 sudo ./edge-node.sh install \
   --master ec.internal:9000 \
@@ -14,7 +16,13 @@ sudo ./edge-node.sh install \
 sudo ./edge-node.sh verify
 ```
 
-Token 与 CA 指纹来自控制台「添加节点」，那条 `install_cmd` 里两者都有。
+`install_cmd` 是**一条要执行的命令**，不是「两个值的来源」——Token 与 CA 指纹
+在响应里另有 `token` 与 `ca_pin` 两个字段，要单独取值就取那两个。
+
+> 控制台发的是**这条脚本命令**，不是裸的 `edge-agent …`。
+> 裸命令跑得起来，但跑起来是前台进程、没有 systemd 单元、**没有 `Restart=always`**
+> ——而受保护域名的 fail-closed 依赖 Agent 存活（ADR-0003）。
+> 发一条绕过它的命令，等于让人有机会省掉这个脚本存在的理由。
 
 ### `--ca-pin` 不能省也不能改
 
@@ -118,7 +126,12 @@ Caddy 真的加载，这两件事它查不到，会明说，并指向控制台�
 Caddy 拒绝了带访问规则的配置: 连接 Caddy Admin: Post ".../config/apps/http": EOF
 ```
 
-admin socket 在响应之前被关掉了。**此后 10 轮没能复现，根因未知。**
+admin socket 在响应之前被关掉了。**根因未知。**
+
+到目前为止见过两次、累计二十余轮未能复现，两次都没抓到现场：
+第一次的证据只有那行错误，第二次连是哪条测试都没记下来（我当时的统计脚本
+只数了失败个数）。**统计方式本身也会丢证据**——这一点比那个 flake 本身
+更值得记。
 
 没有加重试来「修」它：重试会把这个信号永久掩埋，而
 [ADR-0005](../docs/adr/0005-retry-only-transport-failures.md) 的整套分类恰恰依赖

@@ -124,12 +124,25 @@ func (s *Server) handleIssueToken(c *gin.Context) {
 	}
 
 	// Token 明文只在这一次响应里出现，任何后续接口都不回显（PRD §7）。
+	//
+	// install_cmd 给的是**部署脚本**，不是裸的 edge-agent 命令。
+	//
+	// 裸命令跑得起来，而且跑起来之后是前台进程、没有 systemd 单元、
+	// **没有 Restart=always**——而受保护域名的 fail-closed 依赖 Agent 存活
+	// （ADR-0003）：它挂掉那一刻那些域名整体 502，没有任何东西把它拉回来。
+	//
+	// 也就是说，发一条裸命令等于让人有机会省掉部署脚本存在的理由。
+	// 这与「--ca-pin 必填、不给默认值」是同一条判据：一道真实的保护，
+	// 不该留一个能绕过它的口子。
+	//
+	// --agent-bin 留在命令里并给占位，而不是省掉走默认值：它是唯一一个
+	// 「你必须自己先办好」的参数，写在命令里比藏在文档里更难被跳过。
 	OK(c, gin.H{
 		"token":      plain,
 		"expires_at": expires.Format(time.RFC3339),
 		"ca_pin":     s.caPin,
 		"install_cmd": fmt.Sprintf(
-			"edge-agent --master %s --node-id %s --token %s --ca-pin %s",
+			"sudo ./edge-node.sh install --master %s --node-id %s --token %s --ca-pin %s --agent-bin ./edge-agent",
 			s.masterAddr, req.NodeID, plain, s.caPin),
 	})
 }
