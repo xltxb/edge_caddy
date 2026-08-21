@@ -285,8 +285,17 @@ type PreviewTarget struct {
 // 实现，右栏的可读表示与弹层的权威 diff 复用同一个折叠交互
 // （ADR-0007 的补充与 api-contract §7.1）。
 type Preview struct {
-	Before     string          `json:"before"`
-	After      string          `json:"after"`
+	// Before / After 是指针，因为它们**可以没有**：
+	//   - After 为 null = 校验没过，主控没有渲染出可下发的配置。
+	//   - Before 为 null = 当前基线自己渲染不出来。
+	//
+	// 用 null 而不是空串（契约 §0.4）：空串在这里是一个**合法的配置内容**
+	// （一份空配置），调用方分不出「没有」和「内容是空的」。前端的 diff 组件
+	// 拿到空串会把整份配置渲染成全红删除——一个人填错了一个 IP，
+	// 界面却告诉他「这次下发会删光所有配置」。那比不显示 diff 糟糕得多，
+	// 而且出现在他最紧张的时刻。
+	Before     *string         `json:"before"`
+	After      *string         `json:"after"`
 	Baseline   string          `json:"baseline"`
 	Targets    []PreviewTarget `json:"targets"`
 	Validation struct {
@@ -309,10 +318,11 @@ func (s *Scheduler) Preview(ctx context.Context, resKeys []string) (Preview, err
 	}
 
 	// before 是当前基线所代表的内容。它自己也可能渲染不出来（比如某条路由的
-	// mtls 还开着），那不该让整个预览失败——前端拿到空的 before 时把 diff
-	// 显示成「全新增」即可，而 after 的校验结果仍然是有用的。
+	// mtls 还开着），那不该让整个预览失败——前端拿到 null 时把整份显示为
+	// 「全新增」即可，而 after 的校验结果仍然是有用的。
 	if b, issues := render.Render(live, s.Render); len(issues) == 0 {
-		p.Before = string(b)
+		before := string(b)
+		p.Before = &before
 	}
 
 	if b, issues := render.Render(after, s.Render); len(issues) > 0 {
@@ -320,7 +330,8 @@ func (s *Scheduler) Preview(ctx context.Context, resKeys []string) (Preview, err
 		p.Validation.Errors = issues
 	} else {
 		p.Validation.OK = true
-		p.After = string(b)
+		after := string(b)
+		p.After = &after
 	}
 
 	p.Baseline, err = s.Store.Baseline(ctx)

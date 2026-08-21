@@ -9,9 +9,9 @@ import (
 )
 
 type previewResp struct {
-	Before   string `json:"before"`
-	After    string `json:"after"`
-	Baseline string `json:"baseline"`
+	Before   *string `json:"before"`
+	After    *string `json:"after"`
+	Baseline string  `json:"baseline"`
 	Targets  []struct {
 		ID     string `json:"id"`
 		Status string `json:"status"`
@@ -54,16 +54,16 @@ func TestPreviewReturnsTwoBackendRenderings(t *testing.T) {
 	if !p.Validation.OK {
 		t.Fatalf("这组输入应当校验通过: %+v", p.Validation.Errors)
 	}
-	if p.Before == "" || p.After == "" {
+	if p.Before == nil || p.After == nil {
 		t.Fatal("before 与 after 都必须是渲染全文")
 	}
-	if p.Before == p.After {
+	if *p.Before == *p.After {
 		t.Fatal("草稿改了回源地址，两份渲染不该相同")
 	}
-	if !strings.Contains(p.Before, "127.0.0.1:1111") {
+	if !strings.Contains(*p.Before, "127.0.0.1:1111") {
 		t.Error("before 应当是当前基线的内容")
 	}
-	if !strings.Contains(p.After, "127.0.0.1:2222") {
+	if !strings.Contains(*p.After, "127.0.0.1:2222") {
 		t.Error("after 应当已经叠加了草稿")
 	}
 }
@@ -87,8 +87,18 @@ func TestPreviewValidationFailureIsNotARequestFailure(t *testing.T) {
 	if len(p.Validation.Errors) == 0 || p.Validation.Errors[0].Field != "upstream" {
 		t.Fatalf("errors = %+v，想要定位到 upstream 字段", p.Validation.Errors)
 	}
-	if p.After != "" {
-		t.Error("校验没过时不该给出 after —— 那份配置不存在")
+	// **必须是 null，不能是空串**（契约 §0.4）。空串在这里是一个合法的
+	// 配置内容（一份空配置），调用方分不出「没有」和「内容是空的」——
+	// 前端的 diff 组件拿到空串会把整份配置渲染成「这次下发会删光所有配置」。
+	if p.After != nil {
+		t.Errorf("校验没过时 after 必须是 null，实际 %q", *p.After)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(e.Data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(raw["after"]); got != "null" {
+		t.Errorf("after 的原始 JSON = %s，想要 null（不是空串）", got)
 	}
 }
 
@@ -126,8 +136,11 @@ func TestPreviewExcludesTLSApp(t *testing.T) {
 		"domain": "tls.example.com", "upstream": r.upstream, "block_mode": "abort",
 	})
 	_, p := r.preview("route:tls.example.com")
-	for name, body := range map[string]string{"before": p.Before, "after": p.After} {
-		if strings.Contains(body, `"tls"`) || strings.Contains(body, "load_pem") {
+	for name, body := range map[string]*string{"before": p.Before, "after": p.After} {
+		if body == nil {
+			t.Fatalf("%s 不该为 null", name)
+		}
+		if strings.Contains(*body, `"tls"`) || strings.Contains(*body, "load_pem") {
 			t.Errorf("%s 里出现了 apps/tls —— 内联证书的私钥不该进浏览器", name)
 		}
 	}
