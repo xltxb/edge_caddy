@@ -285,7 +285,9 @@ func (s *Server) identify(ctx context.Context, hello *edgev1.Hello) (string, *ed
 			"没有客户端证书也没有接入 Token")
 	}
 
-	spec, err := s.opt.Store.ConsumeEnrollToken(ctx, hello.GetToken())
+	// **先查验，最后才消耗。** 中间这几步都可能失败，而 Token 一旦烧掉，
+	// 人就得回控制台重签一张——即便失败的是主控自己（写库、签证书）。
+	spec, err := s.opt.Store.PeekEnrollToken(ctx, hello.GetToken())
 	switch {
 	case errors.Is(err, store.ErrTokenInvalid):
 		return "", nil, status.Error(codes.Unauthenticated, "接入 Token 无效")
@@ -297,8 +299,11 @@ func (s *Server) identify(ctx context.Context, hello *edgev1.Hello) (string, *ed
 		return "", nil, status.Errorf(codes.Internal, "校验接入 Token: %v", err)
 	}
 
-	// Token 已经被消耗掉了 —— 那是对的：它本来就不该被用在一台已下线的机器上。
-	// 要重新接入，先「重新上线」再签一张新的。
+	// 拒绝在消耗之前，所以这张 Token 还没废：「重新上线」之后它照样能用。
+	//
+	// 这里原先写着「Token 已经被消耗掉了——那是对的，它本来就不该被用在一台
+	// 已下线的机器上」。那句话只覆盖了「被拒」这一半，没想到 rejoin 之后的情形：
+	// 一台正在重装的机器，人重新上线之后还得回控制台再签一张。
 	if err := s.refuseIfDrained(ctx, spec.NodeID); err != nil {
 		return "", nil, err
 	}
@@ -310,6 +315,17 @@ func (s *Server) identify(ctx context.Context, hello *edgev1.Hello) (string, *ed
 	if err != nil {
 		return "", nil, status.Errorf(codes.Internal, "签发隧道证书: %v", err)
 	}
+
+	// 一切就绪，现在才烧掉这张 Token。这之后没有会失败的事，
+	// 所以一次消耗对应一次真实的接入。
+	if err := s.opt.Store.ConsumeEnrollToken(ctx, hello.GetToken()); err != nil {
+		if errors.Is(err, store.ErrTokenUsed) {
+			// Peek 与这里之间被别人抢先用掉了。
+			return "", nil, status.Error(codes.Unauthenticated, "接入 Token 已被使用")
+		}
+		return "", nil, status.Errorf(codes.Internal, "标记 Token 已用: %v", err)
+	}
+
 	return spec.NodeID, &edgev1.Enrolled{
 		TunnelCertPem: leaf.CertPEM,
 		TunnelKeyPem:  leaf.KeyPEM,

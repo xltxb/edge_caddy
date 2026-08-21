@@ -61,7 +61,14 @@ func (s *Store) IssueEnrollToken(ctx context.Context, spec NodeSpec) (string, ti
 //
 // 用一条带条件的 UPDATE 而不是「先查再改」：接入是网络上的操作，
 // 同一条命令被跑两遍完全可能，先查再改会让两次都通过，产生两个身份。
-func (s *Store) ConsumeEnrollToken(ctx context.Context, plain string) (NodeSpec, error) {
+// PeekEnrollToken 查验一张接入 Token，**不消耗它**。
+//
+// 拆出这一步是因为查验之后还有好几件会失败的事：节点已被下线、写入节点失败、
+// 签发隧道证书失败。查验与消耗一体的话，**那几件事失败也会把 Token 烧掉**——
+// 而后两件是主控自己的内部错误，凭什么让用户的 Token 作废？
+//
+// 人这时要回控制台重签一张，而错误只出现在那台机器的日志里。
+func (s *Store) PeekEnrollToken(ctx context.Context, plain string) (NodeSpec, error) {
 	var spec NodeSpec
 	var usedAt *time.Time
 	var expiresAt time.Time
@@ -82,16 +89,26 @@ func (s *Store) ConsumeEnrollToken(ctx context.Context, plain string) (NodeSpec,
 	if time.Now().After(expiresAt) {
 		return spec, ErrTokenExpired
 	}
+	return spec, nil
+}
 
+// ConsumeEnrollToken 把一张 Token 标记为已用。
+//
+// **在接入真正成功之后调用**：这一步之后没有任何会失败的事，
+// 所以一次消耗就对应一次真实的接入。
+//
+// 它自己是原子的（UPDATE ... WHERE used_at IS NULL），所以 Peek 与 Consume
+// 之间那个窗口不会让同一张 Token 被用两次——抢输的那一方拿到 ErrTokenUsed。
+func (s *Store) ConsumeEnrollToken(ctx context.Context, plain string) error {
 	tag, err := s.Pool.Exec(ctx,
 		`UPDATE enroll_tokens SET used_at = now()
 		 WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()`, hashToken(plain))
 	if err != nil {
-		return spec, err
+		return err
 	}
 	if tag.RowsAffected() == 0 {
-		// 有人在这两条语句之间抢先用掉了。
-		return spec, ErrTokenUsed
+		// 有人在 Peek 与这里之间抢先用掉了，或者它刚好过期。
+		return ErrTokenUsed
 	}
-	return spec, nil
+	return nil
 }

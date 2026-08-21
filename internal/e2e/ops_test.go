@@ -551,3 +551,39 @@ func TestDrainActuallyDrainsWhenDNSWasRemoved(t *testing.T) {
 		t.Fatalf("隧道应当被断开并拒绝重连：%q", got["tunnel_closed"].Detail)
 	}
 }
+
+// **一张下线前签好的 Token，事后也不能用。**
+//
+// 这条是照前端 agent 那个办法找出来的：**改坏要从名字推，不从实现推。**
+// TestDrainedNodeIsRefusedUntilRejoined 的名字说「被拒绝」，不限路径；
+// 而它只测了 mTLS 重连那一条。identify 里另一条 Token 路径的 refuseIfDrained
+// （server.go）写了代码、写了注释说明为什么该拒，**一行测试都没有**。
+//
+// 场景完全真实：签了 Token → 机器还没装好 → 期间它被下线 → 有人拿着那张
+// Token 去装。TestDrainedNodeGetsNoEnrollToken 拦的是**签发**，拦不住一张
+// 已经签出去的。
+//
+// 从实现推是想不到这条的：读着代码只会问「这个 if 改掉会不会红」，
+// 而这里的问题是「名字讲的事，测试根本够不着」。
+func TestDrainedNodeCannotEnrollWithAPreIssuedToken(t *testing.T) {
+	r := newRig(t)
+	first, _ := r.issueToken("node-hk-01")
+	// 第二张在下线**之前**签好 —— 这正是那个来不及用掉的窗口。
+	spare, _ := r.issueToken("node-hk-01")
+
+	r.startAgent("node-hk-01", first, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	r.mustDo("POST", "/nodes/node-hk-01/drain", map[string]any{"confirm": true})
+	r.waitOffline("node-hk-01")
+
+	// 全新的状态目录 = 一台重装过的机器，手上只有那张 Token，没有隧道证书。
+	r.startAgent("node-hk-01", spare, t.TempDir())
+	r.stayOffline("node-hk-01", 2*time.Second)
+
+	// rejoin 之后同一张 Token 要能用 —— 否则「重新上线」对一台重装中的机器
+	// 就是空头支票，人得再回控制台签一张。
+	r.mustDo("POST", "/nodes/node-hk-01/rejoin", nil)
+	r.startAgent("node-hk-01", spare, t.TempDir())
+	r.waitOnline("node-hk-01")
+}

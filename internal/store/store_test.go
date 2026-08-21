@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/xltxb/edge_caddy/internal/store"
@@ -190,5 +191,51 @@ func TestMarkingDownDoesNotClearDrainedMark(t *testing.T) {
 	}
 	if !drained {
 		t.Error("判离线把下线标记冲掉了 —— 那会让「重新上线」按钮无事可做")
+	}
+}
+
+// **查验不消耗，接入成功才消耗。**
+//
+// 查验与消耗一体的时候，查验之后那几件会失败的事——节点已被下线、写入节点失败、
+// 签发隧道证书失败——**每一件失败都会把 Token 烧掉**。而后两件是主控自己的
+// 内部错误：凭什么让用户的 Token 作废？人这时要回控制台重签一张，
+// 而错误只出现在那台机器的日志里。
+//
+// 这条是照前端 agent 那个办法找出来的：从**名字**推，不从实现推。
+// 「已下线的节点被拒绝接入直到重新上线」——那就构造一个 rejoin 之后的情形，
+// 结果发现那张下线前签好的 Token 已经废了。
+func TestPeekDoesNotConsumeButConsumeDoes(t *testing.T) {
+	s := testdb.New(t)
+	ctx := context.Background()
+
+	spec := store.NodeSpec{
+		NodeID: "node-a", City: "香港", Vendor: "DMIT", Line: "CN2 GIA",
+		PublicIP: "203.0.113.7",
+	}
+	plain, _, err := s.IssueEnrollToken(ctx, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 查验三次，每次都该成功——查验本身不该改变任何东西。
+	for i := range 3 {
+		got, err := s.PeekEnrollToken(ctx, plain)
+		if err != nil {
+			t.Fatalf("第 %d 次查验失败：%v —— 查验不该消耗它", i+1, err)
+		}
+		if got.NodeID != "node-a" {
+			t.Fatalf("查验回的 node_id = %q", got.NodeID)
+		}
+	}
+
+	if err := s.ConsumeEnrollToken(ctx, plain); err != nil {
+		t.Fatalf("消耗失败：%v", err)
+	}
+	// 消耗之后就不能再用了 —— 一次性这个性质由 Consume 承担，不由 Peek。
+	if err := s.ConsumeEnrollToken(ctx, plain); !errors.Is(err, store.ErrTokenUsed) {
+		t.Errorf("重复消耗应当报 ErrTokenUsed，实际 %v", err)
+	}
+	if _, err := s.PeekEnrollToken(ctx, plain); !errors.Is(err, store.ErrTokenUsed) {
+		t.Errorf("已用过的 Token 查验也该报 ErrTokenUsed，实际 %v", err)
 	}
 }

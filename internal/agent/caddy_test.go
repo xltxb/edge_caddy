@@ -178,7 +178,13 @@ func TestWhitelistDenyWith403IsDistinguishableFromAbort(t *testing.T) {
 	}
 }
 
-// **ADR-0005 的前提：同一份字节喂给同一个 Caddy，必然得到同样的拒绝。**
+// **ADR-0005 的前提（的 schema 那一半）：同一份字节喂给同一个 Caddy，
+// 必然得到同样的拒绝。**
+//
+// 名字里的 SchemaError 是刻意的。原先叫 SameBadConfigIsRejectedConsistently，
+// 而那个名字承诺的比断言宽——环境类的拒绝已知有反例（见下）。
+// **测试名是唯一一个不会被执行的部分**：断言会红，名字不会，
+// 所以一个过宽的名字会一直替断言许下它兑现不了的承诺。
 //
 // 整个「Caddy 拒绝的配置不重试」策略建立在这句话上。而 deploy 那边测的是
 // 主控收到拒绝之后不再重推——那是**结论**，用的还是一个自己造的假回执。
@@ -192,7 +198,7 @@ func TestWhitelistDenyWith403IsDistinguishableFromAbort(t *testing.T) {
 // 而且已知有反例：ADR-0004 的再验证里，那一行「端口占用」在 macOS 上不复现——
 // 重复 bind 直接成功了。那类拒绝**可能**下次就没有，所以 ADR-0005 的兜底是
 // POST /nodes/:id/push 的手动重推，不是自动重试。
-func TestSameBadConfigIsRejectedConsistently(t *testing.T) {
+func TestSchemaErrorIsRejectedConsistently(t *testing.T) {
 	up := upstream(t, "STILL ALIVE")
 	c := caddytest.New(t)
 	cli := agent.NewCaddyClient(c.AdminURL())
