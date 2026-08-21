@@ -1,0 +1,294 @@
+/* ============================================================
+   Edge Console — 设计令牌
+
+   两层：
+   1) Vela 设计系统的原始令牌，从设计稿的 _ds bundle 原样搬过来。
+      要跟上游 DS 升级时，整段替换即可，不要在这里手改值。
+   2) 控制台自己的一层，只做「收敛」：把设计稿里手写出来的 15 个字号
+      归并成 7 档阶梯，每档偏差 ≤ 0.5px。
+
+   颜色一律用**语义**令牌（--text-body / --surface-card / --accent …），
+   不要直接用色阶（--slate-700）。深色主题靠语义令牌整体换值，
+   任何一处硬编码色值都会在暗色下变成一个洞。
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700;900&display=swap');
+
+/* ============================================================
+   1) Vela — 原始令牌
+   ============================================================ */
+
+:root {
+  /* ---- Brand: Azure ---- */
+  --azure-50: #eef3ff;
+  --azure-100: #dce6ff;
+  --azure-200: #b9cdff;
+  --azure-300: #8facff;
+  --azure-400: #5e83fb;
+  --azure-500: #3b6ef6;
+  --azure-600: #2553e0;
+  --azure-700: #1c41b8;
+  --azure-800: #1a3691;
+  --azure-900: #1b3173;
+  --azure-950: #131f45;
+
+  /* ---- Accent: Cyan ---- */
+  --cyan-50: #e7fcff;
+  --cyan-100: #c4f6ff;
+  --cyan-200: #93edfb;
+  --cyan-300: #5fe1f3;
+  --cyan-400: #2dcde6;
+  --cyan-500: #12b2cf;
+  --cyan-600: #0c8da8;
+  --cyan-700: #106f86;
+  --cyan-800: #155a6d;
+  --cyan-900: #164a5c;
+
+  /* ---- Neutral: cool Slate ---- */
+  --slate-0: #ffffff;
+  --slate-50: #f6f8fb;
+  --slate-100: #edf1f7;
+  --slate-200: #dde3ec;
+  --slate-300: #c4ccda;
+  --slate-400: #97a1b5;
+  --slate-500: #69748b;
+  --slate-600: #4b5468;
+  --slate-700: #353c4d;
+  --slate-800: #232838;
+  --slate-900: #161a27;
+  --slate-950: #0c0e17;
+
+  /* ---- Semantic hues ---- */
+  --success-50: #e7f9f0;
+  --success-100: #c2f0d9;
+  --success-500: #18b368;
+  --success-600: #0f9355;
+  --success-700: #0c7344;
+
+  --warning-50: #fff5e3;
+  --warning-100: #ffe6bb;
+  --warning-500: #f5a524;
+  --warning-600: #d8860c;
+  --warning-700: #a96606;
+
+  --danger-50: #fdecec;
+  --danger-100: #fbd0ce;
+  --danger-500: #f0473e;
+  --danger-600: #d42a21;
+  --danger-700: #ac1f18;
+
+  /* ---- 语义色 — 浅色（默认）---- */
+  --surface-page: var(--slate-50);
+  --surface-card: var(--slate-0);
+  --surface-sunken: var(--slate-100);
+  --surface-raised: var(--slate-0);
+  --surface-inverse: var(--slate-900);
+  --surface-overlay: rgba(12, 14, 23, 0.45);
+
+  --border-subtle: var(--slate-200);
+  --border-default: var(--slate-300);
+  --border-strong: var(--slate-400);
+
+  --text-strong: var(--slate-900);
+  --text-body: var(--slate-700);
+  --text-muted: var(--slate-500);
+  --text-faint: var(--slate-400);
+  --text-on-accent: #ffffff;
+  --text-inverse: var(--slate-50);
+
+  --accent: var(--azure-500);
+  --accent-hover: var(--azure-600);
+  --accent-pressed: var(--azure-700);
+  --accent-subtle: var(--azure-50);
+  --accent-subtle-border: var(--azure-200);
+  --accent-text: var(--azure-600);
+
+  --glow-accent: var(--cyan-400);
+
+  --success: var(--success-500);
+  --success-text: var(--success-700);
+  --success-subtle: var(--success-50);
+  --warning: var(--warning-500);
+  --warning-text: var(--warning-700);
+  --warning-subtle: var(--warning-50);
+  --danger: var(--danger-500);
+  --danger-text: var(--danger-700);
+  --danger-subtle: var(--danger-50);
+
+  --focus-ring: color-mix(in oklch, var(--azure-500) 45%, transparent);
+  --selection-bg: var(--azure-100);
+
+  /* ---- 字体族 ---- */
+  --font-display: 'Space Grotesk', 'Noto Sans SC', -apple-system, BlinkMacSystemFont,
+    'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-sans: 'Manrope', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'PingFang SC',
+    'Microsoft YaHei', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', ui-monospace, 'Cascadia Code', Menlo, monospace;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --weight-extrabold: 800;
+
+  --leading-none: 1;
+  --leading-tight: 1.15;
+  --leading-snug: 1.3;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.7;
+
+  --tracking-tighter: -0.03em;
+  --tracking-tight: -0.015em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.02em;
+  --tracking-wider: 0.06em;
+  --tracking-caps: 0.09em;
+
+  /* ---- 间距（4px 网格）---- */
+  --space-0: 0;
+  --space-px: 1px;
+  --space-0-5: 2px;
+  --space-1: 4px;
+  --space-1-5: 6px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-20: 80px;
+  --space-24: 96px;
+  --space-32: 128px;
+
+  --control-sm: 32px;
+  --control-md: 40px;
+  --control-lg: 48px;
+
+  --z-base: 0;
+  --z-raised: 10;
+  --z-sticky: 100;
+  --z-overlay: 1000;
+  --z-modal: 1100;
+  --z-toast: 1200;
+
+  /* ---- 圆角 / 阴影 / 辉光 ---- */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+  --radius-2xl: 28px;
+  --radius-full: 999px;
+
+  --shadow-xs: 0 1px 2px rgba(16, 24, 48, 0.06);
+  --shadow-sm: 0 1px 2px rgba(16, 24, 48, 0.06), 0 2px 6px rgba(16, 24, 48, 0.06);
+  --shadow-md: 0 4px 10px rgba(16, 24, 48, 0.08), 0 1px 3px rgba(16, 24, 48, 0.06);
+  --shadow-lg: 0 12px 28px rgba(16, 24, 48, 0.12), 0 4px 10px rgba(16, 24, 48, 0.07);
+  --shadow-xl: 0 24px 60px rgba(16, 24, 48, 0.16), 0 8px 20px rgba(16, 24, 48, 0.08);
+
+  --glow-sm: 0 0 0 1px color-mix(in oklch, var(--azure-500) 30%, transparent),
+    0 6px 18px rgba(59, 110, 246, 0.3);
+  --glow-md: 0 0 0 1px color-mix(in oklch, var(--cyan-400) 40%, transparent),
+    0 8px 30px rgba(45, 205, 230, 0.35);
+
+  /* ---- 动效 ---- */
+  --dur-instant: 80ms;
+  --dur-fast: 140ms;
+  --dur-base: 220ms;
+  --dur-slow: 340ms;
+  --dur-slower: 520ms;
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-in: cubic-bezier(0.5, 0, 0.75, 0);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  --transition-colors:
+    color var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+  --transition-transform: transform var(--dur-base) var(--ease-out);
+}
+
+/* ---- 语义色 — 深色 ---- */
+[data-theme='dark'] {
+  --surface-page: #0a0c14;
+  --surface-card: #141826;
+  --surface-sunken: #0c0e17;
+  --surface-raised: #1b2030;
+  --surface-inverse: var(--slate-50);
+  --surface-overlay: rgba(4, 6, 12, 0.66);
+
+  --border-subtle: rgba(255, 255, 255, 0.07);
+  --border-default: rgba(255, 255, 255, 0.13);
+  --border-strong: rgba(255, 255, 255, 0.22);
+
+  --text-strong: #f4f7fc;
+  --text-body: #c4ccda;
+  --text-muted: #8893a8;
+  --text-faint: #5b6478;
+  --text-on-accent: #ffffff;
+  --text-inverse: var(--slate-900);
+
+  --accent: var(--azure-400);
+  --accent-hover: var(--azure-300);
+  --accent-pressed: var(--azure-500);
+  --accent-subtle: rgba(59, 110, 246, 0.16);
+  --accent-subtle-border: rgba(94, 131, 251, 0.36);
+  --accent-text: var(--azure-300);
+
+  --glow-accent: var(--cyan-400);
+
+  --success: #2ad07e;
+  --success-text: #7be8b3;
+  --success-subtle: rgba(24, 179, 104, 0.16);
+  --warning: #ffb648;
+  --warning-text: #ffd391;
+  --warning-subtle: rgba(245, 165, 36, 0.16);
+  --danger: #ff6259;
+  --danger-text: #ff9d97;
+  --danger-subtle: rgba(240, 71, 62, 0.18);
+
+  --focus-ring: color-mix(in oklch, var(--azure-400) 60%, transparent);
+  --selection-bg: rgba(59, 110, 246, 0.34);
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.45);
+  --shadow-md: 0 6px 16px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.55);
+  --shadow-xl: 0 30px 70px rgba(0, 0, 0, 0.62);
+
+  --glow-sm: 0 0 0 1px rgba(94, 131, 251, 0.45), 0 8px 26px rgba(59, 110, 246, 0.45);
+  --glow-md: 0 0 0 1px rgba(45, 205, 230, 0.5), 0 10px 40px rgba(45, 205, 230, 0.45);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-instant: 0ms;
+    --dur-fast: 0ms;
+    --dur-base: 0ms;
+    --dur-slow: 0ms;
+    --dur-slower: 0ms;
+  }
+}
+
+/* ============================================================
+   2) 控制台层 — 字号阶梯
+
+   设计稿手写出了 15 个字号（9.5 / 10 / 10.5 / 11 / 11.5 / 12 / 12.5 /
+   13 / 13.5 / 14 / 15 / 15.5 / 16 / 29）。归并成 7 档，每档偏差 ≤ 0.5px。
+   Vela 自己的 --text-xs…--text-7xl 阶梯是给营销页用的，对这个密度的
+   工程界面太疏，这里不用它。
+   ============================================================ */
+
+:root {
+  --fs-micro: 10px; /* mono 小标签、uppercase 分组标题 */
+  --fs-2xs: 11px; /* mono 数据、次要标注 */
+  --fs-xs: 12px; /* 表格、卡片正文 */
+  --fs-sm: 13px; /* 导航、常规正文 */
+  --fs-base: 14px; /* body 默认 */
+  --fs-lg: 15.5px; /* 卡片标题、页面标题 */
+  --fs-kpi: 29px; /* KPI 数值，全站最大 */
+}

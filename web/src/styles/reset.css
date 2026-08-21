@@ -1,0 +1,65 @@
+/* 从设计稿的 <style> 段搬过来的基线，逐条对应。 */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--surface-page);
+  color: var(--text-body);
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--accent-text);
+}
+a:hover {
+  color: var(--accent-hover);
+}
+
+button {
+  font: inherit;
+  white-space: nowrap;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+input,
+textarea {
+  font: inherit;
+}
+
+input:focus-visible,
+textarea:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+::selection {
+  background: var(--selection-bg);
+}
+
+@keyframes ec-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes ec-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}

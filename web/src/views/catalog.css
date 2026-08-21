@@ -1,0 +1,114 @@
+/* 只读目录页共用的表格外观 —— 路由 / 访问控制 / 证书三页同构。 */
+.panel {
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xs);
+  overflow: hidden;
+}
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.title {
+  font-size: var(--fs-sm);
+  font-weight: var(--weight-bold);
+  color: var(--text-strong);
+}
+.sub {
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+}
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-xs);
+}
+.table th {
+  text-align: left;
+  padding: 8px var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--text-muted);
+  font-weight: var(--weight-semibold);
+  white-space: nowrap;
+}
+.table td {
+  padding: 9px var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-body);
+  vertical-align: middle;
+}
+.table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.table tbody tr:hover {
+  background: var(--surface-sunken);
+}
+.mono {
+  font-family: var(--font-mono);
+}
+.strong {
+  color: var(--text-strong);
+  font-weight: var(--weight-semibold);
+}
+.muted {
+  color: var(--text-muted);
+}
+.right {
+  text-align: right;
+}
+.tag {
+  display: inline-block;
+  padding: 1px 9px;
+  border-radius: var(--radius-full);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: var(--weight-semibold);
+}
+.tag.ok {
+  background: var(--success-subtle);
+  color: var(--success-text);
+}
+.tag.warn {
+  background: var(--warning-subtle);
+  color: var(--warning-text);
+}
+.tag.danger {
+  background: var(--danger-subtle);
+  color: var(--danger-text);
+}
+.tag.new {
+  background: var(--accent-subtle);
+  color: var(--accent-text);
+}
+.mini {
+  padding: 3px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-card);
+  color: var(--text-strong);
+  font-size: var(--fs-micro);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.mini:hover {
+  background: var(--surface-sunken);
+}
+.hint {
+  padding: 40px var(--space-4);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+.hint.error {
+  color: var(--danger-text);
+}
