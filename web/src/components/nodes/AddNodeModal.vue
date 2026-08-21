@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { errorText } from '@/api/http'
 import { useNodesStore } from '@/stores/nodes'
 import type { NodeTokenWire } from '@/api/types'
+import { fmtClock } from '@/utils/format'
 
 const emit = defineEmits<{ (e: 'close'): void }>()
 const nodes = useNodesStore()
@@ -73,15 +74,30 @@ async function copy(): Promise<void> {
         </p>
         <pre class="cmd">{{ issued.install_cmd }}</pre>
         <div class="meta">
-          <span>30 分钟内有效，用后即失效</span>
+          <!--
+            有效期读 expires_at，不写死「30 分钟」。那是主控的策略，会变；
+            写死的数字变错了不会有任何报错，只会有人照着它算，然后发现 Token
+            早就过期了。
+          -->
+          <span>有效至 {{ fmtClock(issued.expires_at) }} · 用后即失效</span>
           <button class="ghost" type="button" @click="copy">
             {{ copied ? '已复制' : '复制命令' }}
           </button>
         </div>
+        <!--
+          这三条说的是**这条命令能跑起来的前提**，不是泛泛的最佳实践。
+          原来第三条写的是「安装脚本会校验主控 CA 指纹」—— 那是编的：没有安装
+          脚本，指纹就明晃晃在上面这条命令的 --ca-pin 里。把一个真实的保护
+          归功于一个不存在的东西，人就不会注意到那串指纹是不能改的。
+        -->
         <ul class="checklist">
+          <li>目标机器上已经有 <code>edge-agent</code> 二进制 —— 这条命令不负责下载它</li>
           <li>目标机器可以外连主控的 9000 端口（Agent 主动外连，无需入站放行）</li>
           <li>机器上已安装官方 Caddy，Admin 只监听 127.0.0.1:2019</li>
-          <li>安装脚本会校验主控 CA 指纹，防止首连被中间人冒充</li>
+          <li>
+            命令里的 <code>--ca-pin</code> 是主控的 CA 指纹，<b>不要改也不要省</b>：
+            少了它，首连就是纯 TOFU，中间人可以在那一刻把 Token 骗走。
+          </li>
         </ul>
         <div class="actions">
           <button class="primary" type="button" @click="emit('close')">完成</button>
@@ -173,6 +189,18 @@ input:focus {
   font-size: var(--fs-micro);
   color: var(--text-faint);
   margin-bottom: var(--space-4);
+}
+.checklist code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--text-body);
+  background: var(--surface-sunken, var(--bg-subtle));
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+}
+.checklist b {
+  color: var(--warning-text);
+  font-weight: var(--weight-semibold);
 }
 .checklist {
   margin: 0 0 var(--space-4);
