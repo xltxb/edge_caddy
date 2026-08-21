@@ -159,11 +159,18 @@ func TestDrainRequiresConfirmAndEveryStepExplainsItself(t *testing.T) {
 			t.Errorf("%s 应当说明为什么", st.Step)
 		}
 	}
-	// conns_drained 尚未实现，必须报 ok=false ——
-	// 回一个 true 会让人以为流量已经排干净了，然后关掉那台机器，而连接还在。
+	// 这个 rig 没配 DNS 服务商，所以第一步摘不掉解析。那时排空必须被**跳过**
+	// 并说清是跳过 —— 解析还指着这台机器，新连接源源不断，排空没有意义，
+	// 而报一个 false 却不说为什么，会让人以为是节点出了问题去查节点。
 	for _, st := range d.Steps {
-		if st.Step == "conns_drained" && st.OK {
-			t.Error("conns_drained 尚未实现，不该报成功")
+		if st.Step != "conns_drained" {
+			continue
+		}
+		if st.OK {
+			t.Error("解析都没摘掉，排空不该报成功")
+		}
+		if !strings.Contains(st.Detail, "跳过") {
+			t.Errorf("要说清是跳过而不是失败: %q", st.Detail)
 		}
 	}
 }
@@ -492,5 +499,55 @@ func TestDrainedNodeIsNotADeployTarget(t *testing.T) {
 	}
 	if len(d.Targets) != 1 || d.Targets[0] != "node-a" {
 		t.Fatalf("目标应当只剩 node-a，实际 %+v", d.Targets)
+	}
+}
+
+// **排空真的跑起来的那条路。**
+//
+// 前面那些下线测试都在「没配 DNS 服务商」的分支上：dns_removed 报 false，
+// 排空因此被跳过——于是排空这段代码在 e2e 里一次也没执行过。
+// 一个只在「上一步失败」这个分支上被测过的功能，等于没测。
+func TestDrainActuallyDrainsWhenDNSWasRemoved(t *testing.T) {
+	r := newRig(t)
+	r.configureDNSProvider()
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	ok := r.mustDo("POST", "/nodes/node-hk-01/drain", map[string]any{"confirm": true})
+	var d struct {
+		Steps []struct {
+			Step   string `json:"step"`
+			OK     bool   `json:"ok"`
+			Detail string `json:"detail"`
+		} `json:"steps"`
+	}
+	if err := json.Unmarshal(ok.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	type stepInfo struct {
+		OK     bool
+		Detail string
+	}
+	got := map[string]stepInfo{}
+	for _, st := range d.Steps {
+		got[st.Step] = stepInfo{st.OK, st.Detail}
+	}
+
+	if !got["dns_removed"].OK {
+		t.Fatalf("配了服务商，解析应当真的摘掉：%q", got["dns_removed"].Detail)
+	}
+	if !got["conns_drained"].OK {
+		t.Fatalf("节点上没有连接，排空应当成功：%q", got["conns_drained"].Detail)
+	}
+	// **这句话必须带边界。** 解析摘了，但 DNS 有 TTL，缓存在各级递归里，
+	// 一段时间内仍会有新连接进来。不说的话「已排空」就是第三句假话——
+	// 人会据此认为再也没有请求了。
+	if !strings.Contains(got["conns_drained"].Detail, "缓存") {
+		t.Errorf("排空成功要说清它的边界（DNS 缓存未过期前仍有新连接）：%q",
+			got["conns_drained"].Detail)
+	}
+	if !got["tunnel_closed"].OK {
+		t.Fatalf("隧道应当被断开并拒绝重连：%q", got["tunnel_closed"].Detail)
 	}
 }

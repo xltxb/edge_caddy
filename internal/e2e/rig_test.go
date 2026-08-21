@@ -115,7 +115,22 @@ func newRig(t *testing.T) *rig {
 	})
 	monitorRef = monitor
 	notifier := alert.New(st, sealer, nil)
-	dnsOrch := &dnsops.Orchestrator{Store: st, Sealer: sealer}
+	// 假 DNSPod。没有它，下线的「排空连接」那一步在 e2e 里一次也走不到——
+	// 排空只在上一步真的摘掉了解析时才执行，而真服务商这里配不了。
+	//
+	// 光有这个 server 还不够，得有测试**真的去配**它（configureDNSProvider）；
+	// 不配的话 Sync 仍然返回 ErrNoProvider，跟从前一样。
+	dnsAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := `{"status":{"code":"10","message":"No records"}}`
+		if r.URL.Path != "/Record.List" {
+			body = `{"status":{"code":"1","message":"Action completed successful"}}`
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(dnsAPI.Close)
+
+	dnsOrch := &dnsops.Orchestrator{Store: st, Sealer: sealer, BaseOverride: dnsAPI.URL}
 	certMgr := certs.New(&certs.Manager{Store: st, Sealer: sealer, Hub: hub, Issuer: testIssuer{}})
 	sched.EnsureCerts = certMgr.EnsureFor
 
@@ -260,6 +275,17 @@ func (r *rig) waitOnline(nodeID string) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	r.t.Fatalf("节点 %s 在 10 秒内没有上线", nodeID)
+}
+
+// configureDNSProvider 配上假服务商，让「解析真的变了」这条分支能被走到。
+func (r *rig) configureDNSProvider() {
+	r.t.Helper()
+	r.mustDo("PUT", "/settings", map[string]any{
+		"dns_provider": map[string]any{
+			"kind": "dnspod", "domain": "example.com", "sub": "cdn",
+			"credential": "fake-token",
+		},
+	})
 }
 
 // waitOffline 等节点从在线变成不在线。

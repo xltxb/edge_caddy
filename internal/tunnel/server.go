@@ -169,6 +169,33 @@ func (s *Server) Stop() { s.grpc.GracefulStop() }
 //
 // 这只断这一次连接 —— Agent 会立刻重连。它单独存在没有意义，必须与
 // 下线标记一起用：标记决定「此后不许进来」，这个决定「现在就出去」。
+// DrainOutcome 是一次排空的结果。
+//
+// Remaining 必须带上：人接下来要做的决定是「现在能不能关机」，
+// 而 Drained=false 答不了那个问题——是还剩 2 条可以直接关，
+// 还是还剩 8000 条得再等。
+type DrainOutcome struct {
+	Drained   bool
+	Remaining uint32
+}
+
+// drainGrace 是主控比 Agent 多等的那一段。
+//
+// 两边卡同一个数的话，Agent 到点回报的那一刻主控可能已经放弃了，
+// 于是一个如实的回执被当成「节点没应答」——而那正好是排空最有话要说的时候。
+const drainGrace = 3 * time.Second
+
+// Drain 让一个节点排空已建立的连接。节点不在线时返回 errUnreachable。
+func (s *Server) Drain(ctx context.Context, nodeID string, timeout time.Duration) (DrainOutcome, error) {
+	s.mu.Lock()
+	sess := s.sessions[nodeID]
+	s.mu.Unlock()
+	if sess == nil {
+		return DrainOutcome{}, errUnreachable
+	}
+	return sess.drain(ctx, timeout)
+}
+
 func (s *Server) Disconnect(nodeID string) bool {
 	s.mu.Lock()
 	sess := s.sessions[nodeID]

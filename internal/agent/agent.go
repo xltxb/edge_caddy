@@ -133,8 +133,12 @@ func (a *Agent) Run(ctx context.Context) error {
 			a.handlePush(ctx, stream, m.Push)
 		case *edgev1.MasterMsg_Probe:
 			a.handleProbe(ctx, stream, m.Probe)
+		case *edgev1.MasterMsg_Drain:
+			// 排空要等，不能占着这条读循环 —— 占住的话主控这段时间
+			// 推不下来配置也探不了活，而排空可能要等几十秒。
+			go a.handleDrain(ctx, stream, m.Drain)
 		default:
-			// 探活、下线、续期在后续工单落地。
+			// 证书续期在后续工单落地。
 		}
 	}
 }

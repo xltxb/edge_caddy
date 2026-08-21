@@ -31,6 +31,7 @@ type AgentMsg struct {
 	//	*AgentMsg_Logs
 	//	*AgentMsg_Certs
 	//	*AgentMsg_ProbeResult
+	//	*AgentMsg_DrainResult
 	M             isAgentMsg_M `protobuf_oneof:"m"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -127,6 +128,15 @@ func (x *AgentMsg) GetProbeResult() *ProbeResult {
 	return nil
 }
 
+func (x *AgentMsg) GetDrainResult() *DrainResult {
+	if x != nil {
+		if x, ok := x.M.(*AgentMsg_DrainResult); ok {
+			return x.DrainResult
+		}
+	}
+	return nil
+}
+
 type isAgentMsg_M interface {
 	isAgentMsg_M()
 }
@@ -155,6 +165,10 @@ type AgentMsg_ProbeResult struct {
 	ProbeResult *ProbeResult `protobuf:"bytes,6,opt,name=probe_result,json=probeResult,proto3,oneof"` // 增补：后端文档 §5 有 Probe 下行却没有回执
 }
 
+type AgentMsg_DrainResult struct {
+	DrainResult *DrainResult `protobuf:"bytes,7,opt,name=drain_result,json=drainResult,proto3,oneof"` // 增补：Drain 原先也是有下行没回执
+}
+
 func (*AgentMsg_Hello) isAgentMsg_M() {}
 
 func (*AgentMsg_Hb) isAgentMsg_M() {}
@@ -166,6 +180,8 @@ func (*AgentMsg_Logs) isAgentMsg_M() {}
 func (*AgentMsg_Certs) isAgentMsg_M() {}
 
 func (*AgentMsg_ProbeResult) isAgentMsg_M() {}
+
+func (*AgentMsg_DrainResult) isAgentMsg_M() {}
 
 type MasterMsg struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -840,9 +856,14 @@ func (x *ProbeResult) GetCfgVersion() string {
 	return ""
 }
 
+// Drain 让 Agent 等本机**已经建立**的连接自然结束。
+//
+// 它不阻止新连接：解析虽已摘掉，DNS 有 TTL，缓存在各级递归里，
+// 一段时间内仍会有新连接进来（CONTEXT.md「排空」）。
 type Drain struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	TimeoutMs     uint32                 `protobuf:"varint,2,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"` // 等多久；到点就如实回报还剩多少，不无限等
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -884,6 +905,78 @@ func (x *Drain) GetId() string {
 	return ""
 }
 
+func (x *Drain) GetTimeoutMs() uint32 {
+	if x != nil {
+		return x.TimeoutMs
+	}
+	return 0
+}
+
+// DrainResult 必须回报 remaining，不能只回一个布尔。
+//
+// 人接下来要做的决定是「现在能不能关机」，而那取决于还剩几条连接——
+// 一个 drained=false 只告诉他「没排干净」，答不了「还差多少」：
+// 是还剩 2 条可以直接关，还是还剩 8000 条得再等。
+type DrainResult struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Drained       bool                   `protobuf:"varint,2,opt,name=drained,proto3" json:"drained,omitempty"`     // 超时前降到 0
+	Remaining     uint32                 `protobuf:"varint,3,opt,name=remaining,proto3" json:"remaining,omitempty"` // 回报那一刻的连接数
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DrainResult) Reset() {
+	*x = DrainResult{}
+	mi := &file_edge_v1_edge_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DrainResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DrainResult) ProtoMessage() {}
+
+func (x *DrainResult) ProtoReflect() protoreflect.Message {
+	mi := &file_edge_v1_edge_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DrainResult.ProtoReflect.Descriptor instead.
+func (*DrainResult) Descriptor() ([]byte, []int) {
+	return file_edge_v1_edge_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *DrainResult) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *DrainResult) GetDrained() bool {
+	if x != nil {
+		return x.Drained
+	}
+	return false
+}
+
+func (x *DrainResult) GetRemaining() uint32 {
+	if x != nil {
+		return x.Remaining
+	}
+	return 0
+}
+
 type RenewCert struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Domain        string                 `protobuf:"bytes,1,opt,name=domain,proto3" json:"domain,omitempty"`
@@ -893,7 +986,7 @@ type RenewCert struct {
 
 func (x *RenewCert) Reset() {
 	*x = RenewCert{}
-	mi := &file_edge_v1_edge_proto_msgTypes[10]
+	mi := &file_edge_v1_edge_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -905,7 +998,7 @@ func (x *RenewCert) String() string {
 func (*RenewCert) ProtoMessage() {}
 
 func (x *RenewCert) ProtoReflect() protoreflect.Message {
-	mi := &file_edge_v1_edge_proto_msgTypes[10]
+	mi := &file_edge_v1_edge_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -918,7 +1011,7 @@ func (x *RenewCert) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenewCert.ProtoReflect.Descriptor instead.
 func (*RenewCert) Descriptor() ([]byte, []int) {
-	return file_edge_v1_edge_proto_rawDescGZIP(), []int{10}
+	return file_edge_v1_edge_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *RenewCert) GetDomain() string {
@@ -937,7 +1030,7 @@ type LogBatch struct {
 
 func (x *LogBatch) Reset() {
 	*x = LogBatch{}
-	mi := &file_edge_v1_edge_proto_msgTypes[11]
+	mi := &file_edge_v1_edge_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -949,7 +1042,7 @@ func (x *LogBatch) String() string {
 func (*LogBatch) ProtoMessage() {}
 
 func (x *LogBatch) ProtoReflect() protoreflect.Message {
-	mi := &file_edge_v1_edge_proto_msgTypes[11]
+	mi := &file_edge_v1_edge_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -962,7 +1055,7 @@ func (x *LogBatch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogBatch.ProtoReflect.Descriptor instead.
 func (*LogBatch) Descriptor() ([]byte, []int) {
-	return file_edge_v1_edge_proto_rawDescGZIP(), []int{11}
+	return file_edge_v1_edge_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *LogBatch) GetLines() []*LogLine {
@@ -983,7 +1076,7 @@ type LogLine struct {
 
 func (x *LogLine) Reset() {
 	*x = LogLine{}
-	mi := &file_edge_v1_edge_proto_msgTypes[12]
+	mi := &file_edge_v1_edge_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -995,7 +1088,7 @@ func (x *LogLine) String() string {
 func (*LogLine) ProtoMessage() {}
 
 func (x *LogLine) ProtoReflect() protoreflect.Message {
-	mi := &file_edge_v1_edge_proto_msgTypes[12]
+	mi := &file_edge_v1_edge_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1008,7 +1101,7 @@ func (x *LogLine) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogLine.ProtoReflect.Descriptor instead.
 func (*LogLine) Descriptor() ([]byte, []int) {
-	return file_edge_v1_edge_proto_rawDescGZIP(), []int{12}
+	return file_edge_v1_edge_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *LogLine) GetAtUnixMs() int64 {
@@ -1043,7 +1136,7 @@ type CertList struct {
 
 func (x *CertList) Reset() {
 	*x = CertList{}
-	mi := &file_edge_v1_edge_proto_msgTypes[13]
+	mi := &file_edge_v1_edge_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1055,7 +1148,7 @@ func (x *CertList) String() string {
 func (*CertList) ProtoMessage() {}
 
 func (x *CertList) ProtoReflect() protoreflect.Message {
-	mi := &file_edge_v1_edge_proto_msgTypes[13]
+	mi := &file_edge_v1_edge_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1068,7 +1161,7 @@ func (x *CertList) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CertList.ProtoReflect.Descriptor instead.
 func (*CertList) Descriptor() ([]byte, []int) {
-	return file_edge_v1_edge_proto_rawDescGZIP(), []int{13}
+	return file_edge_v1_edge_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *CertList) GetEntries() []*CertEntry {
@@ -1089,7 +1182,7 @@ type CertEntry struct {
 
 func (x *CertEntry) Reset() {
 	*x = CertEntry{}
-	mi := &file_edge_v1_edge_proto_msgTypes[14]
+	mi := &file_edge_v1_edge_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1101,7 +1194,7 @@ func (x *CertEntry) String() string {
 func (*CertEntry) ProtoMessage() {}
 
 func (x *CertEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_edge_v1_edge_proto_msgTypes[14]
+	mi := &file_edge_v1_edge_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1114,7 +1207,7 @@ func (x *CertEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CertEntry.ProtoReflect.Descriptor instead.
 func (*CertEntry) Descriptor() ([]byte, []int) {
-	return file_edge_v1_edge_proto_rawDescGZIP(), []int{14}
+	return file_edge_v1_edge_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *CertEntry) GetDomain() string {
@@ -1142,7 +1235,7 @@ var File_edge_v1_edge_proto protoreflect.FileDescriptor
 
 const file_edge_v1_edge_proto_rawDesc = "" +
 	"\n" +
-	"\x12edge/v1/edge.proto\x12\aedge.v1\"\xa4\x02\n" +
+	"\x12edge/v1/edge.proto\x12\aedge.v1\"\xdf\x02\n" +
 	"\bAgentMsg\x12&\n" +
 	"\x05hello\x18\x01 \x01(\v2\x0e.edge.v1.HelloH\x00R\x05hello\x12$\n" +
 	"\x02hb\x18\x02 \x01(\v2\x12.edge.v1.HeartbeatH\x00R\x02hb\x126\n" +
@@ -1150,7 +1243,8 @@ const file_edge_v1_edge_proto_rawDesc = "" +
 	"pushResult\x12'\n" +
 	"\x04logs\x18\x04 \x01(\v2\x11.edge.v1.LogBatchH\x00R\x04logs\x12)\n" +
 	"\x05certs\x18\x05 \x01(\v2\x11.edge.v1.CertListH\x00R\x05certs\x129\n" +
-	"\fprobe_result\x18\x06 \x01(\v2\x14.edge.v1.ProbeResultH\x00R\vprobeResultB\x03\n" +
+	"\fprobe_result\x18\x06 \x01(\v2\x14.edge.v1.ProbeResultH\x00R\vprobeResult\x129\n" +
+	"\fdrain_result\x18\a \x01(\v2\x14.edge.v1.DrainResultH\x00R\vdrainResultB\x03\n" +
 	"\x01m\"\xe8\x01\n" +
 	"\tMasterMsg\x12)\n" +
 	"\x04push\x18\x01 \x01(\v2\x13.edge.v1.PushConfigH\x00R\x04push\x12&\n" +
@@ -1209,9 +1303,15 @@ const file_edge_v1_edge_proto_rawDesc = "" +
 	"\vcaddy_admin\x18\x02 \x01(\bR\n" +
 	"caddyAdmin\x12\x1f\n" +
 	"\vcfg_version\x18\x03 \x01(\tR\n" +
-	"cfgVersion\"\x17\n" +
+	"cfgVersion\"6\n" +
 	"\x05Drain\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"#\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
+	"\n" +
+	"timeout_ms\x18\x02 \x01(\rR\ttimeoutMs\"U\n" +
+	"\vDrainResult\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
+	"\adrained\x18\x02 \x01(\bR\adrained\x12\x1c\n" +
+	"\tremaining\x18\x03 \x01(\rR\tremaining\"#\n" +
 	"\tRenewCert\x12\x16\n" +
 	"\x06domain\x18\x01 \x01(\tR\x06domain\"2\n" +
 	"\bLogBatch\x12&\n" +
@@ -1244,7 +1344,7 @@ func file_edge_v1_edge_proto_rawDescGZIP() []byte {
 	return file_edge_v1_edge_proto_rawDescData
 }
 
-var file_edge_v1_edge_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_edge_v1_edge_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_edge_v1_edge_proto_goTypes = []any{
 	(*AgentMsg)(nil),    // 0: edge.v1.AgentMsg
 	(*MasterMsg)(nil),   // 1: edge.v1.MasterMsg
@@ -1256,33 +1356,35 @@ var file_edge_v1_edge_proto_goTypes = []any{
 	(*Probe)(nil),       // 7: edge.v1.Probe
 	(*ProbeResult)(nil), // 8: edge.v1.ProbeResult
 	(*Drain)(nil),       // 9: edge.v1.Drain
-	(*RenewCert)(nil),   // 10: edge.v1.RenewCert
-	(*LogBatch)(nil),    // 11: edge.v1.LogBatch
-	(*LogLine)(nil),     // 12: edge.v1.LogLine
-	(*CertList)(nil),    // 13: edge.v1.CertList
-	(*CertEntry)(nil),   // 14: edge.v1.CertEntry
+	(*DrainResult)(nil), // 10: edge.v1.DrainResult
+	(*RenewCert)(nil),   // 11: edge.v1.RenewCert
+	(*LogBatch)(nil),    // 12: edge.v1.LogBatch
+	(*LogLine)(nil),     // 13: edge.v1.LogLine
+	(*CertList)(nil),    // 14: edge.v1.CertList
+	(*CertEntry)(nil),   // 15: edge.v1.CertEntry
 }
 var file_edge_v1_edge_proto_depIdxs = []int32{
 	2,  // 0: edge.v1.AgentMsg.hello:type_name -> edge.v1.Hello
 	4,  // 1: edge.v1.AgentMsg.hb:type_name -> edge.v1.Heartbeat
 	6,  // 2: edge.v1.AgentMsg.push_result:type_name -> edge.v1.PushResult
-	11, // 3: edge.v1.AgentMsg.logs:type_name -> edge.v1.LogBatch
-	13, // 4: edge.v1.AgentMsg.certs:type_name -> edge.v1.CertList
+	12, // 3: edge.v1.AgentMsg.logs:type_name -> edge.v1.LogBatch
+	14, // 4: edge.v1.AgentMsg.certs:type_name -> edge.v1.CertList
 	8,  // 5: edge.v1.AgentMsg.probe_result:type_name -> edge.v1.ProbeResult
-	5,  // 6: edge.v1.MasterMsg.push:type_name -> edge.v1.PushConfig
-	7,  // 7: edge.v1.MasterMsg.probe:type_name -> edge.v1.Probe
-	9,  // 8: edge.v1.MasterMsg.drain:type_name -> edge.v1.Drain
-	10, // 9: edge.v1.MasterMsg.renew:type_name -> edge.v1.RenewCert
-	3,  // 10: edge.v1.MasterMsg.enrolled:type_name -> edge.v1.Enrolled
-	12, // 11: edge.v1.LogBatch.lines:type_name -> edge.v1.LogLine
-	14, // 12: edge.v1.CertList.entries:type_name -> edge.v1.CertEntry
-	0,  // 13: edge.v1.EdgeTunnel.Channel:input_type -> edge.v1.AgentMsg
-	1,  // 14: edge.v1.EdgeTunnel.Channel:output_type -> edge.v1.MasterMsg
-	14, // [14:15] is the sub-list for method output_type
-	13, // [13:14] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	10, // 6: edge.v1.AgentMsg.drain_result:type_name -> edge.v1.DrainResult
+	5,  // 7: edge.v1.MasterMsg.push:type_name -> edge.v1.PushConfig
+	7,  // 8: edge.v1.MasterMsg.probe:type_name -> edge.v1.Probe
+	9,  // 9: edge.v1.MasterMsg.drain:type_name -> edge.v1.Drain
+	11, // 10: edge.v1.MasterMsg.renew:type_name -> edge.v1.RenewCert
+	3,  // 11: edge.v1.MasterMsg.enrolled:type_name -> edge.v1.Enrolled
+	13, // 12: edge.v1.LogBatch.lines:type_name -> edge.v1.LogLine
+	15, // 13: edge.v1.CertList.entries:type_name -> edge.v1.CertEntry
+	0,  // 14: edge.v1.EdgeTunnel.Channel:input_type -> edge.v1.AgentMsg
+	1,  // 15: edge.v1.EdgeTunnel.Channel:output_type -> edge.v1.MasterMsg
+	15, // [15:16] is the sub-list for method output_type
+	14, // [14:15] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_edge_v1_edge_proto_init() }
@@ -1297,6 +1399,7 @@ func file_edge_v1_edge_proto_init() {
 		(*AgentMsg_Logs)(nil),
 		(*AgentMsg_Certs)(nil),
 		(*AgentMsg_ProbeResult)(nil),
+		(*AgentMsg_DrainResult)(nil),
 	}
 	file_edge_v1_edge_proto_msgTypes[1].OneofWrappers = []any{
 		(*MasterMsg_Push)(nil),
@@ -1311,7 +1414,7 @@ func file_edge_v1_edge_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_edge_v1_edge_proto_rawDesc), len(file_edge_v1_edge_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   15,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

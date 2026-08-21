@@ -26,6 +26,8 @@ type session struct {
 	waiters  map[string]chan *edgev1.PushResult // key 是 cfg_version
 	probes   map[string]chan *edgev1.ProbeResult
 	probeSeq int
+	drains   map[string]chan *edgev1.DrainResult
+	drainSeq int
 }
 
 func newSession(nodeID string, stream edgev1.EdgeTunnel_ChannelServer) *session {
@@ -36,6 +38,7 @@ func newSession(nodeID string, stream edgev1.EdgeTunnel_ChannelServer) *session 
 		closed:  make(chan struct{}),
 		waiters: map[string]chan *edgev1.PushResult{},
 		probes:  map[string]chan *edgev1.ProbeResult{},
+		drains:  map[string]chan *edgev1.DrainResult{},
 	}
 }
 
@@ -89,6 +92,9 @@ func (s *session) readLoop(ctx context.Context, srv *Server) error {
 
 		case *edgev1.AgentMsg_ProbeResult:
 			s.deliverProbe(m.ProbeResult)
+
+		case *edgev1.AgentMsg_DrainResult:
+			s.deliverDrain(m.DrainResult)
 
 		case *edgev1.AgentMsg_Certs:
 			// 回执**整体替换**：一张已经从节点上消失的证书，旧回执留着会让
@@ -187,6 +193,59 @@ func (s *session) deliverProbe(r *edgev1.ProbeResult) {
 	s.mu.Unlock()
 	if ch != nil {
 		ch <- r
+	}
+}
+
+func (s *session) deliverDrain(r *edgev1.DrainResult) {
+	s.mu.Lock()
+	ch := s.drains[r.GetId()]
+	delete(s.drains, r.GetId())
+	s.mu.Unlock()
+	if ch != nil {
+		ch <- r
+	}
+}
+
+// drain 让节点等已建立的连接结束，回报还剩多少。
+//
+// **超时比 Agent 那边宽一点。** 两边卡同一个数的话，Agent 到点回报的那一刻
+// 主控可能已经放弃了，于是一个如实的回执被当成「节点没应答」——
+// 而那正好是排空最有话要说的时候（它就是要告诉你还剩几条）。
+func (s *session) drain(ctx context.Context, timeout time.Duration) (DrainOutcome, error) {
+	s.mu.Lock()
+	s.drainSeq++
+	id := fmt.Sprintf("d%d", s.drainSeq)
+	ch := make(chan *edgev1.DrainResult, 1)
+	s.drains[id] = ch
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.drains, id)
+		s.mu.Unlock()
+	}()
+
+	msg := &edgev1.MasterMsg{M: &edgev1.MasterMsg_Drain{Drain: &edgev1.Drain{
+		Id: id, TimeoutMs: uint32(timeout.Milliseconds()),
+	}}}
+	select {
+	case s.out <- msg:
+	case <-s.closed:
+		return DrainOutcome{}, errUnreachable
+	case <-ctx.Done():
+		return DrainOutcome{}, ctx.Err()
+	}
+
+	t := time.NewTimer(timeout + drainGrace)
+	defer t.Stop()
+	select {
+	case r := <-ch:
+		return DrainOutcome{Drained: r.GetDrained(), Remaining: r.GetRemaining()}, nil
+	case <-t.C:
+		return DrainOutcome{}, errUnreachable
+	case <-s.closed:
+		return DrainOutcome{}, errUnreachable
+	case <-ctx.Done():
+		return DrainOutcome{}, ctx.Err()
 	}
 }
 

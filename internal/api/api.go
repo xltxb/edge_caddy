@@ -24,6 +24,7 @@ type Tunneler interface {
 	OnlineNodes() []string
 	Probe(ctx context.Context, nodeID string, timeout time.Duration) (tunnel.ProbeOutcome, error)
 	Disconnect(nodeID string) bool
+	Drain(ctx context.Context, nodeID string, timeout time.Duration) (tunnel.DrainOutcome, error)
 }
 
 // Healther 是观测状态在 HTTP 面这一层的最小面貌。

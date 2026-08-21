@@ -20,6 +20,7 @@ message AgentMsg {
     LogBatch logs = 4;
     CertList certs = 5;
     ProbeResult probe_result = 6;  // 增补：后端文档 §5 有 Probe 下行却没有回执
+    DrainResult drain_result = 7;  // 增补：Drain 原先也是有下行没回执
   }
 }
 
@@ -125,7 +126,25 @@ message ProbeResult {
   string cfg_version = 3;
 }
 
-message Drain { string id = 1; }
+// Drain 让 Agent 等本机**已经建立**的连接自然结束。
+//
+// 它不阻止新连接：解析虽已摘掉，DNS 有 TTL，缓存在各级递归里，
+// 一段时间内仍会有新连接进来（CONTEXT.md「排空」）。
+message Drain {
+  string id = 1;
+  uint32 timeout_ms = 2;  // 等多久；到点就如实回报还剩多少，不无限等
+}
+
+// DrainResult 必须回报 remaining，不能只回一个布尔。
+//
+// 人接下来要做的决定是「现在能不能关机」，而那取决于还剩几条连接——
+// 一个 drained=false 只告诉他「没排干净」，答不了「还差多少」：
+// 是还剩 2 条可以直接关，还是还剩 8000 条得再等。
+message DrainResult {
+  string id = 1;
+  bool drained = 2;      // 超时前降到 0
+  uint32 remaining = 3;  // 回报那一刻的连接数
+}
 
 message RenewCert { string domain = 1; }
 

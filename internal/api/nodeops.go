@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -191,9 +192,11 @@ func (s *Server) handleNodeDrain(c *gin.Context) {
 	}
 	steps = append(steps, step("dns_removed", synced, detail))
 
-	// 连接排空属于后续步骤：这里如实说没做，
-	// 而不是回一个 ok=true 让人以为流量已经排干净了。
-	steps = append(steps, step("conns_drained", false, "尚未实现，连接不会被主动排空"))
+	// **排空要在断隧道之前。** 断了就没法再问节点还剩多少连接了。
+	//
+	// 也要在摘解析之后：解析还指着这台机器的时候排空，是在排一个还在进水的池子。
+	// 顺序是这三步唯一的硬约束。
+	steps = append(steps, s.drainStep(ctx, nodeID, synced))
 
 	// **先落下线标记，再断隧道。** 反过来的话，断开与写库之间有一个窗口，
 	// 而 Agent 恰恰在那个窗口里重连 —— 它会被放进来，然后一直待到下次有人再点。
@@ -238,6 +241,43 @@ func (s *Server) handleNodeRejoin(c *gin.Context) {
 		"dns_enabled": false,
 		"detail":      "已允许重新接入；解析仍是关闭的，确认配置无误后再打开",
 	})
+}
+
+// drainConnsTimeout 是等排空的上限。
+//
+// 不做成可配的：这个值要变的场景（一台连接特别多的机器）恰恰是人在旁边看着的
+// 场景，而那时他要的是「还剩多少」这个数字，不是再等久一点——
+// 拿到数字之后他自己会决定是关机还是再点一次。
+const drainConnsTimeout = 30 * time.Second
+
+// drainStep 让节点排空已建立的连接，并把结果说成人能据此做决定的样子。
+func (s *Server) drainStep(ctx context.Context, nodeID string, dnsRemoved bool) gin.H {
+	if !dnsRemoved {
+		// 解析还指着这台机器，新连接源源不断，排空没有意义。
+		// 说清是「跳过」而不是「失败」——后者会让人去查节点。
+		return step("conns_drained", false, "上一步没能停掉解析，跳过排空（还在进水的池子排不干净）")
+	}
+	if s.tunnel == nil {
+		return step("conns_drained", false, "隧道未装配")
+	}
+
+	out, err := s.tunnel.Drain(ctx, nodeID, drainConnsTimeout)
+	if err != nil {
+		// 节点本来就不在线是最常见的一种：那时排空既做不成也不必做，
+		// 但**不能报成功**——「没连接可排」和「排干净了」在下一步（关机）
+		// 面前是一回事，在这一步的语义上不是。
+		return step("conns_drained", false, "节点不可达，连接未排空："+err.Error())
+	}
+	if !out.Drained {
+		return step("conns_drained", false, fmt.Sprintf(
+			"等了 %s 仍有 %d 条连接未结束；关机会掐断它们",
+			drainConnsTimeout, out.Remaining))
+	}
+	// **说清这句话的边界。** 解析摘掉了，但 DNS 有 TTL，缓存在各级递归里，
+	// 一段时间内仍会有新连接进来。「排空完成」指的是那一刻的连接数，
+	// 不是「再也没有请求」——不说的话这是第三句假话。
+	return step("conns_drained", true,
+		"已建立的连接都已结束；解析缓存未过期前仍可能有新连接进来")
 }
 
 func step(name string, ok bool, detail string) gin.H {

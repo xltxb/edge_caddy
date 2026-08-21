@@ -28,6 +28,15 @@ type Orchestrator struct {
 	Sealer *secret.Sealer
 	Log    *slog.Logger
 
+	// BaseOverride 把服务商 API 指向别处。**只有测试会设它**，
+	// 生产路径上它是空的，各家走自己的官方地址。
+	//
+	// 在生产结构体上开这个口子是有代价的，但不开的代价更大：下线的
+	// 「排空连接」这一步只在**上一步真的摘掉了解析**时才执行，而 e2e 里
+	// 没有服务商可配，于是那条分支一次也走不到。一个只在「没配服务商」
+	// 这个分支上被测过的功能，等于没测——而它恰恰是最需要端到端验的那种。
+	BaseOverride string
+
 	mu sync.Mutex
 }
 
@@ -56,13 +65,20 @@ func (o *Orchestrator) Provider(ctx context.Context) (dnsctl.Provider, store.DNS
 
 	switch cfg.Kind {
 	case "dnspod":
-		return dnsctl.NewDNSPod(cfg.Credential, cfg.Domain, cfg.SubName), cfg, nil
+		p := dnsctl.NewDNSPod(cfg.Credential, cfg.Domain, cfg.SubName)
+		if o.BaseOverride != "" {
+			p.Base = o.BaseOverride
+		}
+		return p, cfg, nil
 	case "cloudflare":
 		cf := dnsctl.NewCloudflare(cfg.AccountID, cfg.ZoneID, hostname(cfg))
 		if cfg.CredentialMode == "global_key" {
 			cf.Email, cf.GlobalKey = cfg.Email, cfg.Credential
 		} else {
 			cf.Token = cfg.Credential
+		}
+		if o.BaseOverride != "" {
+			cf.Base = o.BaseOverride
 		}
 		return cf, cfg, nil
 	default:
