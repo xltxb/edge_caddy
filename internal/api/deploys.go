@@ -108,7 +108,12 @@ func (s *Server) handleGetDeploy(c *gin.Context) {
 		"id": d.ID, "cfg_version": d.CfgVersion, "operator": d.Operator,
 		"res_keys": d.ResKeys, "ok_count": d.OKCount, "fail_count": d.FailCount,
 		// targets 与 target_count 是同一件事的两个投影，库里只存前者——
-		// 存两份迟早会不一致。target_count 保留是因为前端已经在用它。
+		// 存两份迟早会不一致。
+		//
+		// target_count 留着的理由是**契约 §7 列了它**，不是「前端现在在用它」
+		// ——这里原先写的是后者。一个压在对方当前实现上的理由，
+		// 对方改了实现就静默失效，而没有任何流程会通知到这一行；
+		// 压在契约上的理由则跟着契约一起改，那件事有流程。
 		"targets": d.Targets, "target_count": len(d.Targets),
 		"is_baseline": d.IsBaseline, "created_at": d.CreatedAt,
 		"phase": deployPhase(d.Targets, results), "results": results,

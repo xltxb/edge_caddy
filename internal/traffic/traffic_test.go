@@ -309,3 +309,70 @@ func countSamples(t *testing.T, st *store.Store) int {
 	}
 	return n
 }
+
+// **reason 的取值集合是契约的一部分，加一种就得改契约。**
+//
+// 前端 agent 为「后端加了第四种而我没跟上」加了一支防御：认不出的取值
+// 退回中性文案。那是对的方向——最坏结果该是「少说一句」，
+// 不该是「把一个不认识的原因说成某个认识的」。
+//
+// 但那只兜住了他那一侧。这一条盯的是我这一侧：**新增一种取值时这里会红**，
+// 而红的时候人该做的第一件事是去改契约 §3 那张表，不是把常量加进这个列表。
+func TestReasonValuesAreExactlyWhatTheContractLists(t *testing.T) {
+	// 契约 docs/api-contract.md §3 的表里就这三行。
+	inContract := map[string]bool{
+		"insufficient_history": true,
+		"no_sample":            true,
+		"zero_baseline":        true,
+	}
+	for _, r := range []string{
+		traffic.ReasonInsufficientHistory,
+		traffic.ReasonNoSampleAtThatTime,
+		traffic.ReasonZeroBaseline,
+	} {
+		if !inContract[r] {
+			t.Errorf("常量 %q 不在契约 §3 那张表里", r)
+		}
+		delete(inContract, r)
+	}
+	if len(inContract) > 0 {
+		t.Errorf("契约里列了但代码里没有：%v", inContract)
+	}
+
+	// 而且真跑出来的原因也只能是这三个之一 —— 上面那段只比对常量，
+	// 一个直接 return 字面量的分支绕得过它。
+	st := testdb.New(t)
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Minute)
+	known := map[string]bool{
+		traffic.ReasonInsufficientHistory: true,
+		traffic.ReasonNoSampleAtThatTime:  true,
+		traffic.ReasonZeroBaseline:        true,
+		"":                                true, // 有数字时
+	}
+
+	// 走遍三条路：空库、有旧样本但那一分钟没有、那一分钟是 0。
+	check := func(label string) {
+		t.Helper()
+		_, reason, err := traffic.DeltaPct(ctx, st, now, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !known[reason] {
+			t.Errorf("%s：跑出了契约没列的原因 %q", label, reason)
+		}
+	}
+	check("空库")
+	if err := st.InsertTrafficSample(ctx, store.TrafficSample{
+		At: now.Add(-48 * time.Hour), ConnsTotal: 10,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	check("有旧样本但那一分钟没有")
+	if err := st.InsertTrafficSample(ctx, store.TrafficSample{
+		At: now.Add(-24 * time.Hour), ConnsTotal: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	check("那一分钟是 0")
+}
