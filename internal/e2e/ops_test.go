@@ -148,12 +148,12 @@ func TestDrainRequiresConfirmAndEveryStepExplainsItself(t *testing.T) {
 	if len(d.Steps) != 3 {
 		t.Fatalf("应当报三步，实际 %+v", d.Steps)
 	}
-	// 这里原先写着「停止解析应当成功」——而那正是被修掉的那句谎：
-	// 测试环境没配服务商，解析根本没变，报成功是错的。
+	// **这一条盯的是「每一步都必须说明自己做了什么」**：一个没有 detail 的
+	// false 跟没报一样，人看不出是没做、做不了、还是做失败了。
 	// dns_removed 的真伪由 TestDrainDoesNotClaimDNSRemovedWithoutSyncing 单独盯。
 	//
-	// 留在这里的是**每一步都必须说明自己做了什么**：一个没有 detail 的 false
-	// 跟没报一样，人看不出是没做、做不了、还是做失败了。
+	// （这里曾经断言「停止解析应当成功」，而那正是被修掉的那句谎：
+	// 测试环境没配服务商，解析根本没变，报成功是错的。）
 	for _, st := range d.Steps {
 		if st.Detail == "" {
 			t.Errorf("%s 应当说明为什么", st.Step)
