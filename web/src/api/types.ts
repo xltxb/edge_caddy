@@ -454,8 +454,30 @@ export interface DnsLineWire {
   entries: DnsEntryWire[]
 }
 
+/**
+ * 服务商能力。**两家服务商的能力不对等**，而 PRD 把它们并列了。
+ *
+ * Cloudflare 的 DNS 记录没有线路与权重概念，加权调度要上独立付费的
+ * Load Balancing，而它的地理维度是国家 / 大洲 —— 电信 / 联通 / 移动在那边
+ * 根本表达不了，三者会被合并成「中国」。
+ *
+ * 这跟「回源率靠缓存」是同一类：**假设了一个服务商没有的能力**。
+ * 选了 Load Balancing 不会让这个限制消失，所以它必须出现在界面上。
+ */
+export interface DnsCapabilitiesWire {
+  /** 空串 = 尚未配置服务商。此时权重仍可保存（那是本地意图），但推不出去。 */
+  kind: string
+  /** 服务商能表达的线路码。不在这里面的线路，界面不能让人分别配。 */
+  lines: string[]
+  weights: boolean
+  /** 可直接呈给用户的中文说明。 */
+  notes: string
+}
+
 export interface DnsWeightsWire {
+  domain?: string
   lines: DnsLineWire[]
+  capabilities?: DnsCapabilitiesWire
 }
 
 /* ── 11. 系统设置与告警 ── */

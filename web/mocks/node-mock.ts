@@ -217,7 +217,25 @@ export async function handleDns(req: IncomingMessage, res: ServerResponse): Prom
   const path = (req.url ?? '').split('?')[0] ?? ''
   if (path !== '/api/v1/dns/weights') return false
 
-  if (req.method === 'GET') return ok(res, { lines: buildLines() }), true
+  if (req.method === 'GET') {
+    // mock 里用 cloudflare，因为它是**能力更少**的那家 —— 拿能力多的那家开发，
+    // 界面上那条限制就永远走不到。
+    return (
+      ok(res, {
+        domain: 'cdn.example.com',
+        lines: buildLines(),
+        capabilities: {
+          kind: 'cloudflare',
+          lines: ['cn', 'tw', 'ov'],
+          weights: true,
+          notes:
+            'Cloudflare 的 DNS 记录没有权重与线路概念，加权调度走 Load Balancing，' +
+            '其地理维度是国家 / 大洲：电信 / 联通 / 移动无法区分，三者会被合并为「中国」。',
+        },
+      }),
+      true
+    )
+  }
 
   if (req.method === 'PUT') {
     const b = (await readBody(req)) as { lines?: { code: string; entries: { node: string; weight: number }[] }[] }
