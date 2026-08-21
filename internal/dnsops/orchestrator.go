@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/xltxb/edge_caddy/internal/dnsctl"
 	"github.com/xltxb/edge_caddy/internal/dnssched"
@@ -109,6 +110,22 @@ func (o *Orchestrator) Sync(ctx context.Context, weights dnssched.Weights) error
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
+	err := o.syncOnce(ctx, weights)
+
+	// **每次同步都记下结果**，无论成败。界面上那个「已退出解析」徽标是常驻的，
+	// 而一次请求的响应会消失——不落库的话，一次失败的同步会留下一个一直撒谎
+	// 到下次有人再点开关为止的说法。
+	st := store.DNSSyncState{OK: err == nil, At: time.Now(), Detail: "解析安排已同步到服务商"}
+	if err != nil {
+		st.Detail = err.Error()
+	}
+	if perr := o.Store.PutDNSSync(context.WithoutCancel(ctx), st); perr != nil {
+		o.logger().Error("记录解析同步结果失败", "err", perr)
+	}
+	return err
+}
+
+func (o *Orchestrator) syncOnce(ctx context.Context, weights dnssched.Weights) error {
 	provider, _, err := o.Provider(ctx)
 	if err != nil {
 		return err

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/xltxb/edge_caddy/internal/secret"
 )
@@ -130,4 +131,33 @@ func (s *Store) PutDNSWeights(ctx context.Context, w DNSWeights) error {
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+const KeyDNSSync = "dns_sync"
+
+// DNSSyncState 是**最近一次**把解析安排推给服务商的结果。
+//
+// 它必须落库，因为界面上那个「已退出解析」徽标是**常驻**的，而一次请求响应里的
+// dns_synced 会消失。一次失败的同步之后，常驻徽标会一直说「这台机器不接流量了」
+// ——而它照旧在解析里，直到下次有人再点一次开关才被纠正。
+//
+// **常驻的说法需要常驻的真相来源。**
+type DNSSyncState struct {
+	OK     bool      `json:"ok"`
+	At     time.Time `json:"at"`
+	Detail string    `json:"detail"`
+}
+
+func (s *Store) GetDNSSync(ctx context.Context) (DNSSyncState, error) {
+	raw, err := s.rawSettings(ctx, KeyDNSSync)
+	if err != nil || raw == nil {
+		// 从来没同步过。ok=false 是对的：服务商那边确实没反映过我们的意图。
+		return DNSSyncState{Detail: "尚未向 DNS 服务商同步过"}, err
+	}
+	var out DNSSyncState
+	return out, json.Unmarshal(raw, &out)
+}
+
+func (s *Store) PutDNSSync(ctx context.Context, st DNSSyncState) error {
+	return s.putSettings(ctx, KeyDNSSync, st)
 }

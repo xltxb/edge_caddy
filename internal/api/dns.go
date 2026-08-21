@@ -23,9 +23,18 @@ func (s *Server) handleGetDNSWeights(c *gin.Context) {
 		Fail(c, CodeDownstream, "读取解析安排失败")
 		return
 	}
+	sync, err := s.store.GetDNSSync(ctx)
+	if err != nil {
+		s.log.Error("读取解析同步状态失败", "err", err)
+		Fail(c, CodeDownstream, "读取解析安排失败")
+		return
+	}
 	OK(c, gin.H{
 		"domain": plan.Domain,
 		"lines":  plan.Lines,
+		// 最近一次同步的结果。它与 lines 里的 share 是两件事：
+		// share 是**我们打算**怎么分，dns_sync 说的是**服务商那边真的这样了没有**。
+		"dns_sync": sync,
 		// capabilities 如实说出这家服务商做不到什么，界面据此把无效的输入框
 		// 置灰并说明原因——而不是让人配了个没有效果的数字。
 		"capabilities": s.dns.Caps(ctx),

@@ -80,7 +80,17 @@ func (s *Server) handleListNodes(c *gin.Context) {
 		}
 		items = append(items, item)
 	}
-	OK(c, gin.H{"items": items, "baseline": baseline})
+	// dns_sync 是**常驻**的：界面上那个「已退出解析」徽标也是常驻的，
+	// 而一次请求响应里的 dns_synced 会消失。一次失败的同步之后，
+	// 没有这个字段的话徽标会一直说「这台机器不接流量了」——
+	// 而它照旧在解析里。
+	sync, err := s.store.GetDNSSync(ctx)
+	if err != nil {
+		s.log.Error("读取解析同步状态失败", "err", err)
+		Fail(c, CodeDownstream, "读取节点失败")
+		return
+	}
+	OK(c, gin.H{"items": items, "baseline": baseline, "dns_sync": sync})
 }
 
 type tokenReq struct {

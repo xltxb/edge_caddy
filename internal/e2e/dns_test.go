@@ -250,3 +250,57 @@ func TestNodeDNSToggleReportsWhetherProviderWasSynced(t *testing.T) {
 		t.Errorf("detail 应当说清解析没被动过: %q", d.Detail)
 	}
 }
+
+// **常驻的同步状态。**
+//
+// POST /nodes/:id/dns 的 dns_synced 只出现一次就消失了，而界面上
+// 「已退出解析」那类徽标是常驻的。没有一个常驻的真相来源，一次失败的同步
+// 会留下一个一直撒谎到下次有人再点开关为止的徽标。
+func TestDNSSyncStateIsPersistedAndExposed(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	// 还没同步过：ok=false 是对的 —— 服务商那边确实没反映过我们的意图。
+	nodes := r.mustDo("GET", "/nodes", nil)
+	var n struct {
+		DNSSync struct {
+			OK     bool   `json:"ok"`
+			Detail string `json:"detail"`
+		} `json:"dns_sync"`
+	}
+	if err := json.Unmarshal(nodes.Data, &n); err != nil {
+		t.Fatal(err)
+	}
+	if n.DNSSync.OK {
+		t.Error("从来没同步过时不该说 ok")
+	}
+	if !strings.Contains(n.DNSSync.Detail, "尚未") {
+		t.Errorf("detail 应当说清从没同步过: %q", n.DNSSync.Detail)
+	}
+
+	// 点一次开关（没配服务商，同步会失败），状态要被记下来。
+	r.mustDo("POST", "/nodes/node-hk-01/dns", map[string]any{"enabled": false})
+
+	after := r.mustDo("GET", "/dns/weights", nil)
+	var w struct {
+		DNSSync struct {
+			OK     bool   `json:"ok"`
+			At     string `json:"at"`
+			Detail string `json:"detail"`
+		} `json:"dns_sync"`
+	}
+	if err := json.Unmarshal(after.Data, &w); err != nil {
+		t.Fatal(err)
+	}
+	if w.DNSSync.OK {
+		t.Fatal("没配服务商时同步不该报成功")
+	}
+	if w.DNSSync.At == "" {
+		t.Error("应当记下尝试的时间")
+	}
+	if !strings.Contains(w.DNSSync.Detail, "服务商") {
+		t.Errorf("失败原因应当留下来: %q", w.DNSSync.Detail)
+	}
+}
