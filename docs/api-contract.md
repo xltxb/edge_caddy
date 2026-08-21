@@ -448,13 +448,20 @@ null
 { "confirm": true }
 // data —— 三步的执行结果
 { "steps": [
-  { "step": "dns_removed",   "ok": true,  "detail": "已停止解析（真正调用 DNS 服务商属于 #21）" },
+  { "step": "dns_removed",   "ok": true,  "detail": "解析安排已同步到服务商" },
   { "step": "conns_drained", "ok": false, "detail": "尚未实现，连接不会被主动排空" },
   { "step": "tunnel_closed", "ok": false, "detail": "尚未实现，隧道仍然保持" }
 ] }
 ```
 
-**尚未实现的步骤报 `ok: false` 并说明原因，不报成功。** 回一个 `ok: true`
+**每一步的 `ok` 说的是「这件事真的发生了」，不是「我这边的记录改成功了」。**
+
+`dns_removed` 曾经拿「标志位写库成功」当判据，于是没配服务商时也报 `ok: true`
+——解析记录一个字节没变，而运维看到「已停止解析」就去关机器。现在它反映的是
+**服务商那边真的变了**；没配服务商时报 `ok: false`，detail 说「尚未配置 DNS
+服务商，解析未变动」。
+
+另外两步尚未实现，报 `ok: false` 并说明原因。回一个 `ok: true`
 会让人以为流量已经排干净了，然后关掉那台机器——而连接还在。
 
 ---

@@ -540,12 +540,37 @@ func (x *Heartbeat) GetOriginTotal() uint64 {
 }
 
 type PushConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CfgVersion    string                 `protobuf:"bytes,1,opt,name=cfg_version,json=cfgVersion,proto3" json:"cfg_version,omitempty"`
-	CaddyJson     []byte                 `protobuf:"bytes,2,opt,name=caddy_json,json=caddyJson,proto3" json:"caddy_json,omitempty"`     // 主控渲染的全量配置。证书以 load_pem 内联其中（ADR-0010）
-	DeadlineMs    uint32                 `protobuf:"varint,3,opt,name=deadline_ms,json=deadlineMs,proto3" json:"deadline_ms,omitempty"` // 默认 5000
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	CfgVersion string                 `protobuf:"bytes,1,opt,name=cfg_version,json=cfgVersion,proto3" json:"cfg_version,omitempty"`
+	CaddyJson  []byte                 `protobuf:"bytes,2,opt,name=caddy_json,json=caddyJson,proto3" json:"caddy_json,omitempty"`     // 主控渲染的全量配置。证书以 load_pem 内联其中（ADR-0010）
+	DeadlineMs uint32                 `protobuf:"varint,3,opt,name=deadline_ms,json=deadlineMs,proto3" json:"deadline_ms,omitempty"` // 默认 5000
+	// verify_rules 是 Agent 校验端点需要的验签材料（JSON 数组）。
+	//
+	// 它**不在 caddy_json 里**，而且是刻意的：Caddy 的 Admin API 能读回整份运行
+	// 配置，服务密钥的共享密钥放进去就等于把它摆在一个可读接口后面。证书私钥没得选
+	// （load_pem 要求内联，见 ADR-0010），这个有得选，所以走旁路。
+	//
+	// Caddy 配置里只出现 /verify/<rule-id> 这个路径，不含任何密钥。
+	VerifyRules []byte `protobuf:"bytes,4,opt,name=verify_rules,json=verifyRules,proto3" json:"verify_rules,omitempty"`
+	// 本次配置里的资源数量。Agent 记下并在心跳里报回来。
+	//
+	// 让节点报「它自己那份」而不是主控现算：一台没应用成功的节点会继续报**旧**数字，
+	// 那正是这两个字段有用的地方——它们和 cfg_version 一起说明「这台机器上到底是哪一版」。
+	Routes uint32 `protobuf:"varint,5,opt,name=routes,proto3" json:"routes,omitempty"`
+	Rules  uint32 `protobuf:"varint,6,opt,name=rules,proto3" json:"rules,omitempty"`
+	// 回源 mTLS 的客户端证书（ADR-0008 / ADR-0009）。**每个节点各一张**，
+	// CN 是它的 node_id，有效期 24 小时，随每次下发续上。
+	//
+	// 这里同时带**路径**与**内容**，是刻意的：Caddy 的 client_certificate_file
+	// 只接受文件路径，没有内联选项（不像证书的 load_pem）。若让主控渲染路径、
+	// Agent 自己决定写哪儿，那就是两个进程各自持有同一份知识——ADR-0010 拒绝
+	// load_files 正是这个理由。主控一处决定，连内容一起送过去。
+	UpstreamCertPem  []byte `protobuf:"bytes,7,opt,name=upstream_cert_pem,json=upstreamCertPem,proto3" json:"upstream_cert_pem,omitempty"`
+	UpstreamKeyPem   []byte `protobuf:"bytes,8,opt,name=upstream_key_pem,json=upstreamKeyPem,proto3" json:"upstream_key_pem,omitempty"`
+	UpstreamCertPath string `protobuf:"bytes,9,opt,name=upstream_cert_path,json=upstreamCertPath,proto3" json:"upstream_cert_path,omitempty"`
+	UpstreamKeyPath  string `protobuf:"bytes,10,opt,name=upstream_key_path,json=upstreamKeyPath,proto3" json:"upstream_key_path,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *PushConfig) Reset() {
@@ -597,6 +622,55 @@ func (x *PushConfig) GetDeadlineMs() uint32 {
 		return x.DeadlineMs
 	}
 	return 0
+}
+
+func (x *PushConfig) GetVerifyRules() []byte {
+	if x != nil {
+		return x.VerifyRules
+	}
+	return nil
+}
+
+func (x *PushConfig) GetRoutes() uint32 {
+	if x != nil {
+		return x.Routes
+	}
+	return 0
+}
+
+func (x *PushConfig) GetRules() uint32 {
+	if x != nil {
+		return x.Rules
+	}
+	return 0
+}
+
+func (x *PushConfig) GetUpstreamCertPem() []byte {
+	if x != nil {
+		return x.UpstreamCertPem
+	}
+	return nil
+}
+
+func (x *PushConfig) GetUpstreamKeyPem() []byte {
+	if x != nil {
+		return x.UpstreamKeyPem
+	}
+	return nil
+}
+
+func (x *PushConfig) GetUpstreamCertPath() string {
+	if x != nil {
+		return x.UpstreamCertPath
+	}
+	return ""
+}
+
+func (x *PushConfig) GetUpstreamKeyPath() string {
+	if x != nil {
+		return x.UpstreamKeyPath
+	}
+	return ""
 }
 
 // PushResult 的 ok=false 分两种，主控靠「有没有收到这条消息」区分，不靠 detail 的措辞：
@@ -1105,7 +1179,7 @@ const file_edge_v1_edge_proto_rawDesc = "" +
 	"\x06routes\x18\x06 \x01(\rR\x06routes\x12\x14\n" +
 	"\x05rules\x18\a \x01(\rR\x05rules\x12\x1b\n" +
 	"\treq_total\x18\b \x01(\x04R\breqTotal\x12!\n" +
-	"\forigin_total\x18\t \x01(\x04R\voriginTotal\"m\n" +
+	"\forigin_total\x18\t \x01(\x04R\voriginTotal\"\xee\x02\n" +
 	"\n" +
 	"PushConfig\x12\x1f\n" +
 	"\vcfg_version\x18\x01 \x01(\tR\n" +
@@ -1113,7 +1187,15 @@ const file_edge_v1_edge_proto_rawDesc = "" +
 	"\n" +
 	"caddy_json\x18\x02 \x01(\fR\tcaddyJson\x12\x1f\n" +
 	"\vdeadline_ms\x18\x03 \x01(\rR\n" +
-	"deadlineMs\"U\n" +
+	"deadlineMs\x12!\n" +
+	"\fverify_rules\x18\x04 \x01(\fR\vverifyRules\x12\x16\n" +
+	"\x06routes\x18\x05 \x01(\rR\x06routes\x12\x14\n" +
+	"\x05rules\x18\x06 \x01(\rR\x05rules\x12*\n" +
+	"\x11upstream_cert_pem\x18\a \x01(\fR\x0fupstreamCertPem\x12(\n" +
+	"\x10upstream_key_pem\x18\b \x01(\fR\x0eupstreamKeyPem\x12,\n" +
+	"\x12upstream_cert_path\x18\t \x01(\tR\x10upstreamCertPath\x12*\n" +
+	"\x11upstream_key_path\x18\n" +
+	" \x01(\tR\x0fupstreamKeyPath\"U\n" +
 	"\n" +
 	"PushResult\x12\x1f\n" +
 	"\vcfg_version\x18\x01 \x01(\tR\n" +

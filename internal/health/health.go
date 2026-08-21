@@ -54,7 +54,7 @@ type Alerter interface {
 	Notify(ctx context.Context, level, title, body string)
 }
 
-// DNSDetacher 把一个节点摘出解析。真实实现属于 #21。
+// DNSDetacher 把一个节点摘出解析。由 dnsops.Orchestrator 实现。
 type DNSDetacher interface {
 	Detach(ctx context.Context, nodeID string) error
 	Attach(ctx context.Context, nodeID string) error

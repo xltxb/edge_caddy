@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/xltxb/edge_caddy/internal/api"
@@ -121,7 +122,7 @@ func TestRepushBringsNodeToBaselineWithoutNewDeploy(t *testing.T) {
 }
 
 // 下线需要显式确认，且**如实报告哪几步还没实现**。
-func TestDrainRequiresConfirmAndReportsUnimplementedSteps(t *testing.T) {
+func TestDrainRequiresConfirmAndEveryStepExplainsItself(t *testing.T) {
 	r := newRig(t)
 	token, _ := r.issueToken("node-hk-01")
 	r.startAgent("node-hk-01", token, t.TempDir())
@@ -146,16 +147,21 @@ func TestDrainRequiresConfirmAndReportsUnimplementedSteps(t *testing.T) {
 	if len(d.Steps) != 3 {
 		t.Fatalf("应当报三步，实际 %+v", d.Steps)
 	}
-	if !d.Steps[0].OK {
-		t.Error("停止解析应当成功")
+	// 这里原先写着「停止解析应当成功」——而那正是被修掉的那句谎：
+	// 测试环境没配服务商，解析根本没变，报成功是错的。
+	// dns_removed 的真伪由 TestDrainDoesNotClaimDNSRemovedWithoutSyncing 单独盯。
+	//
+	// 留在这里的是**每一步都必须说明自己做了什么**：一个没有 detail 的 false
+	// 跟没报一样，人看不出是没做、做不了、还是做失败了。
+	for _, st := range d.Steps {
+		if st.Detail == "" {
+			t.Errorf("%s 应当说明为什么", st.Step)
+		}
 	}
-	// 尚未实现的步骤必须报 ok=false —— 回一个 true 会让人以为流量已经排干净了。
+	// 尚未实现的两步必须报 ok=false —— 回一个 true 会让人以为流量已经排干净了。
 	for _, st := range d.Steps[1:] {
 		if st.OK {
 			t.Errorf("%s 尚未实现，不该报成功", st.Step)
-		}
-		if st.Detail == "" {
-			t.Errorf("%s 应当说明为什么", st.Step)
 		}
 	}
 }
@@ -295,5 +301,59 @@ func TestOverviewNodeCountsPartitionCleanly(t *testing.T) {
 	}
 	if d.KPI.Total != 1 || d.KPI.Online != 1 {
 		t.Fatalf("一台健康节点应当是 1/0/0/1，实际 %+v", d.KPI)
+	}
+}
+
+// **下线的第一步不能撒谎。**
+//
+// dns_removed 原先报 ok=true，而它只写了 edge_nodes.dns_enabled 这个标志位，
+// 从没调用过 DNS 服务商——解析记录一个字节没变。detail 写着「真正调用 DNS
+// 服务商属于 #21」，而 #21 早已完成：同一个 bug 我在 handleNodeDNS 上修过，
+// 却没有搜一遍还有谁调 SetNodeDNS。
+//
+// 这一步比另外两步危险得多：conns_drained 与 tunnel_closed 诚实地报 false，
+// 唯独最要紧的这一步报了 true。运维看到「已停止解析」就去关机器，而流量还在
+// 往那台机器上打。
+func TestDrainDoesNotClaimDNSRemovedWithoutSyncing(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	ok := r.mustDo("POST", "/nodes/node-hk-01/drain", map[string]any{"confirm": true})
+	var d struct {
+		Steps []struct {
+			Step   string `json:"step"`
+			OK     bool   `json:"ok"`
+			Detail string `json:"detail"`
+		} `json:"steps"`
+	}
+	if err := json.Unmarshal(ok.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	var dns *struct {
+		Step   string `json:"step"`
+		OK     bool   `json:"ok"`
+		Detail string `json:"detail"`
+	}
+	for i := range d.Steps {
+		if d.Steps[i].Step == "dns_removed" {
+			dns = &d.Steps[i]
+		}
+	}
+	if dns == nil {
+		t.Fatalf("应当有 dns_removed 这一步，实际 %+v", d.Steps)
+	}
+
+	// 测试环境没配服务商，解析确实没被动过。这一步就**不能**报成功。
+	if dns.OK {
+		t.Errorf("没配服务商，解析根本没变，不该报 ok=true（detail=%q）", dns.Detail)
+	}
+	if !strings.Contains(dns.Detail, "未配置") {
+		t.Errorf("detail 应当说清为什么没摘掉: %q", dns.Detail)
+	}
+	// 过期的欠条比没有欠条更糟：它看起来是有人管着的。
+	if strings.Contains(dns.Detail, "#21") {
+		t.Errorf("#21 已经完成，detail 不该再指着它: %q", dns.Detail)
 	}
 }

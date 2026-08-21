@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"time"
@@ -53,6 +54,34 @@ type dnsToggleReq struct {
 	Enabled *bool `json:"enabled"`
 }
 
+// setNodeDNS 改一个节点的解析标志位，**并把安排真的同步到服务商**。
+//
+// 返回的 synced 说的是「解析真的变了」，不是「标志位写成功了」。这个区分是
+// 这个函数存在的全部理由：调用方拿到的若是后者，它迟早会把它当成前者报出去。
+//
+// 两个调用方——手动开关与下线——必须走同一条路。它们原先各写各的：#21 把开关
+// 那条接上了服务商，下线那条没跟着改，于是下线报「已停止解析」而解析纹丝未动。
+// 只要「改标志位」和「同步服务商」是两个可以分开调的动作，就还会有第三个调用方
+// 只调前一个。**把它们焊死在一个函数里，才是这个 bug 真正的修法。**
+func (s *Server) setNodeDNS(ctx context.Context, nodeID string, enabled bool) (synced bool, detail string, err error) {
+	if err := s.store.SetNodeDNS(ctx, nodeID, enabled); err != nil {
+		return false, "改解析标志位失败：" + err.Error(), err
+	}
+	if s.dns == nil {
+		return false, "尚未配置 DNS 服务商，解析未变动", nil
+	}
+	switch err := s.dns.Sync(ctx, nil); {
+	case errors.Is(err, dnsops.ErrNoProvider):
+		// 没配服务商不是错误：标志位仍然有意义（它决定归一化里谁参与）。
+		// 但**必须说出来**，否则人以为解析已经变了。
+		return false, "尚未配置 DNS 服务商，解析未变动", nil
+	case err != nil:
+		return false, "标志位已改，但同步到 DNS 服务商失败：" + err.Error(), nil
+	default:
+		return true, "解析安排已同步到服务商", nil
+	}
+}
+
 func (s *Server) handleNodeDNS(c *gin.Context) {
 	nodeID := c.Param("id")
 	setAuditTarget(c, nodeID)
@@ -71,40 +100,14 @@ func (s *Server) handleNodeDNS(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	if err := s.store.SetNodeDNS(ctx, nodeID, *req.Enabled); err != nil {
+	synced, detail, err := s.setNodeDNS(ctx, nodeID, *req.Enabled)
+	if err != nil {
 		s.log.Error("切换解析失败", "node", nodeID, "err", err)
 		Fail(c, CodeDownstream, "切换解析失败")
 		return
 	}
-
-	// **改完标志位要真的同步到服务商。**
-	//
-	// 这里原先只改标志位，注释写着「真正调服务商属于 #21」——而 #21 完成之后
-	// 这句话没跟着改。于是心跳超时的**自动**摘除会同步服务商，人手动点
-	// 「暂停解析」却不会：同一件事两条路径行为不一致，而不一致的那条恰恰是
-	// 人主动做的那条。一个什么也不做的开关比没有这个开关更糟。
-	synced := false
-	if s.dns != nil {
-		switch err := s.dns.Sync(ctx, nil); {
-		case errors.Is(err, dnsops.ErrNoProvider):
-			// 没配服务商不是错误：标志位仍然有意义（它决定归一化里谁参与）。
-			// 但**必须说出来**，否则人以为解析已经变了。
-		case err != nil:
-			s.log.Error("同步解析失败", "node", nodeID, "err", err)
-			setAuditPartial(c, "标志位已改，但同步到 DNS 服务商失败："+err.Error())
-			OK(c, gin.H{
-				"id": nodeID, "dns_enabled": *req.Enabled, "dns_synced": false,
-				"detail": "标志位已改，但同步到 DNS 服务商失败：" + err.Error(),
-			})
-			return
-		default:
-			synced = true
-		}
-	}
-
-	detail := "解析安排已同步到服务商"
-	if !synced {
-		detail = "尚未配置 DNS 服务商，解析未变动"
+	if !synced && s.dns != nil {
+		setAuditPartial(c, detail)
 	}
 	OK(c, gin.H{"id": nodeID, "dns_enabled": *req.Enabled, "dns_synced": synced, "detail": detail})
 }
@@ -150,9 +153,16 @@ func (s *Server) handleNodeDrain(c *gin.Context) {
 	ctx := c.Request.Context()
 	steps := []gin.H{}
 
-	err := s.store.SetNodeDNS(ctx, nodeID, false)
-	steps = append(steps, step("dns_removed", err == nil, detailOf(err,
-		"已停止解析（真正调用 DNS 服务商属于 #21）")))
+	// **ok 说的是解析真的变了，不是标志位写成功了。**
+	//
+	// 这一步原先拿 SetNodeDNS 的 err 当成功判据，于是没配服务商时也报 ok=true。
+	// 另外两步诚实地报 false，唯独最要紧的这一步撒谎——运维看到「已停止解析」
+	// 就去关机器，而流量还在往那台机器上打。
+	synced, detail, err := s.setNodeDNS(ctx, nodeID, false)
+	if err != nil {
+		detail = err.Error()
+	}
+	steps = append(steps, step("dns_removed", synced, detail))
 
 	// 连接排空与关闭隧道属于后续工单：这里如实说没做，
 	// 而不是回一个 ok=true 让人以为流量已经排干净了。
