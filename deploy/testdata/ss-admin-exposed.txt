@@ -1,4 +1,0 @@
-State    Recv-Q   Send-Q     Local Address:Port      Peer Address:Port  Process
-LISTEN   0        4096             0.0.0.0:2019           0.0.0.0:*      users:(("caddy",pid=812,fd=7))
-LISTEN   0        4096           127.0.0.1:2021           0.0.0.0:*      users:(("edge-agent",pid=901,fd=3))
-LISTEN   0        4096                    *:443                  *:*      users:(("caddy",pid=812,fd=9))
