@@ -32,12 +32,27 @@ import (
 // 让界面能把做不到的输入框置灰并说明原因，而不是让人配了个没有效果的数字。
 type Caps struct {
 	Kind string `json:"kind"`
-	// Lines 是它能真正区分的线路码。做不到的线路会被塌缩到 Collapse 里说明的那一组。
-	Lines []string `json:"lines"`
+	// Lines 是它能真正区分的解析分组。
+	//
+	// **每一组自带它覆盖了契约里的哪几条线路**（Covers）。这张映射是服务商
+	// 的知识——「Cloudflare 的中国这一组盖住了电信/联通/移动」只有适配器
+	// 知道。把它放在这里，前端就不必知道任何服务商的地理模型；
+	// 放在前端则意味着同一份知识存在两处，加第三家服务商时会静默渲染错。
+	Lines []LineCap `json:"lines"`
 	// Weights 表示它能不能表达权重。false 时权重只有「>0 = 在解析里」的意义。
 	Weights bool `json:"weights"`
 	// Notes 是给人看的说明，直接呈在界面上。
 	Notes string `json:"notes"`
+}
+
+// LineCap 是服务商能区分的一个解析分组。
+type LineCap struct {
+	Code string `json:"code"`
+	Name string `json:"name"`
+	// Covers 是它盖住的契约线路码（api-contract §8 的 ct/cu/cm/tw/ov）。
+	// 一组盖住多条时，界面应当把那几条合并成一个输入框——
+	// 置灰只是把拒绝提前，合并让非法状态根本无法被表达。
+	Covers []string `json:"covers"`
 }
 
 type Provider interface {

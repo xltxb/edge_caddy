@@ -47,9 +47,14 @@ func NewCloudflare(accountID, zoneID, hostname string) *Cloudflare {
 func (c *Cloudflare) Caps() Caps {
 	return Caps{
 		Kind: "cloudflare",
-		// 只列它真正能区分的。ct/cu/cm 不在其中——界面据此把这三条线的权重
-		// 输入框合并或置灰，而不是让人配了个没有效果的数字。
-		Lines:   []string{"cn", "tw", "ov"},
+		// 中国这一组盖住 ct/cu/cm 三条线：Cloudflare 的地理维度是国家，
+		// 分不出 ISP。Covers 让界面把这三条合并成一个输入框——
+		// 于是「三条线权重不同」这个会被拒绝的状态在界面上造不出来。
+		Lines: []LineCap{
+			{Code: "cn", Name: "中国（电信 / 联通 / 移动合并）", Covers: []string{"ct", "cu", "cm"}},
+			{Code: "tw", Name: "台湾", Covers: []string{"tw"}},
+			{Code: "ov", Name: "境外", Covers: []string{"ov"}},
+		},
 		Weights: true,
 		Notes: "Cloudflare 的 DNS 记录没有权重与线路概念，加权调度经 Load Balancing 实现" +
 			"（独立付费产品）。它的地理维度是国家/大洲，**电信 / 联通 / 移动无法区分**，" +

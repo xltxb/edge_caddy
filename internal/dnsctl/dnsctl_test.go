@@ -414,8 +414,43 @@ func TestCloudflareCredentialModes(t *testing.T) {
 func TestCapabilitiesAreHonest(t *testing.T) {
 	cf := dnsctl.NewCloudflare("a", "z", "h").Caps()
 	for _, l := range cf.Lines {
-		if l == "ct" || l == "cu" || l == "cm" {
-			t.Fatalf("Cloudflare 不该声称能区分 %s —— 它的地理维度是国家", l)
+		if l.Code == "ct" || l.Code == "cu" || l.Code == "cm" {
+			t.Fatalf("Cloudflare 不该声称能区分 %s —— 它的地理维度是国家", l.Code)
+		}
+	}
+	// 覆盖关系必须由服务商给出：那是它的知识。放在前端意味着同一份知识
+	// 存在两处，加第三家服务商时会静默渲染错。
+	var cn *struct{ n int }
+	for _, l := range cf.Lines {
+		if l.Code != "cn" {
+			continue
+		}
+		cn = &struct{ n int }{len(l.Covers)}
+		want := map[string]bool{"ct": true, "cu": true, "cm": true}
+		for _, c := range l.Covers {
+			if !want[c] {
+				t.Errorf("中国这一组不该盖住 %s", c)
+			}
+			delete(want, c)
+		}
+		if len(want) > 0 {
+			t.Errorf("中国这一组漏了 %v", want)
+		}
+	}
+	if cn == nil {
+		t.Fatal("Cloudflare 应当给出一个「中国」分组")
+	}
+
+	// 五条线路必须被完整覆盖，一条都不能漏 —— 漏掉的那条在界面上会凭空消失。
+	covered := map[string]bool{}
+	for _, l := range cf.Lines {
+		for _, c := range l.Covers {
+			covered[c] = true
+		}
+	}
+	for _, code := range []string{"ct", "cu", "cm", "tw", "ov"} {
+		if !covered[code] {
+			t.Errorf("线路 %s 没有被任何分组覆盖", code)
 		}
 	}
 	if !strings.Contains(cf.Notes, "无法区分") {
@@ -425,5 +460,10 @@ func TestCapabilitiesAreHonest(t *testing.T) {
 	dp := dnsctl.NewDNSPod("t", "d", "s").Caps()
 	if len(dp.Lines) != 5 || !dp.Weights {
 		t.Errorf("DNSPod 原生支持五条线与权重: %+v", dp)
+	}
+	for _, l := range dp.Lines {
+		if len(l.Covers) != 1 || l.Covers[0] != l.Code {
+			t.Errorf("DNSPod 能逐条区分，每组应当只盖住自己: %+v", l)
+		}
 	}
 }

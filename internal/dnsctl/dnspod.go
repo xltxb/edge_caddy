@@ -50,8 +50,14 @@ func NewDNSPod(token, domain, sub string) *DNSPod {
 
 func (d *DNSPod) Caps() Caps {
 	return Caps{
-		Kind:    "dnspod",
-		Lines:   []string{"ct", "cu", "cm", "tw", "ov"},
+		Kind: "dnspod",
+		Lines: []LineCap{
+			{Code: "ct", Name: "电信", Covers: []string{"ct"}},
+			{Code: "cu", Name: "联通", Covers: []string{"cu"}},
+			{Code: "cm", Name: "移动", Covers: []string{"cm"}},
+			{Code: "tw", Name: "台湾", Covers: []string{"tw"}},
+			{Code: "ov", Name: "境外", Covers: []string{"ov"}},
+		},
 		Weights: true,
 		Notes:   "线路与权重均由 DNSPod 原生支持（权重需要付费套餐）。",
 	}
