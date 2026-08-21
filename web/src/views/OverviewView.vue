@@ -43,9 +43,9 @@ const shown = computed(() => {
 const kpis = computed(() => {
   const k = overview.kpi
   if (!k) return []
-  const warnN = nodes.items.filter((n) => n.status === 'warn').length
-  const downN = nodes.items.filter((n) => n.status === 'down').length
-  const trouble = [warnN ? `异常 ${warnN} 个` : '', downN ? `离线 ${downN} 个` : '']
+  // 三档全部取自后端同一条语句（契约 §3）。**不自己从节点列表推导** ——
+  // 两边分别算迟早会对不上，而对不上的数字会在界面上冒出来两次。
+  const trouble = [k.nodesWarn ? `异常 ${k.nodesWarn} 个` : '', k.nodesDown ? `离线 ${k.nodesDown} 个` : '']
     .filter(Boolean)
     .join(' · ')
 
@@ -82,12 +82,20 @@ const kpis = computed(() => {
     {
       key: 'all' as Filter,
       label: '回源率',
-      value: k.originRate.toFixed(1),
-      unit: '%',
+      // null = 还没有流量样本。不要当成 0 —— 「0% 回源」是一个很强的说法，
+      // 意味着边缘挡下了全部请求，而真相是我们还不知道。
+      value: k.originRate === null ? '—' : k.originRate.toFixed(1),
+      unit: k.originRate === null ? '' : '%',
       // 越低越好：没到达源站的那部分是被访问规则拦下的，**不是缓存命中**
       // —— 官方 Caddy 没有 HTTP 缓存模块（ADR-0001 / ADR-0003 的前提）
-      foot: `边缘拦截 ${(100 - k.originRate).toFixed(1)}% 请求`,
-      footColor: k.originRate > 30 ? 'var(--warning-text)' : 'var(--text-muted)',
+      foot:
+        k.originRate === null
+          ? '还没有流量样本'
+          : `边缘拦截 ${(100 - k.originRate).toFixed(1)}% 请求`,
+      footColor:
+        k.originRate !== null && k.originRate > 30
+          ? 'var(--warning-text)'
+          : 'var(--text-muted)',
       caveat:
         '到达源站的请求占比。剩下的是被访问规则拦下（静默断连 / 403 / 404）或由静态响应处理掉的，不是缓存命中——边缘跑的官方 Caddy 没有缓存模块。',
     },

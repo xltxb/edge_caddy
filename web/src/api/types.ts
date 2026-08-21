@@ -63,7 +63,16 @@ export interface SessionWire {
 /* ── 3. 总览 ── */
 
 export interface OverviewKpiWire {
+  /**
+   * 三档由后端**同一条语句**产出，满足 online + warn + down == total。
+   *
+   * **不要自己从节点列表推导。** 两边分别推导迟早会算不平 —— 而算不平的账
+   * 会在界面上冒出来两次（侧栏一个数、KPI 另一个数），比单个错数字更让人
+   * 怀疑整个系统。契约 §3 写明了这条。
+   */
   nodes_online: number
+  nodes_warn: number
+  nodes_down: number
   nodes_total: number
   conns_total: number
   /**
@@ -77,8 +86,11 @@ export interface OverviewKpiWire {
    * 没到达的那部分是被访问规则拦下（静默断连 / 403 / 404）或由静态响应处理掉的，
    * **不是缓存命中** —— 节点跑的是 apt 装的官方 Caddy，它没有 HTTP 缓存模块，
    * 而「不自建二进制」正是 ADR-0001 与 ADR-0003 共同的前提。
+   *
+   * **可为 null**：还没有流量样本时算不出来。不要当成 0 —— 0% 回源意味着
+   * 「边缘挡下了全部请求」，那是一个很强的说法。
    */
-  origin_rate: number
+  origin_rate: number | null
   /** cfg_version ≠ 基线的节点数。只比版本号，不检查节点上的配置内容（ADR-0002）。 */
   drift_nodes: number
 }

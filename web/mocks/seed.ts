@@ -120,9 +120,11 @@ export const events: EventWire[] = [
 ]
 
 export const kpi = () => ({
-  // 只有 ok 算在线。warn 的节点连着但不健康，把它算进「在线」会让
-  // 脚注「异常 N 个 · 离线 M 个」与分子对不上账。
+  // 三档由这一处同时算出来，保证 online + warn + down == total。
+  // 真后端也是一条语句产出的（契约 §3），前端不再自行推导。
   nodes_online: nodes.filter((n) => n.status === 'ok').length,
+  nodes_warn: nodes.filter((n) => n.status === 'warn').length,
+  nodes_down: nodes.filter((n) => n.status === 'down').length,
   nodes_total: nodes.length,
   conns_total: nodes.reduce((s, n) => s + n.conns, 0),
   conns_delta_pct: 12.4,
@@ -286,11 +288,11 @@ export const audit: AuditWire[] = [
   au(5, 'system', '暂停解析', 'node-us-01', null, 'ok'),
   au(232, 'abiu', '下发配置', BASELINE, '203.0.113.7', 'partial'),
   au(370, 'abiu', '修改路由', 'api.example.com', '203.0.113.7', 'ok'),
-  au(1_766, 'abiu', '登录控制台', '—', '203.0.113.7', 'ok'),
+  au(1_766, 'abiu', '登录', '—', '203.0.113.7', 'ok'),
   au(2_649, 'ops-bot', '续期证书', 'cdn.example.com', '127.0.0.1', 'ok'),
   au(5_856, 'abiu', '下发配置', PREV, '203.0.113.7', 'ok'),
-  au(7_181, 'zhang', '登录控制台', '—', '198.51.100.24', 'fail'),
-  au(7_198, 'zhang', '登录控制台', '—', '198.51.100.24', 'fail'),
+  au(7_181, 'zhang', '登录', '—', '198.51.100.24', 'fail'),
+  au(7_198, 'zhang', '登录', '—', '198.51.100.24', 'fail'),
   au(45_720, 'ops-bot', '下发配置', 'cfg-91d4f0', '127.0.0.1', 'ok'),
   au(73_320, 'abiu', '新建路由', 'admin.example.com', '203.0.113.7', 'ok'),
 ]

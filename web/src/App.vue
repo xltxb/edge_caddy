@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
 import AppTopbar from '@/components/layout/AppTopbar.vue'
 import CommandPalette from '@/components/palette/CommandPalette.vue'
+import ErrorBoundary from '@/components/layout/ErrorBoundary.vue'
 import ToastHost from '@/components/layout/ToastHost.vue'
 import { startRealtime, stopRealtime } from '@/realtime'
 import { NAV } from '@/router/nav'
@@ -119,7 +120,10 @@ watch(
         @deploy="router.push({ name: 'workbench' })"
       />
       <div class="page">
-        <RouterView />
+        <!-- 渲染期异常不该表现成白屏 —— 见 ErrorBoundary 里的说明 -->
+        <ErrorBoundary>
+          <RouterView />
+        </ErrorBoundary>
       </div>
     </main>
   </div>

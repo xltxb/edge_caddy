@@ -72,30 +72,46 @@ export function hbAgeSec(n: EdgeNode, now: number): number {
 export interface ConsoleEvent {
   id: number
   at: string
-  /** 系统级事件在线上是 null，这里统一成破折号，界面不用再判。 */
+  /** 系统级事件没有节点，这里统一成破折号，界面不用再判。 */
   node: string
   kind: EventKind
   msg: string
 }
 
+/**
+ * 「没有值」在线上有两种写法。
+ *
+ * 契约 §0.4 说该用 `null`，但实际会收到空串。两者都当作「没有」——
+ * 只判 null 的话，空串会原样渲染成一个空位，看起来像界面漏了内容。
+ * 对上游的写法宽容，对自己的输出严格。
+ */
+export function orDash(v: string | null | undefined): string {
+  return v === null || v === undefined || v === '' ? '—' : v
+}
+
 export function fromEventWire(w: EventWire): ConsoleEvent {
-  return { id: w.id, at: w.at, node: w.node ?? '—', kind: w.kind, msg: w.msg }
+  return { id: w.id, at: w.at, node: orDash(w.node), kind: w.kind, msg: w.msg }
 }
 
 export interface OverviewKpi {
+  /** 三档由后端一条语句产出，前端**不再自行推导**。 */
   nodesOnline: number
+  nodesWarn: number
+  nodesDown: number
   nodesTotal: number
   connsTotal: number
   /** 较昨日同时段的变化百分比。null = 历史不足，界面留白而不是显示 0%。 */
   connsDeltaPct: number | null
-  /** 回源率 = 到达 upstream ÷ 边缘收到的总请求。越低越好（低 = 边缘挡掉得多）。 */
-  originRate: number
+  /** 回源率。null = 还没有流量样本，算不出来 —— 不要当成 0。 */
+  originRate: number | null
   driftNodes: number
 }
 
 export function fromKpiWire(w: OverviewKpiWire): OverviewKpi {
   return {
     nodesOnline: w.nodes_online,
+    nodesWarn: w.nodes_warn,
+    nodesDown: w.nodes_down,
     nodesTotal: w.nodes_total,
     connsTotal: w.conns_total,
     connsDeltaPct: w.conns_delta_pct,

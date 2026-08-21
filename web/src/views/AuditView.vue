@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { http } from '@/api/http'
+import { orDash } from '@/model'
 import type { AuditWire, Paged } from '@/api/types'
 
 /**
@@ -41,7 +42,10 @@ watch(items, (v) => {
  * 它混在流水里很难被注意到，而它恰恰是唯一一类可能来自外部的信号。
  */
 const failedLogins = computed(() =>
-  items.value.filter((a) => a.action === '登录控制台' && a.result === 'fail'),
+  // action 的取值见契约 §5 的术语表，是「登录」而不是「登录控制台」。
+  // 自己编一个不在表里的值，这条提示就永远不会触发 —— 而它恰恰是唯一一类
+  // 可能来自外部的信号。
+  items.value.filter((a) => a.action === '登录' && a.result === 'fail'),
 )
 
 const RESULT: Record<string, { text: string; cls: string }> = {
@@ -74,7 +78,7 @@ function stamp(at: string): string {
 
     <div v-if="failedLogins.length" class="banner danger">
       有 {{ failedLogins.length }} 次失败的登录尝试，最近一次来自
-      <span class="mono">{{ failedLogins[0]!.src_ip ?? '未知来源' }}</span>。
+      <span class="mono">{{ orDash(failedLogins[0]!.src_ip) }}</span>。
     </div>
 
     <div v-if="loading && !items.length" class="hint">正在加载…</div>
@@ -104,8 +108,8 @@ function stamp(at: string): string {
           <td class="mono muted">{{ stamp(a.at) }}</td>
           <td class="mono">{{ a.operator }}</td>
           <td class="strong">{{ a.action }}</td>
-          <td class="mono muted">{{ a.target }}</td>
-          <td class="mono muted">{{ a.src_ip ?? '—' }}</td>
+          <td class="mono muted">{{ orDash(a.target) }}</td>
+          <td class="mono muted">{{ orDash(a.src_ip) }}</td>
           <td>
             <span class="tag" :class="RESULT[a.result]!.cls">{{ RESULT[a.result]!.text }}</span>
             <span v-if="a.detail" class="muted small"> · {{ a.detail }}</span>

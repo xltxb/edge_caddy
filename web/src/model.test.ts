@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fromEventWire, fromKpiWire, fromNodeWire, hbAgeSec } from './model'
+import { fromEventWire, fromKpiWire, fromNodeWire, hbAgeSec, orDash } from './model'
 import type { EventWire, NodeWire, OverviewKpiWire } from './api/types'
 
 const wire = (over: Partial<NodeWire> = {}): NodeWire => ({
@@ -62,7 +62,9 @@ describe('fromKpiWire', () => {
   it('conns_delta_pct 的 null 原样保留 —— 不能被当成 0', () => {
     // 0% 会被读成「持平」，而 null 的含义是「历史不足，还算不出来」
     const w: OverviewKpiWire = {
-      nodes_online: 5,
+      nodes_online: 3,
+      nodes_warn: 2,
+      nodes_down: 1,
       nodes_total: 6,
       conns_total: 48200,
       conns_delta_pct: null,
@@ -70,5 +72,60 @@ describe('fromKpiWire', () => {
       drift_nodes: 1,
     }
     expect(fromKpiWire(w).connsDeltaPct).toBeNull()
+  })
+
+  it('三档相加等于总数 —— 这个不变量由后端一条语句保证，前端不再推导', () => {
+    const w: OverviewKpiWire = {
+      nodes_online: 3,
+      nodes_warn: 2,
+      nodes_down: 1,
+      nodes_total: 6,
+      conns_total: 0,
+      conns_delta_pct: null,
+      origin_rate: null,
+      drift_nodes: 0,
+    }
+    const k = fromKpiWire(w)
+    expect(k.nodesOnline + k.nodesWarn + k.nodesDown).toBe(k.nodesTotal)
+  })
+
+  it('origin_rate 为 null 时原样保留 —— 不能当成 0', () => {
+    // 「0% 回源」意味着边缘挡下了全部请求，那是一个很强的说法，
+    // 而真相是我们还不知道。
+    const w: OverviewKpiWire = {
+      nodes_online: 1,
+      nodes_warn: 0,
+      nodes_down: 0,
+      nodes_total: 1,
+      conns_total: 0,
+      conns_delta_pct: null,
+      origin_rate: null,
+      drift_nodes: 0,
+    }
+    expect(fromKpiWire(w).originRate).toBeNull()
+  })
+})
+
+describe('orDash', () => {
+  it('null 与 undefined 都当作没有值', () => {
+    expect(orDash(null)).toBe('—')
+    expect(orDash(undefined)).toBe('—')
+  })
+
+  it('空串也当作没有值 —— 契约说该用 null，但线上会收到空串', () => {
+    // 只判 null 的话，空串会原样渲染成一个空位，看起来像界面漏了内容
+    expect(orDash('')).toBe('—')
+  })
+
+  it('有值时原样返回', () => {
+    expect(orDash('node-hk-01')).toBe('node-hk-01')
+  })
+})
+
+describe('fromEventWire 的空节点', () => {
+  it('空串与 null 都收成破折号', () => {
+    const base = { id: 1, at: '', kind: 'ok' as const, msg: 'x' }
+    expect(fromEventWire({ ...base, node: null }).node).toBe('—')
+    expect(fromEventWire({ ...base, node: '' }).node).toBe('—')
   })
 })
