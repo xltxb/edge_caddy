@@ -11,6 +11,7 @@ import { useOverviewStore } from '@/stores/overview'
 import { useUiStore } from '@/stores/ui'
 import { hbAgeSec } from '@/model'
 import { fmtClock, fmtConns, fmtHbAge } from '@/utils/format'
+import type { DrainStep } from '@/api/types'
 
 const route = useRoute()
 const nodes = useNodesStore()
@@ -120,21 +121,42 @@ async function onProbe(id: string): Promise<void> {
   }
 }
 
+/**
+ * 下线的三步结果**不进 toast**。
+ *
+ * 每一步的 detail 是人接下来那个决定的判据 —— 「解析缓存未过期前仍可能有新连接
+ * 进来」是「已排空」这句话的边界，「还剩 214 条连接未结束」和「还剩 2 条」要做的
+ * 是两个不同的决定。三句话拼成一行塞进一个会自己消失的 toast，等于没说。
+ *
+ * 所以结果留在弹层里，由人自己关掉 —— 跟回滚的 skipped 一样：**要人看见的东西
+ * 不能自己走掉**。
+ */
+const drainResult = ref<DrainStep[] | null>(null)
+
 async function onDrain(): Promise<void> {
   const id = drainTarget.value
   if (!id) return
   try {
     const r = await nodes.drain(id)
-    const failed = r.steps.filter((s) => !s.ok)
-    ui.toast(
-      failed.length ? 'warn' : 'ok',
-      `${id} 已下线`,
-      r.steps.map((s) => s.detail ?? s.step).join(' · '),
-    )
+    drainResult.value = r.steps
   } catch (e) {
     ui.toast('warn', '下线失败', errorText(e, ''))
-  } finally {
     drainTarget.value = null
+  }
+}
+
+function closeDrain(): void {
+  drainTarget.value = null
+  drainResult.value = null
+}
+
+async function onRejoin(id: string): Promise<void> {
+  try {
+    const r = await nodes.rejoin(id)
+    // detail 原样给出：它说的是「解析仍是关闭的」，而人多半以为重新上线就恢复了
+    ui.toast('ok', `${id} 已重新上线`, r.detail)
+  } catch (e) {
+    ui.toast('warn', '重新上线失败', errorText(e, ''))
   }
 }
 
@@ -202,6 +224,16 @@ const LEVEL_COLOR: Record<string, string> = {
           </span>
 
           <span class="flags">
+            <!--
+              下线与离线**各占一格，永不合并**。
+              status 是观察（主控没收到心跳），drained_at 是意图（人按了下线）。
+              一台节点可以「已下线且在线」，也可以「未下线但离线」——前者是
+              「我关的」，后者是故障。合成一个徽标，运维半夜分不清该不该起床
+              （CONTEXT.md、ADR-0014）。左边那个 VStatusPill 就是 status 那一格。
+            -->
+            <span v-if="n.drainedAt" class="flag drained" :title="`下线于 ${fmtClock(n.drainedAt)}`">
+              已下线（人为）
+            </span>
             <span v-if="!n.dnsEnabled" class="flag warn">
               {{ dnsNotSynced ? '已标记退出（解析未变）' : '已退出解析' }}
             </span>
@@ -267,10 +299,16 @@ const LEVEL_COLOR: Record<string, string> = {
             <button class="mini" type="button" :disabled="!!nodes.busy[n.id]" @click="onPush(n.id)">
               {{ nodes.busy[n.id] === '重推中' ? '重推中…' : '重推配置' }}
             </button>
+            <!--
+              已下线的节点开解析后端会回 2001（先「重新上线」）。这里直接禁用并
+              说明，而不是让人点了再被拒 —— 「置灰只是把拒绝提前」。
+              关解析不拒，所以只在「要开」的方向禁用。
+            -->
             <button
               class="mini"
               type="button"
-              :disabled="!!nodes.busy[n.id]"
+              :disabled="!!nodes.busy[n.id] || (!!n.drainedAt && !n.dnsEnabled)"
+              :title="!!n.drainedAt && !n.dnsEnabled ? '该节点已被下线，先「重新上线」再恢复解析' : ''"
               @click="onDns(n.id, !n.dnsEnabled)"
             >
               {{ n.dnsEnabled ? '暂停解析' : '恢复解析' }}
@@ -278,7 +316,22 @@ const LEVEL_COLOR: Record<string, string> = {
             <button class="mini" type="button" :disabled="!!nodes.busy[n.id]" @click="onProbe(n.id)">
               {{ nodes.busy[n.id] === '探活中' ? '探活中…' : '立即探活' }}
             </button>
-            <button class="mini danger" type="button" @click="drainTarget = n.id">下线节点</button>
+            <!--
+              下线在没有「重新上线」时是个单程操作 —— 误点的代价不对称，
+              而唯一的出路是去改数据库。两个按钮在同一处，人看得见回头路。
+            -->
+            <button
+              v-if="n.drainedAt"
+              class="mini"
+              type="button"
+              :disabled="!!nodes.busy[n.id]"
+              @click="onRejoin(n.id)"
+            >
+              {{ nodes.busy[n.id] === '重新上线中' ? '重新上线中…' : '重新上线' }}
+            </button>
+            <button v-else class="mini danger" type="button" @click="drainTarget = n.id">
+              下线节点
+            </button>
           </div>
         </div>
       </li>
@@ -290,7 +343,8 @@ const LEVEL_COLOR: Record<string, string> = {
     :node-id="drainNode.id"
     :conns="drainNode.conns"
     :busy="!!nodes.busy[drainNode.id]"
-    @cancel="drainTarget = null"
+    :result="drainResult"
+    @cancel="closeDrain"
     @confirm="onDrain"
   />
   <AddNodeModal v-if="addOpen" @close="addOpen = false" />
@@ -399,6 +453,10 @@ const LEVEL_COLOR: Record<string, string> = {
   border-radius: var(--radius-full);
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
+}
+.flag.drained {
+  border-color: var(--text-muted);
+  color: var(--text-muted);
 }
 .flag.warn {
   background: var(--warning-subtle);

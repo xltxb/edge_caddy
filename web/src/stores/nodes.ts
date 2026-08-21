@@ -11,6 +11,7 @@ import type {
   NodesPageWire,
   Paged,
   ProbeWire,
+  RejoinWire,
 } from '@/api/types'
 import { fromNodeWire, type EdgeNode } from '@/model'
 
@@ -126,6 +127,20 @@ export const useNodesStore = defineStore('nodes', () => {
     return r
   }
 
+  /**
+   * 重新上线：撤销下线标记。
+   *
+   * **解析不会跟着打开**（后端刻意的）——能接入不等于该马上分流量：它刚回来，
+   * 配置可能还是旧的。所以这里也不顺手替人打开，返回的 detail 会说明这一点。
+   */
+  async function rejoin(id: string): Promise<RejoinWire> {
+    const r = await withBusy(id, '重新上线中', () =>
+      http.post<RejoinWire>(`/nodes/${id}/rejoin`),
+    )
+    await fetchAll().catch(() => {})
+    return r
+  }
+
   async function probe(id: string): Promise<ProbeWire> {
     const r = await withBusy(id, '探活中', () =>
       http.post<ProbeWire>(`/nodes/${encodeURIComponent(id)}/probe`),
@@ -171,6 +186,7 @@ export const useNodesStore = defineStore('nodes', () => {
     toggleDns,
     probe,
     drain,
+    rejoin,
     issueToken,
     applyHeartbeat,
     recomputeDrift,

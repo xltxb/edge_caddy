@@ -18,6 +18,7 @@ const wire = (over: Partial<NodeWire> = {}): NodeWire => ({
   cfg_version: 'cfg-2f9a1c',
   drift: false,
   dns_enabled: true,
+  drained_at: null,
   routes: 4,
   rules: 3,
   created_at: '2026-08-01T09:00:00+08:00',

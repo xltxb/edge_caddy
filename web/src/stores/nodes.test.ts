@@ -14,7 +14,7 @@ vi.mock('@/api/http', () => ({
   },
 }))
 
-const wire = (id: string, cfg: string): NodeWire => ({
+const wire = (id: string, cfg: string, over: Partial<NodeWire> = {}): NodeWire => ({
   id,
   city: '香港',
   vendor: 'DMIT PPro',
@@ -30,9 +30,11 @@ const wire = (id: string, cfg: string): NodeWire => ({
   cfg_version: cfg,
   drift: false,
   dns_enabled: true,
+  drained_at: null,
   routes: 4,
   rules: 3,
   created_at: '',
+  ...over,
 })
 
 const hb = (over: Partial<HeartbeatFrame['data']>): HeartbeatFrame => ({
@@ -163,5 +165,69 @@ describe('dns_sync：服务商那边真的这样了没有', () => {
     expect(isZeroTime('')).toBe(true)
     expect(isZeroTime(null)).toBe(true)
     expect(isZeroTime('2026-08-21T15:40:00+08:00')).toBe(false)
+  })
+})
+
+/*
+ * 下线是**意图**，离线是**观察**（CONTEXT.md、ADR-0014）。
+ *
+ * 一台节点可以「已下线且在线」（刚按下，隧道还没断干净），也可以「未下线但离线」
+ * （它自己挂了）。前者是「我关的」，后者是故障 —— 把两者塞进同一个字段，
+ * 心跳一来就会把人的意图冲掉。
+ */
+describe('下线与离线各记各的', () => {
+  beforeEach(() => setActivePinia(createPinia()))
+
+  it('drained_at 与 status 互不覆盖：可以「已下线且在线」', () => {
+    const n = fromNodeWire(wire('node-hk-01', 'cfg-1', { status: 'ok', drained_at: '2026-08-21T16:46:50+08:00' }))
+    expect(n.status).toBe('ok')
+    expect(n.drainedAt).not.toBeNull()
+  })
+
+  it('也可以「未下线但离线」', () => {
+    const n = fromNodeWire(wire('node-hk-01', 'cfg-1', { status: 'down', drained_at: null }))
+    expect(n.status).toBe('down')
+    expect(n.drainedAt).toBeNull()
+  })
+
+  // 心跳只带 status，不带意图 —— 一个下线过的节点又开始报心跳时，
+  // 它仍然是「已下线」的，只是「在线」了。
+  it('心跳不冲掉下线标记', () => {
+    const store = useNodesStore()
+    store.items = [fromNodeWire(wire('node-hk-01', 'cfg-1', { status: 'down', drained_at: '2026-08-21T16:46:50+08:00' }))]
+    store.applyHeartbeat({
+      type: 'heartbeat',
+      data: {
+        id: 'node-hk-01',
+        status: 'ok',
+        cpu: 5,
+        mem: 5,
+        conns: 1,
+        hb_age_ms: 10,
+        cfg_version: 'cfg-1',
+        routes: 1,
+        rules: 1,
+      },
+    })
+    expect(store.items[0]!.status).toBe('ok')
+    expect(store.items[0]!.drainedAt).not.toBeNull()
+  })
+
+  it('重新上线不顺手打开解析 —— 能接入不等于该马上分流量', async () => {
+    getMock.mockReset().mockRejectedValue(new Error('不测刷新'))
+    const postMock = vi.fn().mockResolvedValue({
+      id: 'node-hk-01',
+      drained_at: null,
+      dns_enabled: false,
+      detail: '已允许重新接入；解析仍是关闭的，确认配置无误后再打开',
+    })
+    const { http } = await import('@/api/http')
+    ;(http as unknown as { post: unknown }).post = postMock
+
+    const store = useNodesStore()
+    const r = await store.rejoin('node-hk-01')
+    expect(postMock).toHaveBeenCalledWith('/nodes/node-hk-01/rejoin')
+    expect(r.drained_at).toBeNull()
+    expect(r.dns_enabled).toBe(false)
   })
 })

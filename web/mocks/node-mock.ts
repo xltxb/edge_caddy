@@ -159,7 +159,7 @@ export async function handleNodes(
     return paged(res, nodeState.logs[decodeURIComponent(logs[1]!)] ?? []), true
   }
 
-  const act = /^\/api\/v1\/nodes\/([^/]+)\/(push|dns|probe|drain)$/.exec(path)
+  const act = /^\/api\/v1\/nodes\/([^/]+)\/(push|dns|probe|drain|rejoin)$/.exec(path)
   if (m === 'POST' && act) {
     const id = decodeURIComponent(act[1]!)
     const node = nodeState.nodes.find((n) => n.id === id)
@@ -173,8 +173,28 @@ export async function handleNodes(
       return ok(res, { deploy_id: 0, cfg_version: deps.baseline() }), true
     }
 
+    if (act[2] === 'rejoin') {
+      // 解析**不**跟着打开：能接入不等于该马上分流量，它刚回来，配置可能还是旧的
+      node.drained_at = null
+      log(id, 'info', 'rejoin allowed by operator')
+      pushEvent(deps, id, 'ok', `${id} 已重新上线，解析仍是关闭的`)
+      return (
+        ok(res, {
+          id,
+          drained_at: null,
+          dns_enabled: node.dns_enabled === true,
+          detail: '已允许重新接入；解析仍是关闭的，确认配置无误后再打开',
+        }),
+        true
+      )
+    }
+
     if (act[2] === 'dns') {
       const b = await readBody(req)
+      // 已下线的节点开解析要拒；关不拒
+      if (b.enabled === true && node.drained_at) {
+        return failCode(res, 2001, '该节点已被下线，先「重新上线」再恢复解析'), true
+      }
       node.dns_enabled = b.enabled === true
       log(id, 'warn', `dns weight ${node.dns_enabled ? 'restored' : 'set to 0'}`)
       pushEvent(
@@ -214,17 +234,26 @@ export async function handleNodes(
     // drain
     const b = await readBody(req)
     if (b.confirm !== true) return failCode(res, 1001, '下线操作必须显式确认'), true
+    const before = Number(node.conns ?? 0)
     node.dns_enabled = false
-    node.status = 'down'
+    // **不动 status。** status 是观察（有没有心跳），drained_at 是意图。
+    // mock 早先在这里写 status='down'，那正是被 ADR-0014 拆开的那个混淆 ——
+    // 而且它会让「已下线且在线」这个真实存在的组合在 mock 里永远出不来。
+    node.drained_at = new Date().toISOString()
     node.conns = 0
     log(id, 'warn', 'tunnel closed by operator')
     pushEvent(deps, id, 'warn', `${id} 已下线：解析摘除、连接排空、隧道关闭`)
     return (
       ok(res, {
         steps: [
-          { step: 'dns_removed', ok: true },
-          { step: 'conns_drained', ok: true, detail: `等待 ${node.conns} 连接结束，耗时 8.2s` },
-          { step: 'tunnel_closed', ok: true },
+          { step: 'dns_removed', ok: true, detail: '解析安排已同步到服务商' },
+          {
+            step: 'conns_drained',
+            ok: true,
+            // 这句边界不能省：DNS 有 TTL，「已排空」说的是回报那一刻的连接数
+            detail: `已建立的 ${before} 条连接都已结束；解析缓存未过期前仍可能有新连接进来`,
+          },
+          { step: 'tunnel_closed', ok: true, detail: '隧道已断开，此后拒绝该节点重连' },
         ],
       }),
       true

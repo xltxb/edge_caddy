@@ -37,6 +37,11 @@ export interface EdgeNode {
   /** cfg_version ≠ 基线。只比版本号，发现不了 SSH 手改（ADR-0002）。 */
   drift: boolean
   dnsEnabled: boolean
+  /**
+   * 被下线的时刻，没下线过是 null。**与 status 各记各的**：
+   * status 是观察，这个是意图（CONTEXT.md）。
+   */
+  drainedAt: string | null
   /** 该节点**当前生效配置**里的数量，漂移节点会显示旧值。 */
   routes: number
   rules: number
@@ -59,6 +64,7 @@ export function fromNodeWire(w: NodeWire, stampedAt = Date.now()): EdgeNode {
     cfgVersion: w.cfg_version,
     drift: w.drift,
     dnsEnabled: w.dns_enabled,
+    drainedAt: w.drained_at ?? null,
     routes: w.routes,
     rules: w.rules,
   }

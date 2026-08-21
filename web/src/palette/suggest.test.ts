@@ -18,6 +18,7 @@ const node = (id: string, over: Partial<EdgeNode> = {}): EdgeNode => ({
   cfgVersion: 'cfg-a',
   drift: false,
   dnsEnabled: true,
+  drainedAt: null,
   routes: 1,
   rules: 1,
   ...over,

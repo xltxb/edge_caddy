@@ -85,6 +85,8 @@ const node = (
   cfg_version,
   drift: cfg_version !== BASELINE,
   dns_enabled,
+  // 下线是**意图**，与 status 各记各的（CONTEXT.md）。默认没人下过线。
+  drained_at: null,
   routes,
   rules,
   created_at: ago(86_400 * 20),

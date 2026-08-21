@@ -127,6 +127,18 @@ export interface NodeWire {
   cfg_version: string
   drift: boolean
   dns_enabled: boolean
+  /**
+   * 人**明确让它退出服务**的时刻；没下线过就是 null。
+   *
+   * **与 `status` 正交，不要合成一个徽标。** `status: down` 是**观察**（主控连着
+   * 几个周期没收到心跳）；`drained_at` 是**意图**（人按了下线）。一台节点可以
+   * 「已下线且在线」（刚按下，隧道还没断干净），也可以「未下线但离线」（它自己
+   * 挂了）。前者是「我关的」，后者是故障 —— 合成一个徽标，运维半夜分不清该不该
+   * 起床（CONTEXT.md、ADR-0014）。
+   *
+   * 非 null 时该节点：不参与解析、不进下发目标、不接受接入、也不报离线告警。
+   */
+  drained_at: string | null
   /** 该节点**当前生效配置**里的数量，由 Agent 上报，不是全局数量。 */
   routes: number
   rules: number
@@ -494,12 +506,33 @@ export interface ProbeWire {
 
 export interface DrainStep {
   step: 'dns_removed' | 'conns_drained' | 'tunnel_closed'
+  /**
+   * **这件事真的发生了**，不是「我这边的记录改成功了」。
+   *
+   * 没配 DNS 服务商时 `dns_removed` 就是 false，`conns_drained` 会被整个跳过
+   * —— 还在进水的池子排不干净。
+   */
   ok: boolean
+  /**
+   * **原样显示，不要截断、不要拼接。**
+   *
+   * 它是人接下来那个决定的判据：`conns_drained` 会说「解析缓存未过期前仍可能有
+   * 新连接进来」—— 那是「已排空」这句话的边界，不说的话人会据此关机；没排干净时
+   * 它带着还剩多少条，而「还剩 2 条」和「还剩 8000 条」要做的是两个不同的决定。
+   */
   detail?: string
 }
 
 export interface DrainWire {
   steps: DrainStep[]
+}
+
+/** 撤销下线。**解析不会自动打开** —— 能接入不等于该马上分流量。 */
+export interface RejoinWire {
+  id: string
+  drained_at: null
+  dns_enabled: boolean
+  detail: string
 }
 
 /* ── 8. DNS 调度 ── */
