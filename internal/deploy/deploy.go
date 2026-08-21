@@ -271,3 +271,69 @@ func (s *Scheduler) event(ctx context.Context, node, kind, msg string) {
 		})
 	}
 }
+
+// PreviewTarget 是预览里的一个目标节点及其当前状态。
+type PreviewTarget struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
+// Preview 是确认弹层的权威 diff 来源，同时是 dry-run。
+//
+// 返回**两份后端渲染的字节全文**，diff 由前端用自己的 LCS 算。
+// 权威性来自「两份都是后端渲染的」，不来自谁算的 diff——那样全站只有一套 diff
+// 实现，右栏的可读表示与弹层的权威 diff 复用同一个折叠交互
+// （ADR-0007 的补充与 api-contract §7.1）。
+type Preview struct {
+	Before     string          `json:"before"`
+	After      string          `json:"after"`
+	Baseline   string          `json:"baseline"`
+	Targets    []PreviewTarget `json:"targets"`
+	Validation struct {
+		OK     bool           `json:"ok"`
+		Errors []render.Issue `json:"errors"`
+	} `json:"validation"`
+}
+
+func (s *Scheduler) Preview(ctx context.Context, resKeys []string) (Preview, error) {
+	var p Preview
+	p.Validation.Errors = []render.Issue{}
+
+	live, err := s.Store.ListRoutes(ctx)
+	if err != nil {
+		return p, fmt.Errorf("读取路由: %w", err)
+	}
+	after, err := s.effectiveRoutes(ctx, resKeys)
+	if err != nil {
+		return p, err
+	}
+
+	// before 是当前基线所代表的内容。它自己也可能渲染不出来（比如某条路由的
+	// mtls 还开着），那不该让整个预览失败——前端拿到空的 before 时把 diff
+	// 显示成「全新增」即可，而 after 的校验结果仍然是有用的。
+	if b, issues := render.Render(live, s.Render); len(issues) == 0 {
+		p.Before = string(b)
+	}
+
+	if b, issues := render.Render(after, s.Render); len(issues) > 0 {
+		p.Validation.OK = false
+		p.Validation.Errors = issues
+	} else {
+		p.Validation.OK = true
+		p.After = string(b)
+	}
+
+	p.Baseline, err = s.Store.Baseline(ctx)
+	if err != nil {
+		return p, fmt.Errorf("读取基线: %w", err)
+	}
+
+	// 预览是 dry-run，不要求有在线节点——空数组是合法结果。
+	for _, id := range s.Pusher.OnlineNodes() {
+		p.Targets = append(p.Targets, PreviewTarget{ID: id, Status: "ok"})
+	}
+	if p.Targets == nil {
+		p.Targets = []PreviewTarget{}
+	}
+	return p, nil
+}

@@ -96,6 +96,8 @@ func New(o Options) *gin.Engine {
 	authed.PUT("/drafts/:key", audited("修改草稿", s.handlePutDraft))
 	authed.DELETE("/drafts", audited("放弃草稿", s.handleDeleteDrafts))
 
+	// 预览是只读的 dry-run，不写审计——它不改变任何东西。
+	authed.POST("/deploys/preview", s.handlePreview)
 	authed.POST("/deploys", audited("下发配置", s.handleDeploy))
 	authed.GET("/deploys", s.handleListDeploys)
 	authed.GET("/deploys/:id", s.handleGetDeploy)

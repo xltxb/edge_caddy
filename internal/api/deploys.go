@@ -58,6 +58,30 @@ func (s *Server) handleDeploy(c *gin.Context) {
 	})
 }
 
+// handlePreview 是确认弹层的权威 diff 来源，也是 dry-run。
+//
+// **校验没过时这里返回 code 0，不是 1002。** 预览成功地告诉了你「校验没过」，
+// 那不是请求失败；前端看 validation.ok，不走异常路径。只有 POST /deploys
+// 才用 1002 拒绝执行（api-contract §7.1）。
+func (s *Server) handlePreview(c *gin.Context) {
+	var req deployReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Fail(c, CodeBadParam, "请求格式错误")
+		return
+	}
+	if s.deployer == nil {
+		Fail(c, CodeStateConflict, "下发调度器未装配")
+		return
+	}
+	p, err := s.deployer.Preview(c.Request.Context(), req.ResKeys)
+	if err != nil {
+		s.log.Error("预览失败", "err", err)
+		Fail(c, CodeDownstream, "预览失败："+err.Error())
+		return
+	}
+	OK(c, p)
+}
+
 func (s *Server) handleGetDeploy(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {

@@ -544,7 +544,7 @@ DELETE /drafts          → 放弃全部草稿
 {
   "before": "{\n  \"apps\": {\n    \"http\": …",
   "after":  "{\n  \"apps\": {\n    \"http\": …",
-  "cfg_version": "cfg-9b31e7",
+  "baseline": "cfg-2f9a1c",
   "targets": [ { "id": "node-hk-01", "status": "ok" }, { "id": "node-us-01", "status": "down" } ],
   "validation": { "ok": true, "errors": [] }
 }
@@ -557,6 +557,13 @@ DELETE /drafts          → 放弃全部草稿
   注意：**校验失败在这里返回 `code: 0`**——预览成功地告诉了你「校验没过」，
   这不是请求失败。只有 `POST /deploys` 才用 `1002` 拒绝。
 - `targets` 是本次会广播到的节点及其当前状态，供弹层显示「下发到 N 个节点」。
+  预览**不要求**有在线节点——它是 dry-run，`targets` 为空数组是合法结果。
+- `baseline` 是 `before` 所代表的那一版，即当前基线。
+
+  > **本端点不返回 `cfg_version`。**（早先的契约里有，那是错的，已删。）
+  > 新版本号是在 `POST /deploys` 那一刻生成的，预览时给出一个只会与实际下发不符的
+  > 号码，正是我们一直在拦的那类「界面给出兑现不了的承诺」。弹层要显示版本递增时，
+  > 写「基线 cfg-2f9a1c → 新版本（下发时生成）」，不要编一个号出来。
 - **`before` / `after` 都不包含 `apps/tls`**（内联证书段）。私钥不进浏览器，
   且证书不是草稿资源。弹层底部必须标明「证书段由主控自动附加，不在此 diff 中」——
   见 [ADR-0007](adr/0007-workbench-preview-is-a-representation.md) 的补充。
