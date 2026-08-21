@@ -140,6 +140,11 @@ func TestPreviewExcludesTLSApp(t *testing.T) {
 		if body == nil {
 			t.Fatalf("%s 不该为 null", name)
 		}
+		// 非 nil 还不够：一个指向空串的指针会通过上面那关，
+		// 然后让下面两个「不含」全部成立。先确认这份预览真的有内容。
+		if !strings.Contains(*body, "tls.example.com") {
+			t.Fatalf("%s 里没有那条路由，「不含 apps/tls」无从谈起：%q", name, *body)
+		}
 		if strings.Contains(*body, `"tls"`) || strings.Contains(*body, "load_pem") {
 			t.Errorf("%s 里出现了 apps/tls —— 内联证书的私钥不该进浏览器", name)
 		}

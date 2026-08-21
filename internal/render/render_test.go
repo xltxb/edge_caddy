@@ -236,6 +236,12 @@ func TestCertsAreInlinedAndTLSServerAppears(t *testing.T) {
 // 白名单为空 = 不限制，不应产生 deny 路由。
 func TestEmptyWhitelistProducesNoDenyRoute(t *testing.T) {
 	b, _ := render.Render([]model.Route{ok("open.example.com", "127.0.0.1:1")}, nil, nil, render.Policies{}, render.Options{})
+	// 先确认这份渲染确实产出了那条路由。没这一句的话，Render 返回空
+	// （或者哪天签名变了）也会让下面那个「不含 not」成立 ——
+	// 而「没有 deny 匹配器」和「什么都没渲染出来」是两回事。
+	if !strings.Contains(string(b), "open.example.com") {
+		t.Fatalf("渲染结果里没有那条路由，下面的断言无从谈起:\n%s", b)
+	}
 	if strings.Contains(string(b), `"not"`) {
 		t.Fatalf("白名单为空却渲染出了 deny 匹配器:\n%s", b)
 	}

@@ -141,6 +141,11 @@ func TestAtAllOnlyAppliesToCrit(t *testing.T) {
 	if len(bodies) != 1 {
 		t.Fatalf("投递次数 = %d", len(bodies))
 	}
+	// 投递次数对了不代表这份 body 是我们以为的东西：一个空 body
+	// 同样不含 @所有人。先确认它确实是那条告警。
+	if !strings.Contains(bodies[0], "标题") {
+		t.Fatalf("这份 body 不是那条告警：%s", bodies[0])
+	}
 	if strings.Contains(bodies[0], "<at id=all></at>") {
 		t.Fatal("warn 级别不该 @所有人")
 	}

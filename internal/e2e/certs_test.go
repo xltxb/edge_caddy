@@ -333,9 +333,38 @@ func TestDeleteRouteUnbindsRules(t *testing.T) {
 		t.Fatalf("应当报出被摘除绑定的规则: %+v", d)
 	}
 
+	// **「摘掉绑定」和「规则整个没了」产生同一个观测。**
+	//
+	// 只断言「列表里不含那个域名」的话，一个把规则连带删掉的实现也会绿——
+	// 而那两件事完全不同：摘绑定是对的，删规则是丢了人配置的东西。
+	//
+	// 所以先钉住规则还在（肯定），再钉住它身上没有那个域名（否定）。
 	list := r.mustDo("GET", "/rules", nil)
-	if contains(string(list.Data), "gone.example.com") {
-		t.Fatalf("规则里还留着已删域名的绑定: %s", list.Data)
+	var rl struct {
+		Items []struct {
+			ID      string   `json:"id"`
+			ApplyTo []string `json:"apply_to"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(list.Data, &rl); err != nil {
+		t.Fatal(err)
+	}
+	var wl *struct {
+		ID      string   `json:"id"`
+		ApplyTo []string `json:"apply_to"`
+	}
+	for i := range rl.Items {
+		if rl.Items[i].ID == "wl" {
+			wl = &rl.Items[i]
+		}
+	}
+	if wl == nil {
+		t.Fatalf("规则 wl 应当还在 —— 删路由摘的是绑定，不是规则本身：%s", list.Data)
+	}
+	for _, d := range wl.ApplyTo {
+		if d == "gone.example.com" {
+			t.Fatalf("规则里还留着已删域名的绑定: %+v", wl.ApplyTo)
+		}
 	}
 }
 
