@@ -216,6 +216,33 @@ await check(
   },
 )
 
+// ── 契约 §6.3：全局策略的默认值由渲染器给，且限流默认关着 ──
+await check(
+  'GET /policies/log 回补齐后的默认值，且 rate_limit 是 false',
+  'src/workbench/fields.ts 的限流置灰；FieldList 的「未设置」态',
+  async () => {
+    const r = await call('/policies/log')
+    must(r.body?.code === 0, `取不到 log 策略：${r.body?.msg}`)
+    const spec = r.body.data.spec
+    /*
+     * 空 spec 也是一种「格式正确而意思是假的」：界面会把每个枚举画成没选中，
+     * 而人无从判断此刻什么在生效。所以先断言它**不是空的**。
+     */
+    must(Object.keys(spec).length > 0, 'spec 是空的 —— 界面会把「不知道」渲染成「还没设置」')
+    must(spec.format && spec.level, `缺默认值：${JSON.stringify(spec)}`)
+    /*
+     * 这条原先是前端单测里的「默认不开限流」，而它测的是我自己夹具里写的
+     * false。后端把默认改回 true 的话，那条照样绿 —— 它是一条关于世界的声明，
+     * 归这里。true 是个下发一定会被拒的值（官方 Caddy 没有限流模块）。
+     */
+    must(
+      spec.rate_limit === false,
+      `rate_limit 默认是 ${spec.rate_limit} —— true 会让下发被拒，等于文档记的默认值推不动`,
+    )
+    return `format=${spec.format} level=${spec.level} rate_limit=${spec.rate_limit}`
+  },
+)
+
 // ── 契约 §6.4：草稿是 Partial，原样存原样回 ──
 await check(
   '草稿 PUT 进去什么样，GET 回来就什么样',

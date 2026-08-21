@@ -51,15 +51,15 @@ describe('限流：官方 Caddy 没有这个模块', () => {
 })
 
 /*
- * 与真主控对齐的一条：GET /policies/log 现在回补齐后的默认值（rate_limit=false）。
- * 契约 §6.3 的表里 seed 写的是 true —— 那个值下发一定会被拒。
- * 这条测试钉住我们跟着**实现**走，不跟着那张表走。
+ * 这一组第一版叫「**默认不开限流**」，而它断言的是**我自己夹具里写的 false**，
+ * 不是后端的默认值。从名字推改坏立刻露馅：后端哪天把默认改回 true，这条照样绿。
+ *
+ * 「后端的默认值是什么」是一条**关于世界**的声明，归 scripts/check-premises.mjs
+ * 去问真主控。这里只测**关掉时**渲染器怎么表现 —— 名字照这个写。
  */
-describe('默认策略', () => {
-  it('默认不开限流', () => {
-    expect(
-      resolveUnavailable(field('spec.rate_limit'), logPolicy({})),
-    ).toBeTruthy()
+describe('限流关着时的表现', () => {
+  it('置灰且不报错 —— 那是个合法状态，不是待修的问题', () => {
+    expect(resolveUnavailable(field('spec.rate_limit'), logPolicy({}))).toBeTruthy()
     expect(field('spec.rate_limit').validate!(logPolicy({}))).toBeNull()
   })
 })

@@ -28,26 +28,39 @@ describe('为什么这个节点没在扛流量', () => {
   })
 
   /*
-   * 没下线过的离线节点：**不声称是自动摘的**。
+   * 没下线过的离线节点：**一个字都不归因**。
    *
-   * 自动摘除还取决于设置里的 auto_drop_dns，关掉的话离线节点的权重照样留着。
-   * 所以只陈述观察（当前离线），并把那个条件说出来，不下断言。
+   * 「人手动暂停」和「离线自动摘除」这两支后端也分不出来（dns_enabled 就是个
+   * 布尔，没记是谁关的）。谁都答不出的问题，界面不该假装答得出。
+   *
+   * 也不提 auto_drop_dns —— 那是后端的设置项，在前端拼一句解释后端行为的话，
+   * 就是同一份知识存两处；而且套个「若」字的归因仍然是归因。
    */
-  it('没下线过 + 离线：陈述观察，不断言因果', () => {
+  it('没下线过 + 离线：只说观察，不提原因也不提后端的设置项', () => {
     const p = participation(false, null, true)
     expect(p.kind).toBe('paused')
-    // 「离线」是可观察的事实，进正文；「所以才被摘的」是因果，不进
+    // 「离线」是可观察的事实，进正文
     expect(p.kind === 'paused' && p.text).toContain('离线')
     const hint = p.kind === 'paused' ? p.hint : ''
-    expect(hint).toContain('离线')
-    expect(hint).toContain('若') // 条件句，不是断言
-    expect(hint).not.toContain('已自动退出解析')
+    expect(hint).not.toContain('自动')
+    expect(hint).not.toContain('设置')
+    expect(hint).not.toContain('若')
   })
 
-  it('没下线过 + 在线：就是有人手动关的', () => {
+  /*
+   * 这条第一版叫「**就是有人手动关的**」—— 而那是错的，`rejoin` 之后正好是这个
+   * 状态：下线标记清了、解析仍关着、节点在线。那条路径是我自己建的。
+   *
+   * 函数本身没归因，只有测试名归了。**测试名是唯一一个不会被执行的部分**：
+   * 断言会被跑、会红、会被改坏验证，名字不会。
+   */
+  it('没下线过 + 在线：仍然不归因（rejoin 之后正是这个状态）', () => {
     const p = participation(false, null, false)
     expect(p.kind).toBe('paused')
+    expect(p.kind === 'paused' && p.text).toBe('未参与解析')
     expect(p.kind === 'paused' && p.hint).toContain('恢复解析')
+    // 不能说「有人手动关的」—— rejoin 会留下同样的状态
+    expect(p.kind === 'paused' && p.hint).not.toContain('手动')
   })
 
   // 取不到该节点时（/nodes 与 /dns/weights 不同步）不能因此断言「没被下线过」
