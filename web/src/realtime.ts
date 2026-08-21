@@ -16,8 +16,6 @@ import { useNodesStore } from './stores/nodes'
 let socket: EdgeSocket | null = null
 
 function dispatch(frame: WsFrame): void {
-  useLinkStore().markFrame()
-
   switch (frame.type) {
     case 'heartbeat':
       useNodesStore().applyHeartbeat(frame)

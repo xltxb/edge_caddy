@@ -105,7 +105,43 @@ const PROBES = [
     spec: 'src/api/http.test.ts',
     expect: '404 且 code 为 0',
   },
+  /*
+   * 从**名字**推的改坏：怎么让「只有 live 说得出实时」这句话为假？
+   * —— 让别的状态也说「实时」。这是这个应用里最贵的一句假话：说错了，
+   * 屏幕上每个数字都变成「陈旧但看着合理」。
+   */
+  {
+    name: '让重连中也说「实时」',
+    invariant: '只有 live 有资格断言屏幕上的东西是刚刚发生的',
+    file: 'src/stores/link.ts',
+    from: "      return { text: '重连中', tone: 'warn' }",
+    to: "      return { text: '实时', tone: 'warn' }",
+    spec: 'src/stores/link.test.ts',
+    expect: '只有 live 说得出',
+  },
+  {
+    name: '降级只换颜色，不用字说',
+    invariant: '颜色是最容易丢的一路信息，降级必须有字',
+    file: 'src/stores/link.ts',
+    from: "      return { text: '实时已断 · 降为 2s 轮询', tone: 'danger' }",
+    to: "      return { text: '实时', tone: 'danger' }",
+    spec: 'src/stores/link.test.ts',
+    expect: '降为轮询时文案里要有字说明',
+  },
 ]
+
+/*
+ * 跑之前先拍一份快照。
+ *
+ * 第一版这里用的是 `git diff --name-only` —— 而那问的是「文件脏不脏」，
+ * 我想问的是「**探针有没有把它还原成找到时的样子**」。两者在文件本来就有
+ * 未提交改动时会分岔：那次它报了「没还原干净」，而探针其实干得很好。
+ *
+ * 又是同一族：用一个近似的观测代替真正的问题。快照比对问的正是那个问题，
+ * 而且不依赖 git 装没装、在不在仓库里。
+ */
+const touched = [...new Set(PROBES.map((p) => p.file))]
+const before = new Map(touched.map((f) => [f, readFileSync(f, 'utf8')]))
 
 let bad = 0
 for (const p of PROBES) {
@@ -182,13 +218,7 @@ for (const p of PROBES) {
  * 损伤会留在工作区里 —— 而那时后面所有测试跑的都不是真正的源码。
  * 一个会留下损伤的探针比没有探针更糟：它会让**别的**结论也变得不可信。
  */
-const touched = [...new Set(PROBES.map((p) => p.file))]
-let dirty = ''
-try {
-  dirty = execSync(`git diff --name-only -- ${touched.join(' ')}`, { encoding: 'utf8' }).trim()
-} catch (e) {
-  dirty = `（git 查不了：${e instanceof Error ? e.message : e}）`
-}
+const dirty = touched.filter((f) => readFileSync(f, 'utf8') !== before.get(f)).join('\n')
 if (dirty) {
   console.error(`\n✗ 探针改过的文件没还原干净：\n${dirty}\n  用 git checkout 还原之后再看上面的结论。\n`)
   process.exit(2)
