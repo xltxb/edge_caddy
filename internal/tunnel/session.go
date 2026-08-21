@@ -116,7 +116,11 @@ func (s *session) readLoop(ctx context.Context, srv *Server) error {
 			// 重复的 Hello。不是错误，忽略即可——Agent 重连时可能补发。
 
 		default:
-			// 其余消息类型在后续工单落地（日志、证书清单、探活回执）。
+			// 只剩 LogBatch 没接：节点日志目前从 GET /nodes/:id/logs 那一侧走。
+			//
+			// 这句话原先写着「日志、证书清单、探活回执」——而后两样就在上面
+			// 几行处理掉了，句子没跟着改。**一条列举式的欠条，兑现一项就假一分**，
+			// 而它读起来始终是完整的。
 		}
 
 		select {

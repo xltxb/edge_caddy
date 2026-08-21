@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/xltxb/edge_caddy/internal/store"
 	"github.com/xltxb/edge_caddy/internal/testdb"
 )
 
@@ -101,5 +102,93 @@ func TestBaselineIsSingleRow(t *testing.T) {
 	_, err := s.Pool.Exec(ctx, `INSERT INTO baseline (cfg_version) VALUES ('cfg-bbb')`)
 	if err == nil {
 		t.Fatal("插入第二行基线本应被拒绝，却成功了")
+	}
+}
+
+// **心跳不能冲掉下线标记。**
+//
+// 这条钉的是 [ADR-0014] 的核心论据本身。那份 ADR 的全部理由是：`status` 已经
+// 有两个自动写入方（心跳写 ok/warn，health 写 down），把「已下线」塞进同一列
+// 就会被心跳冲掉。据此决定新增一列。
+//
+// 而分了列之后，**没有任何东西证明那个效果真的达成了**——它成立只是因为
+// 写 TouchHeartbeat 那条 SQL 的人碰巧没写 drained_at 这一列。
+//
+// 这个缺口不会被现有测试发现：已下线的节点被拒绝接入，所以在 e2e 里根本不会
+// 有心跳打进来，那条路径走不到。谁哪天给 TouchHeartbeat 补一句
+// 「节点回来了就清掉下线标记」——听起来完全合理——下线会静默失效，而全部
+// 测试照旧全绿。
+//
+// 前端在他们的 mock 夹具里钉住了同一条，理由说得比我准：
+// **一个夹具表达不了的状态，等于在开发期不存在。**
+func TestHeartbeatDoesNotClearDrainedMark(t *testing.T) {
+	s := testdb.New(t)
+	ctx := context.Background()
+
+	if err := s.UpsertNode(ctx, store.NodeSpec{
+		NodeID: "node-a", City: "香港", Vendor: "DMIT", Line: "CN2 GIA",
+		PublicIP: "203.0.113.7",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetNodeDrained(ctx, "node-a", true); err != nil {
+		t.Fatal(err)
+	}
+
+	// 心跳照常打。这在现实里是可能的：下线与断开之间有一个窗口，
+	// 而且这条路径将来还会被别的改动碰到。
+	if err := s.TouchHeartbeat(ctx, "node-a", "cfg-1", "ok"); err != nil {
+		t.Fatal(err)
+	}
+
+	nodes, err := s.ListNodes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("应当有一个节点，实际 %d", len(nodes))
+	}
+	n := nodes[0]
+	if n.DrainedAt == nil {
+		t.Error("心跳把下线标记冲掉了 —— 这正是 ADR-0014 分两列要防的事")
+	}
+	// 「已下线且在线」是一个**合法**的组合，不是矛盾态：刚按下下线，
+	// 隧道还没断干净。status 该照实说它此刻是健康的。
+	if n.Status != "ok" {
+		t.Errorf("status = %q，心跳到达时它就该是 ok —— 两个事实各说各的", n.Status)
+	}
+	drained, err := s.IsNodeDrained(ctx, "node-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !drained {
+		t.Error("IsNodeDrained 应当仍然为真")
+	}
+}
+
+// 反向：health 判离线也不该动下线标记，两个方向都要不互相覆盖。
+func TestMarkingDownDoesNotClearDrainedMark(t *testing.T) {
+	s := testdb.New(t)
+	ctx := context.Background()
+
+	if err := s.UpsertNode(ctx, store.NodeSpec{
+		NodeID: "node-a", City: "香港", Vendor: "DMIT", Line: "CN2 GIA",
+		PublicIP: "203.0.113.7",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetNodeDrained(ctx, "node-a", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetNodeDown(ctx, "node-a"); err != nil {
+		t.Fatal(err)
+	}
+
+	drained, err := s.IsNodeDrained(ctx, "node-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !drained {
+		t.Error("判离线把下线标记冲掉了 —— 那会让「重新上线」按钮无事可做")
 	}
 }

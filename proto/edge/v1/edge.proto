@@ -25,11 +25,20 @@ message AgentMsg {
 }
 
 message MasterMsg {
+  // 4 曾经是 RenewCert，已删。
+  //
+  // 证书随**每次下发**内联带上（ADR-0010），主控续期之后触发一次下发即可。
+  // 单独的续期指令与那个决定冲突：它意味着节点上有一条不经过下发的证书更新
+  // 路径，而 ADR-0010 拒绝 load_files 正是为了不让节点持有那种知识。
+  //
+  // 留着的话，下一个人会把它读成「还没做」而不是「不该做」。
+  reserved 4;
+  reserved "renew";
+
   oneof m {
     PushConfig push = 1;
     Probe probe = 2;
     Drain drain = 3;
-    RenewCert renew = 4;
     Enrolled enrolled = 5;  // 增补：接入握手的应答，承载隧道客户端证书
   }
 }
@@ -146,7 +155,6 @@ message DrainResult {
   uint32 remaining = 3;  // 回报那一刻的连接数
 }
 
-message RenewCert { string domain = 1; }
 
 // ---- 日志与证书 ----
 

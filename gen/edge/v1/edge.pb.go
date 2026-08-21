@@ -190,7 +190,6 @@ type MasterMsg struct {
 	//	*MasterMsg_Push
 	//	*MasterMsg_Probe
 	//	*MasterMsg_Drain
-	//	*MasterMsg_Renew
 	//	*MasterMsg_Enrolled
 	M             isMasterMsg_M `protobuf_oneof:"m"`
 	unknownFields protoimpl.UnknownFields
@@ -261,15 +260,6 @@ func (x *MasterMsg) GetDrain() *Drain {
 	return nil
 }
 
-func (x *MasterMsg) GetRenew() *RenewCert {
-	if x != nil {
-		if x, ok := x.M.(*MasterMsg_Renew); ok {
-			return x.Renew
-		}
-	}
-	return nil
-}
-
 func (x *MasterMsg) GetEnrolled() *Enrolled {
 	if x != nil {
 		if x, ok := x.M.(*MasterMsg_Enrolled); ok {
@@ -295,10 +285,6 @@ type MasterMsg_Drain struct {
 	Drain *Drain `protobuf:"bytes,3,opt,name=drain,proto3,oneof"`
 }
 
-type MasterMsg_Renew struct {
-	Renew *RenewCert `protobuf:"bytes,4,opt,name=renew,proto3,oneof"`
-}
-
 type MasterMsg_Enrolled struct {
 	Enrolled *Enrolled `protobuf:"bytes,5,opt,name=enrolled,proto3,oneof"` // 增补：接入握手的应答，承载隧道客户端证书
 }
@@ -308,8 +294,6 @@ func (*MasterMsg_Push) isMasterMsg_M() {}
 func (*MasterMsg_Probe) isMasterMsg_M() {}
 
 func (*MasterMsg_Drain) isMasterMsg_M() {}
-
-func (*MasterMsg_Renew) isMasterMsg_M() {}
 
 func (*MasterMsg_Enrolled) isMasterMsg_M() {}
 
@@ -977,50 +961,6 @@ func (x *DrainResult) GetRemaining() uint32 {
 	return 0
 }
 
-type RenewCert struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Domain        string                 `protobuf:"bytes,1,opt,name=domain,proto3" json:"domain,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *RenewCert) Reset() {
-	*x = RenewCert{}
-	mi := &file_edge_v1_edge_proto_msgTypes[11]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *RenewCert) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*RenewCert) ProtoMessage() {}
-
-func (x *RenewCert) ProtoReflect() protoreflect.Message {
-	mi := &file_edge_v1_edge_proto_msgTypes[11]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use RenewCert.ProtoReflect.Descriptor instead.
-func (*RenewCert) Descriptor() ([]byte, []int) {
-	return file_edge_v1_edge_proto_rawDescGZIP(), []int{11}
-}
-
-func (x *RenewCert) GetDomain() string {
-	if x != nil {
-		return x.Domain
-	}
-	return ""
-}
-
 type LogBatch struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Lines         []*LogLine             `protobuf:"bytes,1,rep,name=lines,proto3" json:"lines,omitempty"`
@@ -1030,7 +970,7 @@ type LogBatch struct {
 
 func (x *LogBatch) Reset() {
 	*x = LogBatch{}
-	mi := &file_edge_v1_edge_proto_msgTypes[12]
+	mi := &file_edge_v1_edge_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1042,7 +982,7 @@ func (x *LogBatch) String() string {
 func (*LogBatch) ProtoMessage() {}
 
 func (x *LogBatch) ProtoReflect() protoreflect.Message {
-	mi := &file_edge_v1_edge_proto_msgTypes[12]
+	mi := &file_edge_v1_edge_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1055,7 +995,7 @@ func (x *LogBatch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogBatch.ProtoReflect.Descriptor instead.
 func (*LogBatch) Descriptor() ([]byte, []int) {
-	return file_edge_v1_edge_proto_rawDescGZIP(), []int{12}
+	return file_edge_v1_edge_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *LogBatch) GetLines() []*LogLine {
@@ -1076,7 +1016,7 @@ type LogLine struct {
 
 func (x *LogLine) Reset() {
 	*x = LogLine{}
-	mi := &file_edge_v1_edge_proto_msgTypes[13]
+	mi := &file_edge_v1_edge_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1088,7 +1028,7 @@ func (x *LogLine) String() string {
 func (*LogLine) ProtoMessage() {}
 
 func (x *LogLine) ProtoReflect() protoreflect.Message {
-	mi := &file_edge_v1_edge_proto_msgTypes[13]
+	mi := &file_edge_v1_edge_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1101,7 +1041,7 @@ func (x *LogLine) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogLine.ProtoReflect.Descriptor instead.
 func (*LogLine) Descriptor() ([]byte, []int) {
-	return file_edge_v1_edge_proto_rawDescGZIP(), []int{13}
+	return file_edge_v1_edge_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *LogLine) GetAtUnixMs() int64 {
@@ -1136,7 +1076,7 @@ type CertList struct {
 
 func (x *CertList) Reset() {
 	*x = CertList{}
-	mi := &file_edge_v1_edge_proto_msgTypes[14]
+	mi := &file_edge_v1_edge_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1148,7 +1088,7 @@ func (x *CertList) String() string {
 func (*CertList) ProtoMessage() {}
 
 func (x *CertList) ProtoReflect() protoreflect.Message {
-	mi := &file_edge_v1_edge_proto_msgTypes[14]
+	mi := &file_edge_v1_edge_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1161,7 +1101,7 @@ func (x *CertList) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CertList.ProtoReflect.Descriptor instead.
 func (*CertList) Descriptor() ([]byte, []int) {
-	return file_edge_v1_edge_proto_rawDescGZIP(), []int{14}
+	return file_edge_v1_edge_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *CertList) GetEntries() []*CertEntry {
@@ -1182,7 +1122,7 @@ type CertEntry struct {
 
 func (x *CertEntry) Reset() {
 	*x = CertEntry{}
-	mi := &file_edge_v1_edge_proto_msgTypes[15]
+	mi := &file_edge_v1_edge_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1194,7 +1134,7 @@ func (x *CertEntry) String() string {
 func (*CertEntry) ProtoMessage() {}
 
 func (x *CertEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_edge_v1_edge_proto_msgTypes[15]
+	mi := &file_edge_v1_edge_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1207,7 +1147,7 @@ func (x *CertEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CertEntry.ProtoReflect.Descriptor instead.
 func (*CertEntry) Descriptor() ([]byte, []int) {
-	return file_edge_v1_edge_proto_rawDescGZIP(), []int{15}
+	return file_edge_v1_edge_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *CertEntry) GetDomain() string {
@@ -1245,14 +1185,13 @@ const file_edge_v1_edge_proto_rawDesc = "" +
 	"\x05certs\x18\x05 \x01(\v2\x11.edge.v1.CertListH\x00R\x05certs\x129\n" +
 	"\fprobe_result\x18\x06 \x01(\v2\x14.edge.v1.ProbeResultH\x00R\vprobeResult\x129\n" +
 	"\fdrain_result\x18\a \x01(\v2\x14.edge.v1.DrainResultH\x00R\vdrainResultB\x03\n" +
-	"\x01m\"\xe8\x01\n" +
+	"\x01m\"\xc9\x01\n" +
 	"\tMasterMsg\x12)\n" +
 	"\x04push\x18\x01 \x01(\v2\x13.edge.v1.PushConfigH\x00R\x04push\x12&\n" +
 	"\x05probe\x18\x02 \x01(\v2\x0e.edge.v1.ProbeH\x00R\x05probe\x12&\n" +
-	"\x05drain\x18\x03 \x01(\v2\x0e.edge.v1.DrainH\x00R\x05drain\x12*\n" +
-	"\x05renew\x18\x04 \x01(\v2\x12.edge.v1.RenewCertH\x00R\x05renew\x12/\n" +
+	"\x05drain\x18\x03 \x01(\v2\x0e.edge.v1.DrainH\x00R\x05drain\x12/\n" +
 	"\benrolled\x18\x05 \x01(\v2\x11.edge.v1.EnrolledH\x00R\benrolledB\x03\n" +
-	"\x01m\"P\n" +
+	"\x01mJ\x04\b\x04\x10\x05R\x05renew\"P\n" +
 	"\x05Hello\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12\x17\n" +
 	"\anode_id\x18\x02 \x01(\tR\x06nodeId\x12\x18\n" +
@@ -1311,9 +1250,7 @@ const file_edge_v1_edge_proto_rawDesc = "" +
 	"\vDrainResult\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
 	"\adrained\x18\x02 \x01(\bR\adrained\x12\x1c\n" +
-	"\tremaining\x18\x03 \x01(\rR\tremaining\"#\n" +
-	"\tRenewCert\x12\x16\n" +
-	"\x06domain\x18\x01 \x01(\tR\x06domain\"2\n" +
+	"\tremaining\x18\x03 \x01(\rR\tremaining\"2\n" +
 	"\bLogBatch\x12&\n" +
 	"\x05lines\x18\x01 \x03(\v2\x10.edge.v1.LogLineR\x05lines\"O\n" +
 	"\aLogLine\x12\x1c\n" +
@@ -1344,7 +1281,7 @@ func file_edge_v1_edge_proto_rawDescGZIP() []byte {
 	return file_edge_v1_edge_proto_rawDescData
 }
 
-var file_edge_v1_edge_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_edge_v1_edge_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_edge_v1_edge_proto_goTypes = []any{
 	(*AgentMsg)(nil),    // 0: edge.v1.AgentMsg
 	(*MasterMsg)(nil),   // 1: edge.v1.MasterMsg
@@ -1357,34 +1294,32 @@ var file_edge_v1_edge_proto_goTypes = []any{
 	(*ProbeResult)(nil), // 8: edge.v1.ProbeResult
 	(*Drain)(nil),       // 9: edge.v1.Drain
 	(*DrainResult)(nil), // 10: edge.v1.DrainResult
-	(*RenewCert)(nil),   // 11: edge.v1.RenewCert
-	(*LogBatch)(nil),    // 12: edge.v1.LogBatch
-	(*LogLine)(nil),     // 13: edge.v1.LogLine
-	(*CertList)(nil),    // 14: edge.v1.CertList
-	(*CertEntry)(nil),   // 15: edge.v1.CertEntry
+	(*LogBatch)(nil),    // 11: edge.v1.LogBatch
+	(*LogLine)(nil),     // 12: edge.v1.LogLine
+	(*CertList)(nil),    // 13: edge.v1.CertList
+	(*CertEntry)(nil),   // 14: edge.v1.CertEntry
 }
 var file_edge_v1_edge_proto_depIdxs = []int32{
 	2,  // 0: edge.v1.AgentMsg.hello:type_name -> edge.v1.Hello
 	4,  // 1: edge.v1.AgentMsg.hb:type_name -> edge.v1.Heartbeat
 	6,  // 2: edge.v1.AgentMsg.push_result:type_name -> edge.v1.PushResult
-	12, // 3: edge.v1.AgentMsg.logs:type_name -> edge.v1.LogBatch
-	14, // 4: edge.v1.AgentMsg.certs:type_name -> edge.v1.CertList
+	11, // 3: edge.v1.AgentMsg.logs:type_name -> edge.v1.LogBatch
+	13, // 4: edge.v1.AgentMsg.certs:type_name -> edge.v1.CertList
 	8,  // 5: edge.v1.AgentMsg.probe_result:type_name -> edge.v1.ProbeResult
 	10, // 6: edge.v1.AgentMsg.drain_result:type_name -> edge.v1.DrainResult
 	5,  // 7: edge.v1.MasterMsg.push:type_name -> edge.v1.PushConfig
 	7,  // 8: edge.v1.MasterMsg.probe:type_name -> edge.v1.Probe
 	9,  // 9: edge.v1.MasterMsg.drain:type_name -> edge.v1.Drain
-	11, // 10: edge.v1.MasterMsg.renew:type_name -> edge.v1.RenewCert
-	3,  // 11: edge.v1.MasterMsg.enrolled:type_name -> edge.v1.Enrolled
-	13, // 12: edge.v1.LogBatch.lines:type_name -> edge.v1.LogLine
-	15, // 13: edge.v1.CertList.entries:type_name -> edge.v1.CertEntry
-	0,  // 14: edge.v1.EdgeTunnel.Channel:input_type -> edge.v1.AgentMsg
-	1,  // 15: edge.v1.EdgeTunnel.Channel:output_type -> edge.v1.MasterMsg
-	15, // [15:16] is the sub-list for method output_type
-	14, // [14:15] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	3,  // 10: edge.v1.MasterMsg.enrolled:type_name -> edge.v1.Enrolled
+	12, // 11: edge.v1.LogBatch.lines:type_name -> edge.v1.LogLine
+	14, // 12: edge.v1.CertList.entries:type_name -> edge.v1.CertEntry
+	0,  // 13: edge.v1.EdgeTunnel.Channel:input_type -> edge.v1.AgentMsg
+	1,  // 14: edge.v1.EdgeTunnel.Channel:output_type -> edge.v1.MasterMsg
+	14, // [14:15] is the sub-list for method output_type
+	13, // [13:14] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_edge_v1_edge_proto_init() }
@@ -1405,7 +1340,6 @@ func file_edge_v1_edge_proto_init() {
 		(*MasterMsg_Push)(nil),
 		(*MasterMsg_Probe)(nil),
 		(*MasterMsg_Drain)(nil),
-		(*MasterMsg_Renew)(nil),
 		(*MasterMsg_Enrolled)(nil),
 	}
 	type x struct{}
@@ -1414,7 +1348,7 @@ func file_edge_v1_edge_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_edge_v1_edge_proto_rawDesc), len(file_edge_v1_edge_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   16,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
