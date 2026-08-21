@@ -8,11 +8,22 @@ import (
 )
 
 type eventResp struct {
-	ID   int64  `json:"id"`
-	At   string `json:"at"`
-	Node string `json:"node"`
-	Kind string `json:"kind"`
-	Msg  string `json:"msg"`
+	ID int64  `json:"id"`
+	At string `json:"at"`
+	// Node 为 null 表示系统级事件（契约 §2）。用 null 而不是空串：
+	// 空串是一个合法的节点名形状，调用方分不出「没有节点」和「节点名是空的」。
+	Node *string `json:"node"`
+	Kind string  `json:"kind"`
+	Msg  string  `json:"msg"`
+}
+
+// nullIfEmpty 把空串变成 null。契约 §0.4：null 表示「没有这个值」，
+// 不用空串或 0 代替。
+func nullIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 func (s *Server) handleOverview(c *gin.Context) {
@@ -88,7 +99,7 @@ func (s *Server) handleOverview(c *gin.Context) {
 	for _, e := range events {
 		items = append(items, eventResp{
 			ID: e.ID, At: e.CreatedAt.Format(time.RFC3339),
-			Node: e.Node, Kind: e.Kind, Msg: e.Msg,
+			Node: nullIfEmpty(e.Node), Kind: e.Kind, Msg: e.Msg,
 		})
 	}
 

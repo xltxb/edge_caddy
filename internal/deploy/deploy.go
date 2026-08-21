@@ -372,7 +372,7 @@ func (s *Scheduler) event(ctx context.Context, node, kind, msg string) {
 	}
 	if s.Hub != nil {
 		s.Hub.Broadcast(ws.TypeEvent, ws.Event{
-			ID: e.ID, At: e.CreatedAt.Format(time.RFC3339), Node: e.Node, Kind: e.Kind, Msg: e.Msg,
+			ID: e.ID, At: e.CreatedAt.Format(time.RFC3339), Node: ws.NodeRef(e.Node), Kind: e.Kind, Msg: e.Msg,
 		})
 	}
 }

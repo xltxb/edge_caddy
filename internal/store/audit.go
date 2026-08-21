@@ -34,10 +34,12 @@ type AuditEntry struct {
 	At       time.Time `json:"at"`
 	Operator string    `json:"operator"`
 	Action   string    `json:"action"`
-	Target   string    `json:"target"`
-	SrcIP    string    `json:"src_ip"`
-	Result   string    `json:"result"`
-	Detail   string    `json:"detail"`
+	// Target / SrcIP 为 null 表示这次动作没有对象 / 来源 IP 取不到。
+	// 空串是合法的字符串值，用它代替「没有」会让调用方分不出两者（契约 §0.4）。
+	Target *string `json:"target"`
+	SrcIP  *string `json:"src_ip"`
+	Result string  `json:"result"`
+	Detail string  `json:"detail"`
 }
 
 // ListAudit 倒序 cursor 分页（api-contract §0.5）。
@@ -60,9 +62,16 @@ func (s *Store) ListAudit(ctx context.Context, operator string, limit int, befor
 	var out []AuditEntry
 	for rows.Next() {
 		var e AuditEntry
+		var target, srcIP string
 		if err := rows.Scan(&e.ID, &e.At, &e.Operator, &e.Action,
-			&e.Target, &e.SrcIP, &e.Result, &e.Detail); err != nil {
+			&target, &srcIP, &e.Result, &e.Detail); err != nil {
 			return nil, err
+		}
+		if target != "" {
+			e.Target = &target
+		}
+		if srcIP != "" {
+			e.SrcIP = &srcIP
 		}
 		out = append(out, e)
 	}

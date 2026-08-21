@@ -733,18 +733,59 @@ cursor 分页（§0.5）。
 
 ```json
 // data
-{ "lines": [
-  { "code": "ct", "name": "电信", "entries": [
-      { "node": "node-hk-01", "weight": 60, "share": 60.0, "dns_enabled": true,  "status": "ok" },
-      { "node": "node-us-01", "weight": 40, "share": 0.0,  "dns_enabled": false, "status": "down" }
-  ] }
-] }
+{
+  "domain": "cdn.example.com",
+  "lines": [
+    { "code": "ct", "name": "电信", "entries": [
+        { "node": "node-hk-01", "weight": 60, "share": 60.0, "dns_enabled": true,  "status": "ok" },
+        { "node": "node-us-01", "weight": 40, "share": 0.0,  "dns_enabled": false, "status": "down" }
+    ] }
+  ],
+  "capabilities": {
+    "kind": "cloudflare",
+    "lines": ["cn", "tw", "ov"],
+    "weights": true,
+    "notes": "Cloudflare 的 DNS 记录没有权重与线路概念……电信 / 联通 / 移动无法区分"
+  }
+}
 ```
 
 - `weight` 是**配置值**，`share` 是**实际占比**。两者不同：`dns_enabled: false` 的节点
   （手动暂停或心跳超时自动摘除）`share` 为 `0`，其权重在该线路内的其余节点间**重新归一化**。
   前端的占比条画 `share`，输入框绑 `weight`。
-- `PUT` 后**立即**调 DNS 服务商，失败返回 `code: 3001` 且不落库。写审计。
+- `PUT` 后**立即**调 DNS 服务商，失败返回 `code: 3001` 且**不落库**。写审计。
+
+  > 顺序是**先推后存**。反过来的话，库里会留下一份服务商上并不存在的安排，
+  > 而界面照常显示它——那是最糟的一种不一致，因为看起来一切正常。
+  >
+  > 尚未配置服务商时**仍然保存**（权重是本地的意图），但 `capabilities.notes`
+  > 会说明「不会推到任何地方」。
+
+- **五条线路始终齐全**，即使某条一个节点都没配。前端按线路分组渲染，
+  缺一条会让那一组凭空消失，而不是显示成「这条线还没配」。
+- 整条线路的节点全部离线时，全部 `share` 为 `0`（不做除法）。一次机房故障
+  就会到这个状态，除零或 NaN 会让这个页面在最需要看的时候崩掉。
+- **`warn` 的节点仍然参与解析。** 它是「连着但不健康」，自动摘掉会把负载全压到
+  其余节点上，很可能连锁。要摘由人决定。
+
+### `capabilities` —— 这家服务商实际能做到什么
+
+**两家服务商的能力并不对等，界面必须如实呈现。**
+
+| | 分线路（电信/联通/移动…） | 权重 |
+|---|---|---|
+| **DNSPod** | 原生支持，是它的核心功能 | 支持（付费套餐） |
+| **Cloudflare** | **DNS 记录没有这个概念** | **DNS 记录没有 weight 字段** |
+
+Cloudflare 的加权调度经 **Load Balancing**（独立付费产品）实现，而它的地理维度是
+**国家/大洲，不是中国的 ISP 线路**。因此 `ct` / `cu` / `cm` 会被塌缩成「中国」，
+`capabilities.lines` 里只有 `["cn","tw","ov"]`。
+
+**三条线权重不同时，`PUT` 会以 `code: 1001` 拒绝并说明原因**，而不是取个平均值——
+给出一个用户没要过的配置比拒绝糟糕得多，尤其它还不会被发现。
+
+前端应据 `capabilities.lines` 把做不到的线路输入框合并或置灰，并把 `notes`
+直接呈给用户。
 
 ---
 

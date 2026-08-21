@@ -14,6 +14,7 @@ import (
 	"github.com/xltxb/edge_caddy/internal/api"
 	"github.com/xltxb/edge_caddy/internal/config"
 	"github.com/xltxb/edge_caddy/internal/deploy"
+	"github.com/xltxb/edge_caddy/internal/dnsops"
 	"github.com/xltxb/edge_caddy/internal/health"
 	"github.com/xltxb/edge_caddy/internal/pki"
 	"github.com/xltxb/edge_caddy/internal/render"
@@ -101,6 +102,7 @@ func main() {
 
 	hub := ws.NewHub(log)
 	notifier := alert.New(st, sealer, log)
+	dnsOrch := &dnsops.Orchestrator{Store: st, Sealer: sealer, Log: log}
 
 	sys, err := st.GetSystemSettings(ctx)
 	if err != nil {
@@ -108,7 +110,7 @@ func main() {
 		os.Exit(1)
 	}
 	monitor := health.New(health.Config{
-		Store: st, Hub: hub, Log: log, Alert: notifier,
+		Store: st, Hub: hub, Log: log, Alert: notifier, DNS: dnsOrch,
 		Interval:   time.Duration(sys.HeartbeatInterval) * time.Second,
 		Threshold:  sys.OfflineThreshold,
 		WarnCPUPct: sys.WarnCPUPct,
@@ -154,7 +156,7 @@ func main() {
 	}
 
 	srv := api.New(api.Options{
-		Store: st, Hub: hub, Tunnel: tun, Health: monitor, Alerts: notifier,
+		Store: st, Hub: hub, Tunnel: tun, Health: monitor, Alerts: notifier, DNS: dnsOrch,
 		Sealer: sealer, Deployer: scheduler, Log: log,
 		SessionTTL: cfg.SessionTTL, OpsBotToken: cfg.OpsBotToken,
 		SecureCookie: cfg.MTLSEnabled,

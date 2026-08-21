@@ -305,7 +305,7 @@ func (m *Monitor) emit(ctx context.Context, node, kind, msg string) {
 	if m.Hub != nil {
 		m.Hub.Broadcast(ws.TypeEvent, ws.Event{
 			ID: e.ID, At: e.CreatedAt.Format(time.RFC3339),
-			Node: e.Node, Kind: e.Kind, Msg: e.Msg,
+			Node: ws.NodeRef(e.Node), Kind: e.Kind, Msg: e.Msg,
 		})
 	}
 }

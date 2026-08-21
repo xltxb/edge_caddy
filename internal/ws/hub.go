@@ -40,11 +40,13 @@ type Heartbeat struct {
 // Event 的 Kind 是四档：ok = 成功完成的动作，info = 流水账，warn，crit。
 // ok 与 info 合并会让下发成功和背景噪音同色（api-contract §2）。
 type Event struct {
-	ID   int64  `json:"id"`
-	At   string `json:"at"`   // RFC3339
-	Node string `json:"node"` // 空串表示系统级事件，序列化后前端按 null 处理
-	Kind string `json:"kind"`
-	Msg  string `json:"msg"`
+	ID int64  `json:"id"`
+	At string `json:"at"` // RFC3339
+	// Node 为 null 表示系统级事件（契约 §2）。指针而不是空串：
+	// 空串是合法的节点名形状，用它代替「没有」调用方分不出来。
+	Node *string `json:"node"`
+	Kind string  `json:"kind"`
+	Msg  string  `json:"msg"`
 }
 
 // DeployProgress 的 Retrying 决定前端那一行还会不会再动：
@@ -141,4 +143,13 @@ func (h *Hub) CloseAll(_ context.Context) {
 		delete(h.clients, ch)
 		close(ch)
 	}
+}
+
+// NodeRef 把空的节点名变成 null。系统级事件没有节点，
+// 用空串代替「没有」会让调用方分不出两者（契约 §0.4）。
+func NodeRef(id string) *string {
+	if id == "" {
+		return nil
+	}
+	return &id
 }

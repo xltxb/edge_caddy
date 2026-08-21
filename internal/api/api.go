@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/xltxb/edge_caddy/internal/deploy"
+	"github.com/xltxb/edge_caddy/internal/dnsops"
 	"github.com/xltxb/edge_caddy/internal/store"
 	"github.com/xltxb/edge_caddy/internal/ws"
 )
@@ -37,6 +38,7 @@ type Server struct {
 
 	tunnel           Tunneler
 	health           Healther
+	dns              *dnsops.Orchestrator
 	alerts           *alert.Notifier
 	sealer           *secret.Sealer
 	deployer         *deploy.Scheduler
@@ -50,6 +52,7 @@ type Options struct {
 	Hub      *ws.Hub
 	Tunnel   Tunneler
 	Health   Healther
+	DNS      *dnsops.Orchestrator
 	Alerts   *alert.Notifier
 	Sealer   *secret.Sealer
 	Deployer *deploy.Scheduler
@@ -88,6 +91,7 @@ func New(o Options) *gin.Engine {
 		secureCookie:     o.SecureCookie,
 		tunnel:           o.Tunnel,
 		health:           o.Health,
+		dns:              o.DNS,
 		alerts:           o.Alerts,
 		sealer:           o.Sealer,
 		deployer:         o.Deployer,
@@ -118,6 +122,9 @@ func New(o Options) *gin.Engine {
 	authed.POST("/nodes/:id/dns", s.handleNodeDNS)
 	authed.POST("/nodes/:id/probe", s.handleNodeProbe)
 	authed.POST("/nodes/:id/drain", audited("下线节点", s.handleNodeDrain))
+
+	authed.GET("/dns/weights", s.handleGetDNSWeights)
+	authed.PUT("/dns/weights", audited("调整解析权重", s.handlePutDNSWeights))
 
 	authed.GET("/settings", s.handleGetSettings)
 	authed.PUT("/settings", audited("修改系统设置", s.handlePutSettings))

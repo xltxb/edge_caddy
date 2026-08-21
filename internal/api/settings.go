@@ -21,23 +21,50 @@ func (s *Server) handleGetSettings(c *gin.Context) {
 		Fail(c, CodeDownstream, "读取系统设置失败")
 		return
 	}
+	// sealer 传 nil：这个端点只回「配没配」，不解密（PRD §7）。
+	dns, err := s.store.GetDNSProvider(c.Request.Context(), nil)
+	if err != nil {
+		s.log.Error("读取 DNS 服务商设置失败", "err", err)
+		Fail(c, CodeDownstream, "读取系统设置失败")
+		return
+	}
+
 	OK(c, gin.H{
 		"master_endpoint":         sys.MasterEndpoint,
 		"heartbeat_interval_s":    sys.HeartbeatInterval,
 		"offline_threshold_count": sys.OfflineThreshold,
 		"auto_drop_dns":           sys.AutoDropDNS,
-		// DNS 服务商凭证属于 #21。现在如实说没配，而不是给一个
-		// configured:false 之外的假象。
-		"dns_provider":             gin.H{"kind": "", "credential_mode": "", "configured": false},
+		"warn_cpu_pct":            sys.WarnCPUPct,
+		"warn_mem_pct":            sys.WarnMemPct,
+		"dns_provider": gin.H{
+			"kind":            dns.Kind,
+			"domain":          dns.Domain,
+			"sub":             dns.SubName,
+			"credential_mode": dns.CredentialMode,
+			"configured":      dns.CredentialOK,
+		},
 		"ops_bot_token_configured": s.opsBotConfigured,
 	})
 }
 
+type dnsProviderReq struct {
+	Kind           *string `json:"kind"`
+	Domain         *string `json:"domain"`
+	Sub            *string `json:"sub"`
+	AccountID      *string `json:"account_id"`
+	ZoneID         *string `json:"zone_id"`
+	Email          *string `json:"email"`
+	CredentialMode *string `json:"credential_mode"`
+	// Credential 空串表示保持不变——凭证不回显，前端也带不出原值（PRD §7）。
+	Credential *string `json:"credential"`
+}
+
 type systemReq struct {
-	MasterEndpoint   *string `json:"master_endpoint"`
-	HeartbeatSeconds *int    `json:"heartbeat_interval_s"`
-	OfflineThreshold *int    `json:"offline_threshold_count"`
-	AutoDropDNS      *bool   `json:"auto_drop_dns"`
+	DNSProvider      *dnsProviderReq `json:"dns_provider"`
+	MasterEndpoint   *string         `json:"master_endpoint"`
+	HeartbeatSeconds *int            `json:"heartbeat_interval_s"`
+	OfflineThreshold *int            `json:"offline_threshold_count"`
+	AutoDropDNS      *bool           `json:"auto_drop_dns"`
 }
 
 func (s *Server) handlePutSettings(c *gin.Context) {
@@ -92,6 +119,35 @@ func (s *Server) handlePutSettings(c *gin.Context) {
 		s.log.Error("保存系统设置失败", "err", err)
 		Fail(c, CodeDownstream, "保存失败")
 		return
+	}
+
+	if p := req.DNSProvider; p != nil {
+		dns, err := s.store.GetDNSProvider(ctx, nil)
+		if err != nil {
+			s.log.Error("读取 DNS 服务商设置失败", "err", err)
+			Fail(c, CodeDownstream, "保存失败")
+			return
+		}
+		assign(&dns.Kind, p.Kind)
+		assign(&dns.Domain, p.Domain)
+		assign(&dns.SubName, p.Sub)
+		assign(&dns.AccountID, p.AccountID)
+		assign(&dns.ZoneID, p.ZoneID)
+		assign(&dns.Email, p.Email)
+		assign(&dns.CredentialMode, p.CredentialMode)
+		assign(&dns.Credential, p.Credential)
+
+		if dns.Kind != "" && dns.Kind != "dnspod" && dns.Kind != "cloudflare" {
+			FailValidation(c, "系统设置未通过校验", []FieldError{
+				{ResKey: "settings", Field: "dns_provider.kind", Reason: "只能是 dnspod 或 cloudflare"},
+			})
+			return
+		}
+		if err := s.store.PutDNSProvider(ctx, dns, s.sealer); err != nil {
+			s.log.Error("保存 DNS 服务商设置失败", "err", err)
+			Fail(c, CodeDownstream, "保存失败")
+			return
+		}
 	}
 	OK(c, nil)
 }
@@ -203,4 +259,10 @@ func validateEndpointIsDomain(endpoint string) error {
 		return errEndpointIsIP
 	}
 	return nil
+}
+
+func assign(dst *string, src *string) {
+	if src != nil {
+		*dst = *src
+	}
 }

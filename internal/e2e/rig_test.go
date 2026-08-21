@@ -17,6 +17,7 @@ import (
 	"github.com/xltxb/edge_caddy/internal/api"
 	"github.com/xltxb/edge_caddy/internal/caddytest"
 	"github.com/xltxb/edge_caddy/internal/deploy"
+	"github.com/xltxb/edge_caddy/internal/dnsops"
 	"github.com/xltxb/edge_caddy/internal/health"
 	"github.com/xltxb/edge_caddy/internal/pki"
 	"github.com/xltxb/edge_caddy/internal/render"
@@ -100,10 +101,11 @@ func newRig(t *testing.T) *rig {
 	})
 	monitorRef = monitor
 	notifier := alert.New(st, sealer, nil)
+	dnsOrch := &dnsops.Orchestrator{Store: st, Sealer: sealer}
 
 	srv := httptest.NewServer(api.New(api.Options{
 		Store: st, Hub: hub, Tunnel: tun, Deployer: sched,
-		Health: monitor, Alerts: notifier, Sealer: sealer,
+		Health: monitor, Alerts: notifier, Sealer: sealer, DNS: dnsOrch,
 		SessionTTL: time.Hour, MasterAddr: lis.Addr().String(), CAPin: caPin,
 	}))
 	t.Cleanup(srv.Close)
@@ -300,4 +302,21 @@ func (r *rig) deployNow(resKeys ...string) string {
 		r.t.Fatal(err)
 	}
 	return d.CfgVersion
+}
+
+// issueTokenFor 给指定节点签发接入 Token。
+func (r *rig) issueTokenFor(nodeID string) (token, caPin string) {
+	r.t.Helper()
+	e := r.mustDo("POST", "/nodes/token", map[string]string{
+		"node_id": nodeID, "city": "香港", "vendor": "DMIT PPro",
+		"line": "CN2 GIA", "public_ip": "203.0.113.7",
+	})
+	var d struct {
+		Token string `json:"token"`
+		CAPin string `json:"ca_pin"`
+	}
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		r.t.Fatal(err)
+	}
+	return d.Token, d.CAPin
 }
