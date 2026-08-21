@@ -252,6 +252,19 @@ const PROBES = [
     spec: 'src/overview/kpis.test.ts',
     expect: '在线数 + 异常 + 离线 = 总数',
   },
+  /*
+   * 从名字推的改坏：怎么让「三类资源一致」为假？—— 把策略那一支写回死值。
+   * 那正是它原先的样子：树上不标新，而标题栏说「尚未下发到任何节点」。
+   */
+  {
+    name: '策略那一支写回 isNew: false',
+    invariant: '「新」的判据（version === 0）三类资源一视同仁，两处不能各说各的',
+    file: 'src/stores/config.ts',
+    from: '        isNew: p.version === 0,',
+    to: '        isNew: false,',
+    spec: 'src/stores/config.test.ts',
+    expect: '从没下发过的策略在树上也标「新」',
+  },
 ]
 
 /*

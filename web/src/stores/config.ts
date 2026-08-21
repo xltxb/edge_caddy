@@ -115,7 +115,10 @@ export const useConfigStore = defineStore('config', () => {
         group: '全局策略',
         dirty: changesOf(key) > 0,
         changes: changesOf(key),
-        isNew: false,
+        // 策略同样有 version 0（从没下发过）。这里原先写死 false，而工作台标题栏
+        // 对同一条策略显示「尚未下发到任何节点」—— 同一个事实，两处不同答案，
+        // 而人会以为树上没「新」就是已经下发过了。
+        isNew: p.version === 0,
       })
     }
     return items
@@ -320,7 +323,21 @@ export const useConfigStore = defineStore('config', () => {
     await fetchAll().catch(() => {})
   }
 
-  /** 下发成功后清掉已下发的那几条，并把版本推进。 */
+  /**
+   * 下发成功后把已下发的那几条草稿从本地清掉。
+   *
+   * **它只做这一件事。** 注释原先写着「并把版本推进」—— 而函数体里没有任何
+   * 一行动 version：那是靠调用点紧跟着的 `fetchAll()` 从主控重新取回来的。
+   * 一句说得比做得多的注释，下一个人会照着它去别处找 bug。
+   *
+   * 为什么本地先清一次而不是只等 fetchAll：那一趟请求要时间，而顶栏的
+   * 「N 处未下发改动」在那期间会继续显示已经下发掉的数字 —— 人刚点完下发，
+   * 最不该看到的就是那个数字没动。
+   *
+   * 契约 §7.2 现在列了一次成功下发的三件副作用：草稿删掉且合入 live、
+   * version +1、基线换成新 cfg_version 且各节点 drift 清零。**后两件只有主控
+   * 知道**，所以必须重取，本地推不出来。
+   */
   function commit(keys: string[]): void {
     const copy = { ...patches.value }
     for (const k of keys) delete copy[k]

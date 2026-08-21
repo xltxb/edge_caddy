@@ -123,3 +123,39 @@ describe('草稿没写到主控上时不能装作写成了', () => {
     expect(store.unsaved['route:a.example.com']).toBeUndefined()
   })
 })
+
+
+/*
+ * 资源树上的「新」和工作台标题栏的「尚未下发到任何节点」说的是**同一个事实**：
+ * `version === 0`。
+ *
+ * 它们此前有两处不同答案 —— 树里全局策略那一支写死了 `isNew: false`，而标题栏
+ * 照 version 算。于是一条从没下发过的策略在树上没有「新」、点进去却说「尚未
+ * 下发到任何节点」。**人会以为树上没「新」就是已经下发过了。**
+ *
+ * 契约 §6 现在写清了 version 只在**一次成功的下发**里 +1，改草稿不动它 ——
+ * 所以 0 的含义是确定的：这条资源从来没被下发过，三类资源一视同仁。
+ */
+describe('「新」的判据三类资源一致', () => {
+  beforeEach(() => setActivePinia(createPinia()))
+
+  it('从没下发过的策略在树上也标「新」', () => {
+    const store = useConfigStore()
+    store.policies = [
+      { id: 'tls', name: 'TLS 策略', version: 0, spec: {} },
+      { id: 'log', name: '日志与限流', version: 3, spec: {} },
+    ] as never
+    const tls = store.tree.find((t) => t.key === 'global:tls')!
+    const log = store.tree.find((t) => t.key === 'global:log')!
+    expect(tls.isNew, 'version 0 的策略应当标新').toBe(true)
+    expect(log.isNew, '下发过的不该标').toBe(false)
+  })
+
+  it('路由与规则用的是同一条判据', () => {
+    const store = useConfigStore()
+    store.routes = [{ domain: 'a.example.com', version: 0 }] as never
+    store.rules = [{ id: 'r1', name: 'R', type: 'ip_whitelist', version: 2, spec: {}, apply_to: [] }] as never
+    expect(store.tree.find((t) => t.key === 'route:a.example.com')!.isNew).toBe(true)
+    expect(store.tree.find((t) => t.key === 'rule:r1')!.isNew).toBe(false)
+  })
+})
