@@ -131,6 +131,7 @@ func New(o Options) *gin.Engine {
 	authed.GET("/audit", s.handleAudit)
 
 	authed.GET("/nodes", s.handleListNodes)
+	authed.GET("/nodes/:id/logs", s.handleNodeLogs)
 	authed.POST("/nodes/:id/push", audited("重推配置", s.handleNodePush))
 	authed.POST("/nodes/:id/dns", s.handleNodeDNS)
 	authed.POST("/nodes/:id/probe", s.handleNodeProbe)

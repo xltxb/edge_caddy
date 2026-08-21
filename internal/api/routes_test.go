@@ -27,6 +27,7 @@ var contractEndpoints = []string{
 	// §4 边缘节点
 	"GET /api/v1/nodes",
 	"POST /api/v1/nodes/token",
+	"GET /api/v1/nodes/:id/logs",
 	"POST /api/v1/nodes/:id/push",
 	"POST /api/v1/nodes/:id/dns",
 	"POST /api/v1/nodes/:id/probe",
@@ -78,11 +79,12 @@ var contractEndpoints = []string{
 // 的清单漏了它。**一份用来防止人忘记的清单，自己被忘了。**
 //
 // 现在它进清单，但进的是这一格：下面那条测试断言它**确实没有注册**。
-var unimplementedEndpoints = []string{
-	// 要实现它得有整条日志链路（Agent 上报 LogBatch → 主控存 → 这个端点查），
-	// 而 proto 里的 LogBatch 至今也没人接。
-	"GET /api/v1/nodes/:id/logs",
-}
+// 目前是空的 —— 契约里每一个端点都实现了。
+//
+// 留着这个清单和它下面那条测试，是因为「未实现的端点不注册也不给桩」
+// （契约 §0）是个会被反复用到的原则，而下一次有人往契约里写一个还没做的
+// 端点时，这里就是它该待的地方。
+var unimplementedEndpoints = []string{}
 
 // contractMentionExemptions 是契约全文里形如 `METHOD /path` 但**不是端点声明**
 // 的片段。每一条都要写清为什么豁免 —— 一个没有理由的豁免列表会变成垃圾桶，

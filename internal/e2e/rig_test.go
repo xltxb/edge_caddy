@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -243,11 +244,16 @@ func (r *rig) issueToken(nodeID string) (token, caPin string) {
 func (r *rig) startAgent(nodeID, token, stateDir string) context.CancelFunc {
 	r.t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
+	// 日志缓冲接上：不接的话 #26 那条链路在 e2e 里一次也走不到，
+	// 而它只在「Logs 非 nil」时才启动——跟 DNS 那次是同一个形状。
+	logs := &agent.LogBuffer{}
 	a := agent.New(agent.Config{
 		MasterAddr: r.tunnelAddr, NodeID: nodeID, Token: token, CAPin: r.caPin,
 		StateDir: stateDir, CaddyAdmin: r.caddy.AdminURL(),
 		TLSProbe:  "unix/" + r.caddy.TLSSocketPath(),
 		Heartbeat: 200 * time.Millisecond,
+		Log:       slog.New(logs.Handler(slog.NewTextHandler(io.Discard, nil))),
+		Logs:      logs,
 	})
 	go func() { _ = a.Run(ctx) }()
 	r.t.Cleanup(cancel)

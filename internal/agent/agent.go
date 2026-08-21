@@ -42,7 +42,10 @@ type Config struct {
 	TLSProbe  string
 	Heartbeat time.Duration
 	Log       *slog.Logger
-	Version   string
+	// Logs 是 Agent 自己运行日志的缓冲，供 GET /nodes/:id/logs。
+	// 为 nil 时不上报日志——本地跑或测试里不关心这条链路时留空即可。
+	Logs    *LogBuffer
+	Version string
 }
 
 type Agent struct {
@@ -51,6 +54,8 @@ type Agent struct {
 	caddy   *CaddyClient
 	verify  *VerifyServer
 	metrics *metricsCollector
+
+	logs *LogBuffer
 
 	mu         sync.Mutex
 	cfgVersion string
@@ -71,6 +76,7 @@ func New(cfg Config) *Agent {
 		caddy:   caddy,
 		verify:  NewVerifyServer(cfg.Log),
 		metrics: newMetricsCollector(caddy),
+		logs:    cfg.Logs,
 	}
 }
 
@@ -122,6 +128,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.mu.Unlock()
 
 	go a.heartbeatLoop(ctx, stream)
+	go a.logLoop(ctx, stream)
 
 	for {
 		msg, err := stream.Recv()
@@ -304,6 +311,40 @@ func (a *Agent) reportCerts(ctx context.Context, stream edgev1.EdgeTunnel_Channe
 		M: &edgev1.AgentMsg_Certs{Certs: toProtoCerts(receipts)},
 	}); err != nil {
 		a.log.Debug("回报证书清单失败", "err", err)
+	}
+}
+
+// logLoop 把 Agent 自己的运行日志分批送上去（#26）。
+//
+// **送失败要放回缓冲。** 隧道断在中途时，那一批要么已经到了、要么没到，
+// 而 Agent 分不出来——放回去可能让主控收到重复的一批，丢掉则会让人在
+// 控制台上永远看不到那几条。两者之间选重复：**一条重复的日志读得出来是重复的，
+// 一条缺失的日志读起来跟「那时什么也没发生」一模一样。**
+func (a *Agent) logLoop(ctx context.Context, stream edgev1.EdgeTunnel_ChannelClient) {
+	if a.logs == nil {
+		return
+	}
+	t := time.NewTicker(logFlushInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			batch := a.logs.take()
+			if len(batch) == 0 {
+				continue
+			}
+			if err := stream.Send(&edgev1.AgentMsg{
+				M: &edgev1.AgentMsg_Logs{Logs: &edgev1.LogBatch{Lines: batch}},
+			}); err != nil {
+				a.logs.putBack(batch)
+				// **这条不能用 a.log** —— 它会进缓冲，而缓冲正是送不出去的
+				// 那个东西：一次失败会生出一条新日志，下一次再失败再生一条，
+				// 隧道一直不通就一直长。用 Debug 且不带缓冲的那份。
+				return
+			}
+		}
 	}
 }
 

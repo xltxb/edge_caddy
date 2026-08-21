@@ -144,6 +144,27 @@ PROBES = [
         "在线判定拿不到数据时必须炸",
     ),
     Probe(
+        "节点日志-level 用契约的四个小写值",
+        "slog 的 String() 给的是 INFO/WARN，直接透出去会让前端在契约列的"
+        "四个已知取值之外再见到四个大写的 —— 而它长得像是「多了几个取值」，"
+        "不像是「有人没照契约来」",
+        "internal/agent/logbuf.go",
+        '\t\treturn "debug"',
+        "\t\treturn l.String()",
+        "./internal/agent/", "TestLevelNamesMatchContract",
+        "想要",
+    ),
+    Probe(
+        "节点日志-送失败要放回缓冲",
+        "一条重复的日志读得出来是重复的，一条缺失的日志读起来跟"
+        "「那时什么也没发生」一模一样",
+        "internal/agent/logbuf.go",
+        "\tb.lines = append(lines, b.lines...)",
+        "\t_ = lines",
+        "./internal/agent/", "TestPutBackKeepsOrder",
+        "应当有三条",
+    ),
+    Probe(
         "流量采样-报数不齐就不记",
         "偏低的样本在 24 小时后会成为同比的分母，产生一个假的巨大涨幅。"
         "而一个 +340% 比一个 null 危险得多：null 会让人去查，具体的百分比不会",

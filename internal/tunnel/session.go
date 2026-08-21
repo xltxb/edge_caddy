@@ -96,6 +96,19 @@ func (s *session) readLoop(ctx context.Context, srv *Server) error {
 		case *edgev1.AgentMsg_DrainResult:
 			s.deliverDrain(m.DrainResult)
 
+		case *edgev1.AgentMsg_Logs:
+			lines := make([]store.NodeLogLine, 0, len(m.Logs.GetLines()))
+			for _, l := range m.Logs.GetLines() {
+				lines = append(lines, store.NodeLogLine{
+					At:    time.UnixMilli(l.GetAtUnixMs()),
+					Level: l.GetLevel(),
+					Msg:   l.GetMsg(),
+				})
+			}
+			if err := srv.opt.Store.AppendNodeLogs(ctx, s.nodeID, lines); err != nil {
+				srv.log.Error("保存节点日志失败", "node_id", s.nodeID, "err", err)
+			}
+
 		case *edgev1.AgentMsg_Certs:
 			// 回执**整体替换**：一张已经从节点上消失的证书，旧回执留着会让
 			// 证书页一直显示「这台机器加载了」——而实际上没有。
@@ -116,21 +129,17 @@ func (s *session) readLoop(ctx context.Context, srv *Server) error {
 			// 重复的 Hello。不是错误，忽略即可——Agent 重连时可能补发。
 
 		default:
-			// 只剩 LogBatch 没接，而**节点日志整条链路都没有**：
-			// Agent 不发、这里不收、GET /nodes/:id/logs 也从来没注册过。
+			// 现在每一种 AgentMsg 都有人接了。
 			//
-			// 这句话我改过两次，两次都不对：
+			// 这条 default 分支的注释我改过三次，两次是错的：第一版列举式
+			// 「日志、证书清单、探活回执在后续工单落地」，而后两样早就在上面
+			// 处理掉了——**一条列举式的欠条，兑现一项就假一分**，
+			// 而它读起来始终完整。第二版「节点日志从 GET /nodes/:id/logs
+			// 那一侧走」是**假话**：我没去查那个端点在不在，而它在契约里
+			// 格式完整，看着就像在。
 			//
-			// 第一版「日志、证书清单、探活回执在后续工单落地」——后两样就在上面
-			// 几行处理掉了。**一条列举式的欠条，兑现一项就假一分**，
-			// 而它读起来始终是完整的。
-			//
-			// 第二版「节点日志目前从 GET /nodes/:id/logs 那一侧走」——**那是假话**。
-			// 我改的时候没去查那个端点在不在，而它在契约里格式完整，看着就像在。
-			// 我把一个诚实的欠条换成了一句自信的假话，那比原来更糟：
-			// 前一句会让人去查，后一句会让人放心。
-			//
-			// 契约里那个端点现在标着「（未实现）」，并且有测试盯着它确实没注册。
+			// 留着这条注释是因为它记着一件事：**一个诚实的欠条被换成一句
+			// 自信的假话，比原来更糟——前一句会让人去查，后一句会让人放心。**
 		}
 
 		select {

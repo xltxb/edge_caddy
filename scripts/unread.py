@@ -23,10 +23,11 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 #
 # 只列**实际会被报出来**的。`traffic_samples.at`、`LogBatch.lines`、`LogLine.msg`
 # 这些同样没人读，而它们不在这里 —— 见下面那段盲区说明。
-KNOWN = {
-    "AgentMsg.logs": "#26 节点日志整条链路都没有",
-    "LogBatch.at_unix_ms": "#26",
-}
+# 目前是空的 —— #25 与 #26 做完之后，两类扫描都是「都有人读」。
+#
+# 留着这张表和它的规矩：每条都要指向一张开着的单子。
+# 一个没有出口的豁免列表会变成垃圾桶，而垃圾桶里迟早躺着一个真的遗漏。
+KNOWN = {}
 
 # **这个筛子有已知的洞，说清楚它。**
 #

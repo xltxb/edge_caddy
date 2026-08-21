@@ -587,3 +587,71 @@ func TestDrainedNodeCannotEnrollWithAPreIssuedToken(t *testing.T) {
 	r.startAgent("node-hk-01", spare, t.TempDir())
 	r.waitOnline("node-hk-01")
 }
+
+// **节点日志的完整链路：Agent 写 → 隧道送 → 主控存 → 端点查（#26）。**
+//
+// 这个端点曾经在契约里躺了很久而从来没有注册过，格式完整、看不出异样。
+// 前端那边把 404 吞掉，面板显示「暂无日志」——**一句让人放心，一句让人去查**，
+// 而那四个字长得完全像一个正常的空态。
+func TestNodeLogsTravelTheWholeChain(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	// Agent 在接入时会写「接入完成，已取得隧道证书」。等它送上来。
+	var items []struct {
+		At    string `json:"at"`
+		Level string `json:"level"`
+		Msg   string `json:"msg"`
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		e := r.mustDo("GET", "/nodes/node-hk-01/logs", nil)
+		var d struct {
+			Items []struct {
+				At    string `json:"at"`
+				Level string `json:"level"`
+				Msg   string `json:"msg"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			t.Fatal(err)
+		}
+		if len(d.Items) > 0 {
+			items = d.Items
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if len(items) == 0 {
+		t.Fatal("20 秒内一条日志都没上来 —— 整条链路有一处没接上")
+	}
+
+	// **level 必须是契约 §4 那四个小写取值之一。**
+	// slog 的 String() 给的是 "INFO"，直接透出去会让前端见到契约里没有的取值。
+	ok := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
+	for _, it := range items {
+		if !ok[it.Level] {
+			t.Errorf("level = %q，契约 §4 只列了 debug/info/warn/error", it.Level)
+		}
+		if it.Msg == "" {
+			t.Error("msg 不该为空")
+		}
+		if it.At == "" {
+			t.Error("at 不该为空")
+		}
+	}
+
+	// 那条接入日志要在里面 —— 证明送上来的是 Agent 自己写的东西，
+	// 不是别处凑的。
+	var sawEnrolled bool
+	for _, it := range items {
+		if strings.Contains(it.Msg, "接入完成") {
+			sawEnrolled = true
+		}
+	}
+	if !sawEnrolled {
+		t.Errorf("应当能看到 Agent 自己那条「接入完成」，实际 %+v", items)
+	}
+}

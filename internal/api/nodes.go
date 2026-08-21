@@ -101,6 +101,36 @@ func (s *Server) handleListNodes(c *gin.Context) {
 	OK(c, gin.H{"items": items, "baseline": baseline, "dns_sync": sync})
 }
 
+type nodeLogResp struct {
+	At    string `json:"at"`
+	Level string `json:"level"`
+	Msg   string `json:"msg"`
+}
+
+// handleNodeLogs 回一个节点最近的运行日志（#26，契约 §4）。
+//
+// **是 Agent 自己的运行日志，不是 Caddy 的 access log。** 人在这一栏问的是
+// 「这台机器上发生了什么」——配置应用、证书加载、校验端点报错。
+// access log 属于另一个问题（流量分析），而且它的量级会把隧道压垮。
+func (s *Server) handleNodeLogs(c *gin.Context) {
+	nodeID := c.Param("id")
+	lines, err := s.store.ListNodeLogs(c.Request.Context(), nodeID, queryInt(c, "limit", 200))
+	if err != nil {
+		s.log.Error("读取节点日志失败", "node", nodeID, "err", err)
+		Fail(c, CodeDownstream, "读取节点日志失败")
+		return
+	}
+	items := make([]nodeLogResp, 0, len(lines))
+	for _, l := range lines {
+		items = append(items, nodeLogResp{
+			At: l.At.Format(time.RFC3339), Level: l.Level, Msg: l.Msg,
+		})
+	}
+	// 空列表与「这个节点不存在」在这里不区分：两者对界面是同一件事
+	// （没有日志可显示），而节点存不存在 GET /nodes 已经答过了。
+	OK(c, gin.H{"items": items})
+}
+
 type tokenReq struct {
 	NodeID   string `json:"node_id"`
 	City     string `json:"city"`

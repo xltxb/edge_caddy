@@ -29,8 +29,13 @@ func main() {
 	flag.StringVar(&cfg.VerifyListen, "verify-listen", env("EC_VERIFY_LISTEN", "127.0.0.1:2020"), "校验端点监听地址（host:port 或 unix/<绝对路径>）")
 	flag.Parse()
 
-	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	// 日志同时落 stdout（journald 收）和一个环形缓冲（上报给主控，#26）。
+	// 两条路都要有：控制台那一栏方便，而机器上的 journald 是隧道断了之后
+	// 唯一还看得到的地方——**恰恰是最需要看日志的时候**。
+	logs := &agent.LogBuffer{}
+	log := slog.New(logs.Handler(slog.NewJSONHandler(os.Stdout, nil)))
 	cfg.Log = log
+	cfg.Logs = logs
 	cfg.Version = "0.1.0"
 
 	if cfg.MasterAddr == "" || cfg.NodeID == "" {
