@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
-import { http } from '@/api/http'
+import { http, errorText } from '@/api/http'
 import type { CertRenewWire, CertWire, Paged } from '@/api/types'
 import { useUiStore } from '@/stores/ui'
 
@@ -28,7 +28,7 @@ async function load(): Promise<void> {
   try {
     items.value = (await http.get<Paged<CertWire>>('/certs')).items
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '加载证书失败'
+    error.value = errorText(e, '加载证书失败')
   } finally {
     loading.value = false
   }
@@ -53,7 +53,7 @@ async function renew(domain: string): Promise<void> {
       r.accepted ? '主控正在向 ACME 申请，完成后会出现在事件流里' : '',
     )
   } catch (e) {
-    ui.toast('warn', '续期失败', e instanceof Error ? e.message : '')
+    ui.toast('warn', '续期失败', errorText(e, ''))
   } finally {
     const next = new Set(renewing.value)
     next.delete(domain)
@@ -67,7 +67,7 @@ async function renewCheck(): Promise<void> {
     await http.post('/certs/renew-check')
     ui.toast('info', '已发起全部证书的到期检查', '需要续期的会自动申请，结果见事件流')
   } catch (e) {
-    ui.toast('warn', '检查失败', e instanceof Error ? e.message : '')
+    ui.toast('warn', '检查失败', errorText(e, ''))
   } finally {
     checkingAll.value = false
   }

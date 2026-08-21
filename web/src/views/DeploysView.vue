@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import DeployProgress from '@/components/workbench/DeployProgress.vue'
-import { http } from '@/api/http'
+import { http, errorText } from '@/api/http'
 import type {
   DeployDetailWire,
   DeployWire,
@@ -42,7 +42,7 @@ async function load(): Promise<void> {
   try {
     items.value = (await http.get<Paged<DeployWire>>('/deploys')).items
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '加载下发记录失败'
+    error.value = errorText(e, '加载下发记录失败')
   } finally {
     loading.value = false
   }
@@ -60,7 +60,7 @@ async function expand(d: DeployWire): Promise<void> {
     try {
       details.value = { ...details.value, [d.id]: await http.get<DeployDetailWire>(`/deploys/${d.id}`) }
     } catch (e) {
-      ui.toast('warn', '加载详情失败', e instanceof Error ? e.message : '')
+      ui.toast('warn', '加载详情失败', errorText(e, ''))
     }
   }
 }
@@ -94,7 +94,7 @@ async function rollback(d: DeployWire): Promise<void> {
     const first = r.res_keys[0]
     await router.push({ name: 'workbench', params: first ? { key: first } : {} })
   } catch (e) {
-    ui.toast('warn', '回滚失败', e instanceof Error ? e.message : '')
+    ui.toast('warn', '回滚失败', errorText(e, ''))
   } finally {
     rollingBack.value = null
   }

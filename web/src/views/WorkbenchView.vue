@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { errorText } from '@/api/http'
 import { useRoute, useRouter } from 'vue-router'
 import DeployModal from '@/components/workbench/DeployModal.vue'
 import FieldList from '@/components/workbench/FieldList.vue'
@@ -96,7 +97,7 @@ async function openDeploy(): Promise<void> {
     await deploy.runPreview(config.dirtyKeys)
   } catch (e) {
     modalOpen.value = false
-    ui.toast('warn', '预览失败', e instanceof Error ? e.message : '')
+    ui.toast('warn', '预览失败', errorText(e, ''))
   }
 }
 

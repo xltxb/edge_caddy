@@ -27,6 +27,25 @@ export class ValidationFailed extends ApiError {
   }
 }
 
+/**
+ * 把任何一个错误变成**能给人看的最具体的一句话**。
+ *
+ * 存在的理由是 1002：它的 `msg` 是笼统的「未通过校验」，真正说清怎么回事的是
+ * `errors[].reason`。catch 里只取 `e.message` 的话，人看到「未通过校验」却不知道
+ * 去哪儿改 —— 那和一条 `field` 指不到任何字段的错误是同一个毛病：
+ * **一条说不清原因的错误，等于没有这条错误。**
+ *
+ * 放在这里而不是各个 catch 里各写一遍：会不会收到 1002 取决于后端给哪个端点加了
+ * 字段级校验，那是会变的。让每个调用点去猜「我这个端点会不会 1002」，猜错的那些
+ * 会静默地把原因吞掉 —— 而吞掉是看不见的，不会有人来报。
+ */
+export function errorText(e: unknown, fallback = '操作失败'): string {
+  if (e instanceof ValidationFailed && e.errors.length) {
+    return e.errors.map((x) => x.reason).join('；')
+  }
+  return e instanceof Error && e.message ? e.message : fallback
+}
+
 /** 传输层失败：网络断了、超时、响应不是 JSON。与 ApiError 分开，两者处置不同。 */
 export class TransportError extends Error {
   constructor(

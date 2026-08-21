@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
-import { http } from '@/api/http'
+import { http, errorText } from '@/api/http'
 import type { DnsWeightsWire } from '@/api/types'
 import { isDivergent, lineInputs, mergedWeight, type LineInput } from '@/dns/capability'
 import { useUiStore } from '@/stores/ui'
@@ -35,7 +35,7 @@ async function load(): Promise<void> {
     data.value = await http.get<DnsWeightsWire>('/dns/weights')
     edits.value = {}
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '加载解析权重失败'
+    error.value = errorText(e, '加载解析权重失败')
   } finally {
     loading.value = false
   }
@@ -156,7 +156,7 @@ async function save(): Promise<void> {
     )
   } catch (e) {
     // PUT 是先推服务商、后落库：推失败就不保存，所以本地编辑保留着让人可以改
-    ui.toast('warn', '更新失败', e instanceof Error ? e.message : '')
+    ui.toast('warn', '更新失败', errorText(e, ''))
   } finally {
     saving.value = false
   }

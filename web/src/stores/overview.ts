@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { http } from '@/api/http'
+import { http, errorText } from '@/api/http'
 import type { OverviewWire } from '@/api/types'
 import { fromKpiWire, type OverviewKpi } from '@/model'
 import { useEventsStore } from './events'
@@ -20,7 +20,7 @@ export const useOverviewStore = defineStore('overview', () => {
       kpi.value = fromKpiWire(data.kpi)
       useEventsStore().seed(data.events)
     } catch (e) {
-      error.value = e instanceof Error ? e.message : '加载总览失败'
+      error.value = errorText(e, '加载总览失败')
       throw e
     } finally {
       loading.value = false

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { errorText } from '@/api/http'
 import { useNodesStore } from '@/stores/nodes'
 import type { NodeTokenWire } from '@/api/types'
 
@@ -18,7 +19,7 @@ async function submit(): Promise<void> {
   try {
     issued.value = await nodes.issueToken({ ...form.value })
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '签发失败'
+    error.value = errorText(e, '签发失败')
   } finally {
     busy.value = false
   }

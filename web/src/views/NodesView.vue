@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { errorText } from '@/api/http'
 import { useRoute } from 'vue-router'
 import AddNodeModal from '@/components/nodes/AddNodeModal.vue'
 import DrainConfirm from '@/components/nodes/DrainConfirm.vue'
@@ -64,7 +65,7 @@ async function onPush(id: string): Promise<void> {
     ui.toast('ok', `已向 ${id} 重推基线`, r.cfg_version)
     void nodes.fetchLogs(id).catch(() => {})
   } catch (e) {
-    ui.toast('warn', '重推失败', e instanceof Error ? e.message : '')
+    ui.toast('warn', '重推失败', errorText(e, ''))
   }
 }
 
@@ -77,7 +78,7 @@ async function onDns(id: string, enabled: boolean): Promise<void> {
       r.weights_rebalanced ? '其余节点权重已在各线路内重新归一化' : '',
     )
   } catch (e) {
-    ui.toast('warn', '操作失败', e instanceof Error ? e.message : '')
+    ui.toast('warn', '操作失败', errorText(e, ''))
   }
 }
 
@@ -91,7 +92,7 @@ async function onProbe(id: string): Promise<void> {
     )
     if (!open.value.has(id)) expand(id)
   } catch (e) {
-    ui.toast('danger', '探活失败', e instanceof Error ? e.message : '')
+    ui.toast('danger', '探活失败', errorText(e, ''))
   }
 }
 
@@ -107,7 +108,7 @@ async function onDrain(): Promise<void> {
       r.steps.map((s) => s.detail ?? s.step).join(' · '),
     )
   } catch (e) {
-    ui.toast('warn', '下线失败', e instanceof Error ? e.message : '')
+    ui.toast('warn', '下线失败', errorText(e, ''))
   } finally {
     drainTarget.value = null
   }

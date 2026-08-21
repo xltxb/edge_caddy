@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useConfigStore } from '@/stores/config'
+import { errorText } from '@/api/http'
 import type { RuleWire } from '@/api/types'
 
 /**
@@ -82,7 +83,7 @@ async function saveSecret(id: string): Promise<void> {
     editingSecret.value = null
     secretInput.value = ''
   } catch (e) {
-    secretError.value = e instanceof Error ? e.message : '保存失败'
+    secretError.value = errorText(e, '保存失败')
   } finally {
     saving.value = false
   }

@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { http } from '@/api/http'
+import { http, errorText } from '@/api/http'
 import type {
   DeployCreatedWire,
   DeployDetailWire,
@@ -117,7 +117,7 @@ export const useDeployStore = defineStore('deploy', () => {
       indexErrors(p.validation.errors)
       phase.value = 'confirm'
     } catch (e) {
-      previewError.value = e instanceof Error ? e.message : '预览失败'
+      previewError.value = errorText(e, '预览失败')
       phase.value = 'idle'
       throw e
     }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { http } from '@/api/http'
+import { http, errorText } from '@/api/http'
 import type { SettingsWire } from '@/api/types'
 import { useUiStore } from '@/stores/ui'
 import { isDomain } from '@/utils/validators'
@@ -33,7 +33,7 @@ async function load(): Promise<void> {
     newCredential.value = ''
     changingCred.value = false
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '加载设置失败'
+    error.value = errorText(e, '加载设置失败')
   } finally {
     loading.value = false
   }
@@ -73,7 +73,7 @@ async function save(): Promise<void> {
     changingCred.value = false
     ui.toast('ok', '设置已保存')
   } catch (e) {
-    ui.toast('warn', '保存失败', e instanceof Error ? e.message : '')
+    ui.toast('warn', '保存失败', errorText(e, ''))
   } finally {
     saving.value = false
   }

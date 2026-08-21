@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
+import { errorText } from '@/api/http'
 import { useRouter } from 'vue-router'
 import { isRunnable, suggest, type Suggestion } from '@/palette/suggest'
 import { useConfigStore } from '@/stores/config'
@@ -67,7 +68,7 @@ async function run(): Promise<void> {
           const r = await nodes.pushOne(id)
           ui.toast('ok', `已向 ${id} 重推基线`, r.cfg_version)
         } catch (e) {
-          ui.toast('warn', '重推失败', e instanceof Error ? e.message : '')
+          ui.toast('warn', '重推失败', errorText(e, ''))
         }
       }
       break
@@ -79,7 +80,7 @@ async function run(): Promise<void> {
           await nodes.toggleDns(id, enabled)
           ui.toast(enabled ? 'ok' : 'warn', `${id} ${enabled ? '已恢复解析' : '已暂停解析'}`)
         } catch (e) {
-          ui.toast('warn', '操作失败', e instanceof Error ? e.message : '')
+          ui.toast('warn', '操作失败', errorText(e, ''))
         }
       }
       break

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { http } from '@/api/http'
+import { http, errorText } from '@/api/http'
 import { orDash } from '@/model'
 import type { AuditWire, Paged } from '@/api/types'
 
@@ -22,7 +22,7 @@ async function load(): Promise<void> {
     const q = operator.value === 'all' ? '' : `?operator=${encodeURIComponent(operator.value)}`
     items.value = (await http.get<Paged<AuditWire>>(`/audit${q}`)).items
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '加载审计日志失败'
+    error.value = errorText(e, '加载审计日志失败')
   } finally {
     loading.value = false
   }

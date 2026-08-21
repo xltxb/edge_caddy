@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { http } from '@/api/http'
+import { http, errorText } from '@/api/http'
 import type {
   DnsToggleWire,
   DrainWire,
@@ -44,7 +44,7 @@ export const useNodesStore = defineStore('nodes', () => {
       const page = await http.get<Paged<NodeWire>>('/nodes')
       items.value = page.items.map((w) => fromNodeWire(w))
     } catch (e) {
-      error.value = e instanceof Error ? e.message : '加载节点失败'
+      error.value = errorText(e, '加载节点失败')
       throw e
     } finally {
       loading.value = false

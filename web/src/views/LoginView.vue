@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { errorText } from '@/api/http'
 import { useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
 
@@ -21,7 +22,7 @@ async function submit(): Promise<void> {
     await router.replace(to)
   } catch (e) {
     // 失败原因由后端给（用户可读中文），登录失败会写审计并在审计页单独提示
-    error.value = e instanceof Error ? e.message : '登录失败'
+    error.value = errorText(e, '登录失败')
   } finally {
     busy.value = false
   }

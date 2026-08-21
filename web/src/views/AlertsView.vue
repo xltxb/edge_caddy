@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { http } from '@/api/http'
+import { http, errorText } from '@/api/http'
 import type { AlertTestWire, AlertsWire, NotifyLevel } from '@/api/types'
 import { useUiStore } from '@/stores/ui'
 
@@ -36,7 +36,7 @@ async function load(): Promise<void> {
     newWebhook.value = ''
     newLark.value = ''
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '加载告警设置失败'
+    error.value = errorText(e, '加载告警设置失败')
   } finally {
     loading.value = false
   }
@@ -70,7 +70,7 @@ async function save(): Promise<void> {
     newLark.value = ''
     ui.toast('ok', '告警设置已保存')
   } catch (e) {
-    ui.toast('warn', '保存失败', e instanceof Error ? e.message : '')
+    ui.toast('warn', '保存失败', errorText(e, ''))
   } finally {
     saving.value = false
   }
@@ -84,7 +84,7 @@ async function sendTest(): Promise<void> {
   } catch (e) {
     // 下游失败时 msg 带着服务商的原文错误 —— 那是排查 webhook 配错的唯一线索，
     // 所以这里原样呈出来，不要包装成「发送失败，请重试」。
-    ui.toast('danger', '测试卡片发送失败', e instanceof Error ? e.message : '')
+    ui.toast('danger', '测试卡片发送失败', errorText(e, ''))
   } finally {
     testing.value = false
   }
