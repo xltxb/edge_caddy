@@ -1,14 +1,25 @@
 <script setup lang="ts">
-defineProps<{
+import { computed } from 'vue'
+
+const props = defineProps<{
   modelValue: unknown
   options: readonly (readonly [value: string, label: string])[]
   dirty: boolean
 }>()
 defineEmits<{ (e: 'update:modelValue', v: string): void }>()
+
+/**
+ * 当前值不在选项里（没配过，或后端给了个我们不认识的值）。
+ *
+ * 不说的话，这个控件看起来只是「没高亮」，与「已经选了但恰好没渲染出来」
+ * 长得一样 —— 人无从判断此刻究竟什么在生效。
+ */
+const unset = computed(() => !props.options.some(([v]) => v === props.modelValue))
 </script>
 
 <template>
-  <div class="seg" :class="{ dirty }" role="radiogroup">
+  <div class="wrap">
+    <div class="seg" :class="{ dirty, unset }" role="radiogroup">
     <button
       v-for="[value, label] in options"
       :key="value"
@@ -21,10 +32,28 @@ defineEmits<{ (e: 'update:modelValue', v: string): void }>()
     >
       {{ label }}
     </button>
+    </div>
+    <span v-if="unset" class="unset-note">
+      未设置{{ modelValue === undefined || modelValue === '' ? '' : `（当前值 ${modelValue}）` }}
+    </span>
   </div>
 </template>
 
 <style scoped>
+.wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.unset-note {
+  font-size: var(--fs-2xs);
+  color: var(--warning-text);
+}
+.seg.unset {
+  border-style: dashed;
+  border-color: var(--warning);
+}
 .seg {
   display: inline-flex;
   gap: 4px;

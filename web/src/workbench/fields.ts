@@ -90,7 +90,9 @@ export const ROUTE_FIELDS = fieldsOf<RouteDraft>([
     hint: (v) =>
       v.block_mode === 'abort'
         ? 'abort 直接切断 TCP，不返回任何 HTTP 状态码，扫描器无法嗅探到应用存在。'
-        : `返回 ${v.block_mode}，会暴露该域名后有服务在运行。`,
+        : v.block_mode
+          ? `返回 ${v.block_mode}，会暴露该域名后有服务在运行。`
+          : '还没设置处置方式。',
   },
   {
     kind: 'switch',
@@ -268,10 +270,13 @@ export const TLS_FIELDS = fieldsOf<TlsPolicy>([
       ['1.2', 'TLS 1.2'],
       ['1.3', 'TLS 1.3'],
     ],
+    // 没设置时不要落进「1.2」那一支 —— 那等于声称 1.2 正在生效
     hint: (v) =>
       v.spec.min_version === '1.3'
         ? '仅 TLS 1.3。安全性最高，但会挡掉部分老旧客户端。'
-        : '兼容 TLS 1.2，覆盖面更广。',
+        : v.spec.min_version === '1.2'
+          ? '兼容 TLS 1.2，覆盖面更广。'
+          : '还没设置，节点会用 Caddy 的默认值。',
   },
   {
     kind: 'switch',
@@ -286,8 +291,11 @@ export const TLS_FIELDS = fieldsOf<TlsPolicy>([
     field: 'spec.hsts',
     label: 'HSTS',
     group: G_NODE,
+    // 没配过时不要打印 undefined —— 界面上出现 undefined 永远是错的
     onText: (v) =>
-      `max-age=${v.spec.hsts_max_age}（约 ${Math.round((v.spec.hsts_max_age ?? 0) / 86400)} 天）· includeSubDomains · preload`,
+      v.spec.hsts_max_age
+        ? `max-age=${v.spec.hsts_max_age}（约 ${Math.round(v.spec.hsts_max_age / 86400)} 天）· includeSubDomains · preload`
+        : '已开启，但还没设 max-age。',
     offText: '不下发 Strict-Transport-Security 响应头。',
   },
   {
