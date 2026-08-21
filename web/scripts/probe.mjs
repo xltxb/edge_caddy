@@ -220,14 +220,28 @@ const PROBES = [
    * 从名字推的改坏：怎么让「没有同比数据时不暗示它会自己好起来」为假？
    * —— 把「历史不足」那句话放回去。它是契约里的说法，而那个 null 是永久的。
    */
+  /*
+   * 从名字推的改坏：怎么让「no_sample 不承诺明天有」为假？
+   * —— 让它也说「明天」。三种原因里只有 insufficient_history 会自己好，
+   * 另两种说「明天就有」会让人白等一天，然后再等一天。
+   */
   {
-    name: '把「历史不足」放回同比脚注',
-    invariant: '一个永久的空态不能说自己是暂时的 —— 那会让人明天再来看一眼',
+    name: '让 no_sample 也说「明天就有」',
+    invariant: '只对会自己好的那一种承诺，另外两种不承诺',
     file: 'src/overview/kpis.ts',
-    from: "      foot: k.connsDeltaPct === null ? '暂无同比数据' :",
-    to: "      foot: k.connsDeltaPct === null ? '历史不足，暂无同比' :",
+    from: "      return '昨天这一分钟没有采到样本，暂无同比'",
+    to: "      return '昨天这一分钟没有采到样本，明天这时候就有了'",
     spec: 'src/overview/kpis.test.ts',
-    expect: '没有同比数据时不暗示它会自己好起来',
+    expect: 'no_sample：不承诺明天有',
+  },
+  {
+    name: '认不出的原因猜成 insufficient_history',
+    invariant: '不认识的取值退回中性那句，不猜 —— 猜错会让人照着不适用的建议去等',
+    file: 'src/overview/kpis.ts',
+    from: "    default:\n      return '暂无同比数据'",
+    to: "    default:\n      return '还不满 24 小时，明天这时候就有同比了'",
+    spec: 'src/overview/kpis.test.ts',
+    expect: '认不出的原因退回中性那句',
   },
   {
     name: '把在线数改成含 warn',

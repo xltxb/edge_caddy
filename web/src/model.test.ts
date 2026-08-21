@@ -69,6 +69,7 @@ describe('fromKpiWire', () => {
       nodes_total: 6,
       conns_total: 48200,
       conns_delta_pct: null,
+  conns_delta_reason: 'insufficient_history',
       origin_rate: 8.7,
       drift_nodes: 1,
     }
@@ -83,6 +84,7 @@ describe('fromKpiWire', () => {
       nodes_total: 6,
       conns_total: 0,
       conns_delta_pct: null,
+  conns_delta_reason: 'insufficient_history',
       origin_rate: null,
       drift_nodes: 0,
     }
@@ -100,6 +102,7 @@ describe('fromKpiWire', () => {
       nodes_total: 1,
       conns_total: 0,
       conns_delta_pct: null,
+  conns_delta_reason: 'insufficient_history',
       origin_rate: null,
       drift_nodes: 0,
     }

@@ -130,6 +130,7 @@ export const kpi = () => ({
   nodes_down: nodes.filter((n) => n.status === 'down').length,
   nodes_total: nodes.length,
   conns_total: nodes.reduce((s, n) => s + n.conns, 0),
+  conns_delta_reason: null,
   conns_delta_pct: 12.4,
   /** 回源率：越低越好。8.7% 到达源站，其余 91.3% 被边缘拦掉。 */
   origin_rate: 8.7,

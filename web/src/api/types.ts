@@ -81,6 +81,18 @@ export interface OverviewKpiWire {
    */
   conns_delta_pct: number | null
   /**
+   * `conns_delta_pct` 为 null 时说明是**哪一种** null；有数字时它是 null。
+   *
+   * 三种对人的意思完全不同：`insufficient_history` 是「再等等就有」，
+   * `no_sample` 是「明天同一时刻可能有，除非主控又停」，`zero_baseline` 是
+   * 「不是故障，昨天那会儿真没连接」。**只有第一种会自己好起来。**
+   *
+   * 这个字段是我这边要来的：早先响应里只有一个不带原因的 null，界面只能说一句
+   * 谁都不得罪的「暂无同比数据」—— 挑其中一种说会让另外两种的人白等。
+   * 现在「为什么没有」是**数据**而不是各自的推断，那一类理由从此不会过期。
+   */
+  conns_delta_reason: 'insufficient_history' | 'no_sample' | 'zero_baseline' | null
+  /**
    * 回源率 = 到达 upstream 的请求 ÷ 边缘收到的总请求。**越低越好**。
    *
    * 没到达的那部分是被访问规则拦下（静默断连 / 403 / 404）或由静态响应处理掉的，

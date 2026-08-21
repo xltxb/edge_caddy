@@ -47,22 +47,21 @@ export function buildKpis(k: OverviewKpi): KpiCard[] {
       value: (k.connsTotal / 1000).toFixed(1),
       unit: 'k',
       /*
-       * null 时**不说「历史不足」** —— 因为我们不知道是三种里的哪一种。
+       * null 时说清是**哪一种** null。
        *
-       * 契约 §3 列了三种：历史不足 24 小时（真·暂时）、昨天那一分钟没样本
-       * （主控停过，或那一分钟节点报数不齐被跳过）、昨天那一分钟是 0
-       * （分母为 0，百分比没有定义）。**响应里只有一个 null，不带原因。**
+       * 这个能力是后端按我的论证补的：早先响应里只有一个不带原因的 null，
+       * 界面只能说一句谁都不得罪的「暂无同比数据」—— 挑其中一种说，
+       * 会让另外两种的人白等。
        *
-       * 只有第一种会自己好起来。说「历史不足」等于在三选一里挑了一个，
-       * 而挑错的那两次会让人明天再来看一眼、后天再看一眼 —— 一个说自己是暂时的
-       * 长期状态，比一个明说「没有」的更耗人：它每次消耗一点点信任，
-       * 而且从不触发追查。
+       * 现在三种各说各的，因为它们要人做的事完全不同：
+       *   - insufficient_history：**再等等就有**（唯一会自己好的一种）
+       *   - no_sample：等也未必有，除非主控别再停
+       *   - zero_baseline：不是故障，昨天那会儿真没连接
        *
-       * （这段注释本身修过一次：早先的理由是「traffic_samples 从来没被写过，
-       * 这个 null 是永久的」。#25 做完之后那句话失效了，而结论没变 ——
-       * **结论对而理由过期，是我们花了好几轮在清的那一类。**）
+       * 认不出的取值退回中性那句 —— 后端加了新枚举而我没跟上时，
+       * 宁可少说一句，也不要把一个不认识的原因说成某个认识的。
        */
-      foot: k.connsDeltaPct === null ? '暂无同比数据' : `较昨日同时段 ${signed(k.connsDeltaPct)}`,
+      foot: k.connsDeltaPct === null ? deltaFoot(k.connsDeltaReason) : `较昨日同时段 ${signed(k.connsDeltaPct)}`,
       tone: k.connsDeltaPct === null ? 'faint' : k.connsDeltaPct >= 0 ? 'ok' : 'muted',
       caveat: '',
     },
@@ -95,6 +94,19 @@ export function buildKpis(k: OverviewKpi): KpiCard[] {
         '只比对节点上报的版本号，不检查节点上的实际配置。有人 SSH 上去手改过的配置不会在这里显示。',
     },
   ]
+}
+
+function deltaFoot(reason: OverviewKpi['connsDeltaReason']): string {
+  switch (reason) {
+    case 'insufficient_history':
+      return '还不满 24 小时，明天这时候就有同比了'
+    case 'no_sample':
+      return '昨天这一分钟没有采到样本，暂无同比'
+    case 'zero_baseline':
+      return '昨天这时候没有连接，同比无从算起'
+    default:
+      return '暂无同比数据'
+  }
 }
 
 function signed(n: number): string {

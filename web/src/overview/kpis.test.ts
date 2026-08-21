@@ -9,6 +9,7 @@ const kpi = (over: Partial<OverviewKpi> = {}): OverviewKpi => ({
   nodesTotal: 5,
   connsTotal: 12400,
   connsDeltaPct: 3.2,
+  connsDeltaReason: null,
   originRate: 8.7,
   driftNodes: 0,
   ...over,
@@ -35,38 +36,58 @@ describe('节点在线这一格要和它的脚注对得上账', () => {
   })
 })
 
-describe('拿不到的数不能说成暂时拿不到', () => {
+describe('说不出数字时，要说清是哪一种说不出', () => {
   /*
-   * 这一组是这个文件存在的理由。
+   * 这一组是这个文件存在的理由，而**它的理由变过一次**。
    *
-   * 契约 §3 给 conns_delta_pct 的 null 列了**三种**原因（历史不足 24 小时、
-   * 昨天那一分钟没样本、昨天那一分钟是 0），而**响应里只有一个 null，不带原因**。
-   * 只有第一种会自己好起来。
+   * 早先响应里只有一个不带原因的 null，那时的不变量是「一律不承诺它会好起来」——
+   * 因为三种原因里只有一种会自己好，而我们分不出是哪种，挑一个说会让另两种的人
+   * 白等。后端按这条论证补了 conns_delta_reason，于是不变量变了：
+   * **只对会自己好的那一种承诺，另外两种照旧不承诺。**
    *
-   * 所以文案不能挑其中一种说。挑错的那两次会让人明天再来看一眼、后天再看一眼
-   * —— 一个说自己是暂时的长期状态，比一个明说「没有」的更耗人：它每次消耗
-   * 一点点信任，而且从不触发追查。
-   *
-   * （这段理由本身修过一次：#25 之前它是「traffic_samples 从来没被写过，这个
-   * null 是永久的」。功能做完之后那句话失效了，而结论没变 —— **结论对而理由
-   * 过期**，正是我们花了好几轮在清的那一类。）
+   * 这不是把测试改松了。原来的约束是「在分不清的时候别猜」，现在分得清了，
+   * 约束就该落在「分清之后别说错」上。
    */
-  it('没有同比数据时不暗示它会自己好起来', () => {
-    const foot = card(kpi({ connsDeltaPct: null }), '全网连接数').foot
-    expect(foot).toBe('暂无同比数据')
-    for (const w of ['历史不足', '第一天', '稍后', '正在', '积累']) {
-      expect(foot, `脚注里出现了「${w}」，那是在承诺它会来`).not.toContain(w)
-    }
+  it('insufficient_history：这一种可以说「明天就有」', () => {
+    const foot = card(kpi({ connsDeltaPct: null, connsDeltaReason: 'insufficient_history' }), '全网连接数').foot
+    expect(foot).toContain('明天')
   })
 
-  it('没有流量数据时同样不暗示样本在积累', () => {
+  it('no_sample：不承诺明天有 —— 主控再停一次就又没有了', () => {
+    const foot = card(kpi({ connsDeltaPct: null, connsDeltaReason: 'no_sample' }), '全网连接数').foot
+    expect(foot).toContain('没有采到样本')
+    expect(foot, '这一种不该承诺').not.toContain('明天')
+  })
+
+  it('zero_baseline：说清不是故障，是昨天真没连接', () => {
+    const foot = card(kpi({ connsDeltaPct: null, connsDeltaReason: 'zero_baseline' }), '全网连接数').foot
+    expect(foot).toContain('没有连接')
+    expect(foot).not.toContain('明天')
+  })
+
+  /*
+   * 认不出的取值退回中性那句。
+   *
+   * 后端加了第四种原因而我没跟上时，最坏的结果应该是「少说一句」，
+   * 不该是「把一个不认识的原因说成某个认识的」—— 后者会让人照着一个
+   * 根本不适用的建议去等。
+   */
+  it('认不出的原因退回中性那句，不猜', () => {
+    const foot = card(
+      kpi({ connsDeltaPct: null, connsDeltaReason: '后端将来新加的' as never }),
+      '全网连接数',
+    ).foot
+    expect(foot).toBe('暂无同比数据')
+  })
+
+  it('没有流量数据时不暗示样本在积累', () => {
     const c = card(kpi({ originRate: null }), '回源率')
     expect(c.value).toBe('—') // 不是 0：「0% 回源」是一个很强的说法
     expect(c.foot).toBe('暂无流量数据')
     expect(c.foot).not.toContain('还没有')
   })
 
-  it('有数据时照常给出数字 —— 证明上面两条不是因为一律留白才绿的', () => {
+  it('有数据时照常给出数字 —— 证明上面几条不是因为一律留白才绿的', () => {
     expect(card(kpi(), '全网连接数').foot).toBe('较昨日同时段 +3.2%')
     expect(card(kpi(), '回源率').value).toBe('8.7')
     expect(card(kpi({ connsDeltaPct: -4.5 }), '全网连接数').foot).toContain('-4.5%')

@@ -118,6 +118,8 @@ export interface OverviewKpi {
   connsTotal: number
   /** 较昨日同时段的变化百分比。null = 历史不足，界面留白而不是显示 0%。 */
   connsDeltaPct: number | null
+  /** 为什么没有同比数字。三种对人的意思不同，界面各说各的。 */
+  connsDeltaReason: OverviewKpiWire['conns_delta_reason']
   /** 回源率。null = 还没有流量样本，算不出来 —— 不要当成 0。 */
   originRate: number | null
   driftNodes: number
@@ -131,6 +133,7 @@ export function fromKpiWire(w: OverviewKpiWire): OverviewKpi {
     nodesTotal: w.nodes_total,
     connsTotal: w.conns_total,
     connsDeltaPct: w.conns_delta_pct,
+    connsDeltaReason: w.conns_delta_reason ?? null,
     originRate: w.origin_rate,
     driftNodes: w.drift_nodes,
   }
