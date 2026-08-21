@@ -112,6 +112,15 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
    * 契约 §0.2：HTTP 状态码与 code 不重复表达同一件事，所以 404 / 500 的包裹体里
    * code 仍然是 0。只判 code 会让它们走进成功分支并返回 null —— 前端于是分不清
    * 「路由写错了」和「这条资源被别人删了」，而后者用的是 code 1003。
+   *
+   * **这三行有两道守着**（删了都会红，不是只靠这段注释）：
+   *   - `http.test.ts` 的「HTTP 不 ok 时必须抛」—— 守的是**结论**
+   *   - `scripts/check-premises.mjs` 的「404 的包裹体里 code 仍然是 0」
+   *     —— 守的是**前提**，它去问真主控
+   *
+   * 分开写是因为两者会各自失效：这段代码可能被改回只判 code（结论没了），
+   * 后端也可能哪天改成 404 带非零 code（前提没了）。而这条反向链接是给
+   * **改到这里的人**看的 —— 检查脚本知道它守着谁，被守的那一方此前不知道。
    */
   if (!res.ok) {
     throw new ApiError(res.status, payload.msg || `请求失败（HTTP ${res.status}）`)

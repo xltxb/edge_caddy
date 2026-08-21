@@ -45,6 +45,9 @@ export function fmtHbAge(sec: number): string {
  * 接受 null 是因为契约 §0.4 把「没有这个值」定为 null —— 时间戳字段是这条规矩
  * 最要紧的落点：一个缺失的时间被渲染成 `00:00:00` 是**格式正确而意思是假的**，
  * 而空白会让人去查，一个像样的时间不会。
+ *
+ * `scripts/check-premises.mjs` 里有一条守着这个前提（`dns_sync.at` 永不为零值
+ * 时间），它去问真主控 —— 后端要是哪天回退成零值时间，那条会红。
  */
 export function fmtClock(iso: string | null | undefined): string {
   if (!iso) return '—'

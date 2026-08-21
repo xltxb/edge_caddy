@@ -29,7 +29,22 @@ const files = execSync('git ls-files src', { encoding: 'utf8' })
   .filter((f) => /\.(ts|vue)$/.test(f) && !f.includes('.test.'))
 
 const MENTIONS = /(后端|主控)/
-const ANCHORED = /(契约 §|ADR-\d|CONTEXT\.md|PRD §)/
+/**
+ * 三种锚，共同点是**改了会有人/有东西告诉我**：
+ *
+ *   契约 §N     改它等于改接口，对方会知道
+ *   ADR-N       要写 supersedes
+ *   点名的检查  会红，**而且它是自动的** —— 三种里最强的一种
+ *
+ * 第三种是后端补的，而它此前**不可检**：一条「由某个检查守着」的理由，
+ * 除非注释里点了那个检查的名字，否则跟没有锚一样。所以处置不是放宽判据，
+ * 是把注释改成点名 —— 「有没有锚」于是变成一个可查的信号。
+ *
+ * 这里认 `check-premises` / `check:premises` / `scripts/xxx.mjs` 这类写法。
+ * （后端那次第六处误报是它的正则不认 `adr/0011-…` 这种文件路径写法 ——
+ * **词表不匹配实际写法**，所以这里三种写法都认。）
+ */
+const ANCHORED = /(契约 §|ADR-\d|adr\/\d|CONTEXT\.md|PRD §|check-\w+|check:\w+|scripts\/[\w-]+\.mjs)/
 /** 在**用它解释为什么这么写**，而不只是提一句。 */
 const JUSTIFY = /(因为|所以|理由|之所以|否则)/
 /** 保质期写进语法里的写法，等价于挂上了 —— 它自己会提醒读者去核。 */
@@ -87,6 +102,42 @@ for (const f of files) {
       hits.push(`${f}:${b.line}\n    ${(first ?? '').slice(0, 90)}`)
     }
   }
+}
+
+/*
+ * 双向核对：`check-premises.mjs` 与产品代码里的反向链接对不对得上。
+ *
+ * 每条前提都标了「依赖处」指向代码，而代码那一侧此前**一句都没说自己被守着**
+ * —— 改到那儿的人不会知道有一条前提覆盖它。补上反向链接之后，两边就是两处
+ * 知识：脚本里删掉一条，代码里那句「有一条守着」还指着它，而那句话从此是假的。
+ *
+ * 所以这里查：**产品代码里凡是说「check-premises 里有一条守着」的，
+ * 那个文件必须真的出现在某条前提的「依赖处」里。** 反过来不查 —— 一条前提
+ * 没有反向链接只是少了个指路牌，不是假话。
+ */
+{
+  const premises = readFileSync('scripts/check-premises.mjs', 'utf8')
+  const claims = []
+  for (const f of files) {
+    const src = readFileSync(f, 'utf8')
+    if (!/check-premises/.test(src)) continue
+    const base = f.split('/').pop()
+    claims.push({ f, base })
+  }
+  const broken = claims.filter((c) => !premises.includes(c.base))
+  if (broken.length) {
+    console.error(
+      `\n✗ ${broken.length} 处反向链接指向的前提已经不在了：\n` +
+        broken.map((c) => `    ${c.f} 说自己被 check-premises 守着，而那里没有提到 ${c.base}`).join('\n') +
+        '\n',
+    )
+    process.exit(1)
+  }
+  if (claims.length === 0) {
+    console.error('✗ 一处反向链接都没找到 —— 装置多半坏了\n')
+    process.exit(2)
+  }
+  console.log(`  ${claims.length} 处反向链接都指得到真实的前提`)
 }
 
 /*
