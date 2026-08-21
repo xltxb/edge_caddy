@@ -24,6 +24,26 @@ def main():
                        capture_output=True, text=True)
 
     passed, failed, skipped, out, nonjson = 0, [], [], {}, []
+    # **包级 output（没有 Test 字段）也要留着。**
+    #
+    # 编译错误就走这一条：`go test -json` 把它包成 output 事件，
+    # 但那些事件**没有 Test 字段**。原先只收集带 Test 的，于是编译错误
+    # 被这个脚本自己过滤掉了 —— 它报「一条测试都没跑」而说不出为什么。
+    #
+    # 这跟 caddytest 那条恒为空的日志诊断是同一个错：写了一个诊断，
+    # 而没验证它诊断得出东西。这次是在给一个新包写第一批测试时撞见的
+    # （一个 declared and not used），第一次就撞上了。
+    pkgout = {}
+    # **编译错误是 stdout 上的 JSON，Action 叫 "build-output"。**
+    #
+    # 这一条我判断错过一次，值得记：我先跑了两个观测——
+    # 一个说 stdout 里有那行错误，一个（用了 `2>&1 >/dev/null`）看起来说它在
+    # stderr。**两个观测互相矛盾，而我只用了后一个**，据此写了一段解析 stderr
+    # 的代码，跑出来 stderr 长度是 0。
+    #
+    # 正确的读法是第一个观测：它在 stdout，只是 Action 不是 "output"
+    # 而是 "build-output"，被我原先的条件漏掉了。
+    buildout = []
     for line in p.stdout.splitlines():
         try:
             e = json.loads(line)
@@ -32,6 +52,11 @@ def main():
             # 一句关于一次根本没发生的运行的陈述。
             nonjson.append(line)
             continue
+        if e.get("Action") == "build-output":
+            buildout.append(e.get("Output", ""))
+            continue
+        if not e.get("Test") and e.get("Action") == "output":
+            pkgout.setdefault(e.get("Package", "?"), []).append(e.get("Output", ""))
         if e.get("Test"):
             if e["Action"] == "pass":
                 passed += 1
@@ -53,8 +78,17 @@ def main():
         print("".join(out.get(key, ["（没有输出——那本身就值得查）"])))
 
     if nonjson:
-        print("\n非 JSON 输出（多半是编译错误）：")
+        print("\n非 JSON 输出：")
         print("\n".join(nonjson[:30]))
+
+    # 一条测试都没跑、或者有失败时，包级输出往往是唯一说得出原因的东西。
+    if (passed == 0 and not failed) or failed:
+        for pkg, lines in pkgout.items():
+            text = "".join(lines).strip()
+            # 「ok / no test files」这类噪音不值得打印。
+            if not text or text.startswith(("ok ", "?   ", "PASS")):
+                continue
+            print(f"\n包级输出  {pkg}:\n{text[:1500]}")
 
     line = f"\n通过={passed} 失败={len(failed)}"
     if skipped:
@@ -62,7 +96,10 @@ def main():
     print(line)
     for pkg, t in skipped:
         print(f"  skip  {pkg.split('/')[-1]}.{t}")
-    if p.stderr.strip():
+    if buildout:
+        print("\n编译错误：")
+        print("".join(buildout).strip()[:2000])
+    elif p.stderr.strip():
         print("stderr:", p.stderr.strip()[:500])
 
     # **一条都没跑也要非零退出。**

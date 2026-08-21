@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/xltxb/edge_caddy/internal/store"
+	"github.com/xltxb/edge_caddy/internal/traffic"
 )
 
 type eventResp struct {
@@ -58,19 +59,21 @@ func (s *Server) handleOverview(c *gin.Context) {
 	}
 
 	var driftCount int
-	var connsTotal uint64
-	var reqTotal, originTotal uint64
 	for _, n := range nodes {
 		if baseline != "" && n.CfgVersion != baseline {
 			driftCount++
 		}
-		if s.health != nil {
-			if m, ok := s.health.Latest(n.ID); ok {
-				connsTotal += uint64(m.Conns)
-				reqTotal += m.ReqTotal
-				originTotal += m.OriginTotal
-			}
-		}
+	}
+	// **与采样器同一份口径。** 两处各算一遍迟早在界面上给出两个对不上的数字，
+	// 而那比单个错数字更让人怀疑整个系统。
+	connsTotal, reqTotal, originTotal, _ := traffic.Totals(nodes, s.health)
+
+	// 昨天这一分钟没采到（主控停机、或者报数节点不齐被跳过）时是 nil。
+	// 查不出来也给 nil：一个同比算不出来不该让整个总览失败。
+	deltaPct, err := traffic.DeltaPct(ctx, s.store, time.Now(), connsTotal)
+	if err != nil {
+		s.log.Error("读取同比样本失败", "err", err)
+		deltaPct = nil
 	}
 
 	kpi := gin.H{
@@ -85,10 +88,9 @@ func (s *Server) handleOverview(c *gin.Context) {
 		"nodes_down":   downCount,
 		"nodes_total":  total,
 		"conns_total":  connsTotal,
-		// 「较昨日同时段」需要至少 24 小时历史；不足时给 null 而不是 0 ——
-		// 0 会被读成「持平」（api-contract §3）。traffic_samples 的采集与
-		// 同比计算在本切片之后补齐。
-		"conns_delta_pct": nil,
+		// 「较昨日同时段」需要昨天那一分钟真的采到过；没有就给 null 而不是 0 ——
+		// 0 会被读成「持平」（api-contract §3）。
+		"conns_delta_pct": deltaPct,
 		"origin_rate":     originRate(reqTotal, originTotal),
 		// 配置漂移**只比对版本号**，不检查节点上的配置内容（ADR-0002）。
 		// 「全部一致」的含义只是「最近一次下发都到达了」，不是「没人 SSH 上去改过」。

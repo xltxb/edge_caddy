@@ -24,9 +24,6 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 # 只列**实际会被报出来**的。`traffic_samples.at`、`LogBatch.lines`、`LogLine.msg`
 # 这些同样没人读，而它们不在这里 —— 见下面那段盲区说明。
 KNOWN = {
-    "traffic_samples.conns_total": "#25 这张表整个没人用，做还是删待拍板",
-    "traffic_samples.req_total": "#25",
-    "traffic_samples.origin_total": "#25",
     "AgentMsg.logs": "#26 节点日志整条链路都没有",
     "LogBatch.at_unix_ms": "#26",
 }

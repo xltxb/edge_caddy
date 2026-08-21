@@ -144,6 +144,16 @@ PROBES = [
         "在线判定拿不到数据时必须炸",
     ),
     Probe(
+        "流量采样-报数不齐就不记",
+        "偏低的样本在 24 小时后会成为同比的分母，产生一个假的巨大涨幅。"
+        "而一个 +340% 比一个 null 危险得多：null 会让人去查，具体的百分比不会",
+        "internal/traffic/traffic.go",
+        "\tif reported < want {",
+        "\tif false {",
+        "./internal/traffic/", "TestSampleIsSkippedWhenNodesAreMissing",
+        "不该记下样本",
+    ),
+    Probe(
         "删路由-摘绑定不是删规则",
         "「摘掉绑定」和「规则整个没了」产生同一个观测。"
         "探针刻意放在 UnbindDomain **之后** —— 放在之前会让 unbound_rules "

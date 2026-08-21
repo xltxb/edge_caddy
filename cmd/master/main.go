@@ -22,6 +22,7 @@ import (
 	"github.com/xltxb/edge_caddy/internal/render"
 	"github.com/xltxb/edge_caddy/internal/secret"
 	"github.com/xltxb/edge_caddy/internal/store"
+	"github.com/xltxb/edge_caddy/internal/traffic"
 	"github.com/xltxb/edge_caddy/internal/tunnel"
 	"github.com/xltxb/edge_caddy/internal/ws"
 )
@@ -127,6 +128,11 @@ func main() {
 		WarnMemPct: sys.WarnMemPct,
 	})
 	go monitor.Run(ctx)
+
+	// 流量采样：每分钟一行全局聚合，只为总览的「较昨日同时段」同比（#25）。
+	// 它自己会跳过主控刚启动的那几分钟——那时 health 的内存还是空的，
+	// 采到的数字偏低，而 24 小时后它会成为分母。
+	go (&traffic.Sampler{Store: st, Health: monitor, Log: log}).Run(ctx)
 
 	advertiseHost, _, err := net.SplitHostPort(cfg.Advertise)
 	if err != nil {
