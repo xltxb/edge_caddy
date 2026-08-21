@@ -25,10 +25,23 @@ const addOpen = ref(false)
 
 /** 每秒走一次的本地时钟，只为让「心跳 N 秒前」自己往前跑。 */
 const now = ref(Date.now())
+
+/**
+ * 没配 DNS 服务商时，`dns_enabled` 只是个**本地标志位**。
+ *
+ * 它决定归一化里谁参与，但解析记录一个字都没改 —— 那台机器照旧在解析里。
+ * 这时把「已退出解析」原样显示出去，就是在撒谎，而且是常驻的谎：那句 toast
+ * 会消失，这个徽标不会。**消失的那个说了真话，留下的那个不能反着说。**
+ *
+ * 这只判得了「压根没配」。判不了「上次同步失败了」—— 那需要 /nodes 上有个
+ * 常驻的「服务商那边是否已反映」，契约里目前没有。
+ */
+const dnsOnlyLocal = computed(() => nodes.dnsProvider === '')
 let ticker: ReturnType<typeof setInterval> | null = null
 
 onMounted(() => {
   if (!nodes.items.length) void nodes.fetchAll().catch(() => {})
+  if (nodes.dnsProvider === null) void nodes.fetchDnsProvider()
   ticker = setInterval(() => (now.value = Date.now()), 1000)
   // ?open=node-id 直达展开，命令面板与总览的「查看日志」都靠它
   const target = route.query.open
@@ -72,10 +85,21 @@ async function onPush(id: string): Promise<void> {
 async function onDns(id: string, enabled: boolean): Promise<void> {
   try {
     const r = await nodes.toggleDns(id, enabled)
+    /*
+     * 没同步到服务商时，标题**不能**说「已暂停解析」。
+     *
+     * 那句话等于声称流量已经不走这台机器了，而它照旧在解析里 —— 人可能正是在
+     * 故障里点的这个开关。用 danger 而不是 warn：暂停成功本身就是 warn，
+     * 两者同色的话，一眼扫过去分不出「做成了」和「什么也没发生」。
+     */
+    if (!r.dns_synced) {
+      ui.toast('danger', `${id} 的解析没有变动`, r.detail)
+      return
+    }
     ui.toast(
       enabled ? 'ok' : 'warn',
       enabled ? `${id} 已恢复解析` : `${id} 已暂停解析`,
-      r.weights_rebalanced ? '其余节点权重已在各线路内重新归一化' : '',
+      r.detail,
     )
   } catch (e) {
     ui.toast('warn', '操作失败', errorText(e, ''))
@@ -178,7 +202,9 @@ const LEVEL_COLOR: Record<string, string> = {
           </span>
 
           <span class="flags">
-            <span v-if="!n.dnsEnabled" class="flag warn">已退出解析</span>
+            <span v-if="!n.dnsEnabled" class="flag warn">
+              {{ dnsOnlyLocal ? '已标记退出（解析未变）' : '已退出解析' }}
+            </span>
             <span v-if="n.drift" class="flag warn">未收到最近下发</span>
           </span>
 
@@ -202,6 +228,9 @@ const LEVEL_COLOR: Record<string, string> = {
                 <dt>DNS 解析</dt>
                 <dd :class="{ warn: !n.dnsEnabled }">
                   {{ n.dnsEnabled ? '正常参与解析' : '已暂停' }}
+                  <span v-if="dnsOnlyLocal" class="warn">
+                    · 尚未配置 DNS 服务商，解析记录未变动
+                  </span>
                 </dd>
               </dl>
 

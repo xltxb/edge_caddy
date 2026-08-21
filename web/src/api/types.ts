@@ -404,8 +404,18 @@ export interface NodeTokenWire {
 export interface DnsToggleWire {
   id: string
   dns_enabled: boolean
-  /** 关闭后其余节点的权重在各线路内重新归一化。 */
-  weights_rebalanced: boolean
+  /**
+   * **服务商那边真的变了没有。**
+   *
+   * 标志位和解析记录是两件事：标志位决定归一化里谁参与，同步才让流量真的改道。
+   * 没配服务商时是 false，同步失败时也是 false —— 两种情况下这台机器都**照旧在
+   * 解析里**。不呈现它的话，人点完开关会以为流量已经不走那台机器了。
+   *
+   * 与「Caddy 接受了配置 ≠ 流量在跑」是同一类：**做完了一步，不等于那件事成了。**
+   */
+  dns_synced: boolean
+  /** 说清 dns_synced 为什么是那个值。直接呈现，不要自己编。 */
+  detail: string
 }
 
 export interface ProbeWire {

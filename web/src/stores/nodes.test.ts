@@ -1,8 +1,18 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useNodesStore } from './nodes'
 import { fromNodeWire } from '@/model'
 import type { HeartbeatFrame, NodeWire } from '@/api/types'
+
+const getMock = vi.fn()
+vi.mock('@/api/http', () => ({
+  http: {
+    get: (...a: unknown[]) => getMock(...a),
+    post: vi.fn(),
+    put: vi.fn(),
+    del: vi.fn(),
+  },
+}))
 
 const wire = (id: string, cfg: string): NodeWire => ({
   id,
@@ -107,5 +117,37 @@ describe('useNodesStore', () => {
       expect(store.items).toHaveLength(1)
       expect(store.items[0]!.cpu).toBe(10)
     })
+  })
+})
+
+/*
+ * 解析开关的两个事实必须分开。
+ *
+ * `dns_enabled` 是本地标志位，决定归一化里谁参与；解析记录真的变没变是另一件事。
+ * 没配服务商时，一个「已退出解析」的徽标是常驻的谎 —— toast 会消失，徽标不会。
+ */
+describe('DNS 服务商配没配', () => {
+  beforeEach(() => setActivePinia(createPinia()))
+
+  it('没配时 kind 是空串，界面据此把徽标降级为「已标记退出」', async () => {
+    getMock.mockReset().mockResolvedValue({ capabilities: { kind: '', lines: null } })
+    const store = useNodesStore()
+    await store.fetchDnsProvider()
+    expect(store.dnsProvider).toBe('')
+  })
+
+  it('配了就给出服务商名', async () => {
+    getMock.mockReset().mockResolvedValue({ capabilities: { kind: 'cloudflare' } })
+    const store = useNodesStore()
+    await store.fetchDnsProvider()
+    expect(store.dnsProvider).toBe('cloudflare')
+  })
+
+  // 问不到时维持 null：宁可不显示那句限定，也不要因为它没答上来就反过来说节点在撒谎
+  it('请求失败时维持 null，不假装没配', async () => {
+    getMock.mockReset().mockRejectedValue(new Error('断网'))
+    const store = useNodesStore()
+    await store.fetchDnsProvider()
+    expect(store.dnsProvider).toBeNull()
   })
 })

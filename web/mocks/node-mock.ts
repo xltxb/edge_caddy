@@ -171,7 +171,17 @@ export async function handleNodes(
         node.dns_enabled ? 'ok' : 'warn',
         `${id} ${node.dns_enabled ? '已恢复解析' : '已暂停解析'}，其余节点权重已重新归一化`,
       )
-      return ok(res, { id, dns_enabled: node.dns_enabled, weights_rebalanced: true }), true
+      return (
+        ok(res, {
+          id,
+          dns_enabled: node.dns_enabled,
+          // mock 里当作已配好服务商 —— 但 detail 照样发，免得前端只在
+          // 「没同步」那条路径上才拿得到文案，而那条路径 mock 里走不到。
+          dns_synced: true,
+          detail: '解析安排已同步到服务商',
+        }),
+        true
+      )
     }
 
     if (act[2] === 'probe') {

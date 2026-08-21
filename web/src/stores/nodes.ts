@@ -26,6 +26,15 @@ export const useNodesStore = defineStore('nodes', () => {
   const logs = ref<Record<string, { at: string; level: LogLevel; msg: string }[]>>({})
   /** 最近一次探活结果。Caddy Admin 与隧道分开报 —— 两种故障处置不同。 */
   const probes = ref<Record<string, ProbeWire>>({})
+  /**
+   * DNS 服务商配没配。null = 还没问过。
+   *
+   * 节点上的 `dns_enabled` 是**本地标志位**，它决定归一化里谁参与；解析记录真的
+   * 变没变是另一件事。没配服务商时，一个「已退出解析」的徽标就是在撒谎 ——
+   * 那台机器照旧在解析里。这个布尔只够判「压根没配」这一种，**判不了「上次同步
+   * 失败了」**：那需要 /nodes 上有个常驻事实，契约里目前没有。
+   */
+  const dnsProvider = ref<string | null>(null)
 
   const byId = computed(() => new Map(items.value.map((n) => [n.id, n])))
   /**
@@ -48,6 +57,16 @@ export const useNodesStore = defineStore('nodes', () => {
       throw e
     } finally {
       loading.value = false
+    }
+  }
+
+  /** 顺带问一次 DNS 服务商能力 —— 只取「配没配」，不取权重。 */
+  async function fetchDnsProvider(): Promise<void> {
+    try {
+      const w = await http.get<{ capabilities?: { kind?: string } }>('/dns/weights')
+      dnsProvider.value = w.capabilities?.kind ?? ''
+    } catch {
+      // 问不到就维持 null：宁可不显示那句限定，也不要因为它没答上来就说节点在撒谎
     }
   }
 
@@ -147,6 +166,8 @@ export const useNodesStore = defineStore('nodes', () => {
     busy,
     logs,
     probes,
+    dnsProvider,
+    fetchDnsProvider,
     byId,
     online,
     drifted,
