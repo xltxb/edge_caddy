@@ -23,7 +23,7 @@ def main():
     p = subprocess.run(["go", "test", *args, "-count=1", "-json"],
                        capture_output=True, text=True)
 
-    passed, failed, out, nonjson = 0, [], {}, []
+    passed, failed, skipped, out, nonjson = 0, [], [], {}, []
     for line in p.stdout.splitlines():
         try:
             e = json.loads(line)
@@ -37,6 +37,14 @@ def main():
                 passed += 1
             elif e["Action"] == "fail":
                 failed.append((e["Package"], e["Test"]))
+            elif e["Action"] == "skip":
+                # **被跳过的测试要可见。**
+                #
+                # 只数 pass/fail 的话，给五条测试加上 t.Skip 会让「通过=200」
+                # 变成「通过=195」——而那五条去哪了，没有任何信号。
+                # 一个悄悄被跳过的测试跟没有测试一样，只是它还占着一个名字，
+                # 让人以为那件事有人在看。
+                skipped.append((e["Package"], e["Test"]))
             elif e["Action"] == "output":
                 out.setdefault((e["Package"], e["Test"]), []).append(e["Output"])
 
@@ -48,7 +56,12 @@ def main():
         print("\n非 JSON 输出（多半是编译错误）：")
         print("\n".join(nonjson[:30]))
 
-    print(f"\n通过={passed} 失败={len(failed)}")
+    line = f"\n通过={passed} 失败={len(failed)}"
+    if skipped:
+        line += f" **跳过={len(skipped)}**"
+    print(line)
+    for pkg, t in skipped:
+        print(f"  skip  {pkg.split('/')[-1]}.{t}")
     if p.stderr.strip():
         print("stderr:", p.stderr.strip()[:500])
 
@@ -61,8 +74,18 @@ def main():
     # 然后 exit 0，这里会打印「通过=0 失败=0」—— 而一个 && 链会带着
     # 这个「没问题」一路跑到 git commit。
     if passed == 0 and not failed:
-        print("✗ 一条测试都没跑 —— 名字打错了？包路径不对？"
-              "这不是「没问题」，是一次没有发生过的运行。")
+        # **判词要指对方向。** 前端 agent 在他脚本上撞到这个：
+        # 「全部被跳过」被报成「装置可能坏了」，把人指向工具，
+        # 而真相是命令行参数打错了。**判词指错方向跟不报一样费时间。**
+        #
+        # Go 这边实测过：t.Skip 是 Action:"skip"，退出码仍是 0，
+        # 而只数 pass/fail 的统计会把它显示成「零条」。
+        if skipped:
+            print(f"✗ {len(skipped)} 条测试全部被跳过，一条都没真的跑 —— "
+                  "看上面的 skip 列表，是谁跳过的、为什么。")
+        else:
+            print("✗ 一条测试都没跑 —— 名字打错了？包路径不对？"
+                  "这不是「没问题」，是一次没有发生过的运行。")
         return 1
     return 1 if (failed or nonjson or p.returncode != 0) else 0
 

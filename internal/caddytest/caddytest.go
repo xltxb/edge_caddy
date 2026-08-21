@@ -101,8 +101,20 @@ func New(t *testing.T) *Caddy {
 
 	// 没有 apps 键 —— 刻意的，见包注释。
 	cfgPath := filepath.Join(dir, "start.json")
+	// **日志级别是 INFO，不是 ERROR。**
+	//
+	// 原先是 ERROR，于是那条「失败时打印 caddy 日志」的诊断
+	// ——我上一轮**专门为一个 flake 加的**——从来没有输出过任何东西：
+	// Caddy 的启动与重载信息都是 INFO 级，被过滤掉了。
+	//
+	// 写了一个诊断而没验证它诊断得出东西，跟写一句注释而没验证它说的是真的
+	// 是同一个错。这次是在追那个 flake 的过程中撞见的：失败现场里没有
+	// 「caddy 日志:」那一行，我一度把它当成线索（「Caddy 还没打印启动日志」），
+	// 而真相是它**在成功时也是空的**。
+	//
+	// 一个恒为空的诊断比没有诊断更糟：它让人以为「那边没什么可说的」。
 	cfg := fmt.Sprintf(
-		`{"admin":{"listen":"unix/%s"},"logging":{"logs":{"default":{"level":"ERROR"}}}}`,
+		`{"admin":{"listen":"unix/%s"},"logging":{"logs":{"default":{"level":"INFO"}}}}`,
 		c.adminSock)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
