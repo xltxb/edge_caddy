@@ -15,13 +15,22 @@ import * as seed from './seed'
 
 type Rec = Record<string, unknown>
 
-/** 可变的 live 副本。seed 本身保持不可变，重启 dev server 即回到初始状态。 */
-export const state = {
-  routes: seed.routes.map((r) => ({ ...r })) as Rec[],
-  rules: seed.rules.map((r) => ({ ...r, spec: { ...r.spec } })) as Rec[],
-  policies: seed.policies.map((p) => ({ ...p, spec: { ...p.spec } })) as Rec[],
-  drafts: { ...seed.draftItems } as Record<string, Rec>,
-  draftMeta: { ...seed.draftUpdated } as Record<string, { by: string; at: string }>,
+function freshConfig() {
+  return {
+    routes: seed.routes.map((r) => ({ ...r })) as Rec[],
+    rules: seed.rules.map((r) => ({ ...r, spec: { ...r.spec } })) as Rec[],
+    policies: seed.policies.map((p) => ({ ...p, spec: { ...p.spec } })) as Rec[],
+    drafts: { ...seed.draftItems } as Record<string, Rec>,
+    draftMeta: { ...seed.draftUpdated } as Record<string, { by: string; at: string }>,
+  }
+}
+
+/** 可变的 live 副本。seed 本身保持不可变。 */
+export const state = freshConfig()
+
+/** 复位到 seed —— 只给 e2e 用（见 ws-plugin 里的 __test/reset）。 */
+export function resetConfig(): void {
+  Object.assign(state, freshConfig())
 }
 
 function isPlainObject(v: unknown): v is Rec {

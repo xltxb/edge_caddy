@@ -191,6 +191,36 @@ export const useConfigStore = defineStore('config', () => {
   }
 
   /**
+   * 把所有还没落地的草稿立刻写回。
+   *
+   * 节流窗口是 400ms，够短到看不出来、也够长到能丢东西：改一个字段然后立刻
+   * 切页或刷新，那次写就没发出去过 —— 界面上改动还在（内存里），回来之后
+   * 却不见了。**静默丢失用户刚敲的东西**是这里最不能接受的失败方式。
+   *
+   * `keepalive` 让请求能在页面卸载过程中继续发完（beforeunload 用）。
+   */
+  function flush(opts: { keepalive?: boolean } = {}): void {
+    const keys = [...timers.keys()]
+    for (const k of keys) {
+      const t = timers.get(k)
+      if (t) clearTimeout(t)
+      timers.delete(k)
+      if (opts.keepalive) {
+        // 卸载途中不能 await，只能靠 keepalive 把它送出去
+        void fetch(`/api/v1/drafts/${encodeURIComponent(k)}`, {
+          method: 'PUT',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(patches.value[k] ?? {}),
+          keepalive: true,
+        }).catch(() => {})
+      } else {
+        void persist(k)
+      }
+    }
+  }
+
+  /**
    * 改一个字段。
    *
    * 值改回与线上一致时 `applyEdit` 会把该键剪掉，剪空了这里再删掉整条草稿——
@@ -246,6 +276,7 @@ export const useConfigStore = defineStore('config', () => {
     changesOf,
     fetchAll,
     setField,
+    flush,
     revert,
     discardAll,
     commit,

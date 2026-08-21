@@ -30,6 +30,14 @@ const props = defineProps<{
 
 const emit = defineEmits<{ (e: 'change', path: string, v: unknown): void }>()
 
+/**
+ * 每个字段一个稳定 id，用于把 <label> 和控件关联起来。
+ *
+ * 不关联的话，屏幕阅读器念不出这个输入框是干什么的，点标签也不会聚焦到控件上。
+ * 顺带让 e2e 能用 getByLabel 这种语义选择器，而不是靠位置去猜。
+ */
+const fieldId = (path: string) => `f-${path.replace(/[^a-zA-Z0-9]/g, '-')}`
+
 interface Row {
   spec: FieldSpec<never>
   group: string
@@ -87,7 +95,7 @@ function switchWarn(r: Row): boolean {
       <div v-if="sec.group" class="group">{{ sec.group }}</div>
 
       <div v-for="r in sec.rows" :key="r.spec.field" class="row">
-        <label class="label">
+        <label class="label" :for="fieldId(r.spec.field)">
           {{ r.spec.label }}
           <span v-if="r.dirty" class="dot" title="有未下发改动" />
         </label>
@@ -95,6 +103,7 @@ function switchWarn(r: Row): boolean {
         <div class="control">
           <VTextField
             v-if="r.spec.kind === 'text'"
+            :id="fieldId(r.spec.field)"
             :model-value="r.current"
             :dirty="r.dirty"
             :invalid="!!r.error"
@@ -104,6 +113,7 @@ function switchWarn(r: Row): boolean {
           />
           <VAreaField
             v-else-if="r.spec.kind === 'area'"
+            :id="fieldId(r.spec.field)"
             :model-value="r.current"
             :dirty="r.dirty"
             :invalid="!!r.error"
@@ -119,6 +129,7 @@ function switchWarn(r: Row): boolean {
           />
           <div v-else-if="r.spec.kind === 'switch'" class="switch-row">
             <VSwitchField
+              :id="fieldId(r.spec.field)"
               :model-value="r.current"
               :dirty="r.dirty"
               @update:model-value="(v) => emit('change', r.spec.field, v)"

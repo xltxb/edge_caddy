@@ -2,6 +2,7 @@
 import { fieldTone } from './fieldStyles'
 
 const props = defineProps<{
+  id?: string
   modelValue: unknown
   dirty: boolean
   invalid: boolean
@@ -18,6 +19,7 @@ function onInput(e: Event): void {
 
 <template>
   <input
+    :id="id"
     class="field"
     type="text"
     :inputmode="numeric ? 'numeric' : undefined"

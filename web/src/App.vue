@@ -60,6 +60,16 @@ watch(
   { immediate: true },
 )
 
+/**
+ * 页面卸载前把还没落地的草稿送出去。
+ *
+ * 没有这一步，「改一个字段 → 立刻刷新」会静默丢掉那次改动 ——
+ * e2e 就是在 reload 那一步抓到它的。
+ */
+function onBeforeUnload(): void {
+  config.flush({ keepalive: true })
+}
+
 function onHotkey(e: KeyboardEvent): void {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
     e.preventDefault()
@@ -68,11 +78,21 @@ function onHotkey(e: KeyboardEvent): void {
   if (e.key === 'Escape') ui.paletteOpen = false
 }
 
-onMounted(() => window.addEventListener('keydown', onHotkey))
+onMounted(() => {
+  window.addEventListener('keydown', onHotkey)
+  window.addEventListener('beforeunload', onBeforeUnload)
+})
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onHotkey)
+  window.removeEventListener('beforeunload', onBeforeUnload)
   stopRealtime()
 })
+
+// SPA 内部切页时同样要落地：路由守卫比 beforeunload 可靠，能 await
+watch(
+  () => route.fullPath,
+  () => config.flush(),
+)
 </script>
 
 <template>

@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { fieldTone } from './fieldStyles'
 
 const props = defineProps<{
+  id?: string
   modelValue: unknown
   dirty: boolean
   invalid: boolean
@@ -23,6 +24,7 @@ function onInput(e: Event): void {
 
 <template>
   <textarea
+    :id="id"
     class="field"
     :rows="rows"
     :value="text"

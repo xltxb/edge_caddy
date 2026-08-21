@@ -29,6 +29,12 @@ interface Running {
 const running = new Map<number, Running>()
 let nextId = 90
 
+/** 复位 —— 只给 e2e 用。 */
+export function resetDeploys(): void {
+  running.clear()
+  nextId = 90
+}
+
 function nextCfg(): string {
   const hex = '0123456789abcdef'
   let s = ''

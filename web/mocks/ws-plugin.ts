@@ -1,9 +1,9 @@
 import type { Plugin, ViteDevServer } from 'vite'
 import { WebSocketServer, type WebSocket } from 'ws'
 import type { EventKind } from '../src/api/types'
-import { handleConfig } from './config-mock'
-import { handleDeploy } from './deploy-mock'
-import { handleDns, handleNodes, heartbeatNodes } from './node-mock'
+import { handleConfig, resetConfig } from './config-mock'
+import { handleDeploy, resetDeploys } from './deploy-mock'
+import { handleDns, handleNodes, heartbeatNodes, resetNodes } from './node-mock'
 import * as seed from './seed'
 
 const WS_PATH = '/api/v1/ws'
@@ -61,6 +61,23 @@ export function wsMockPlugin(): Plugin {
         '/api/v1/nodes',
         '/api/v1/dns',
       ]
+      /*
+       * 仅 mock 存在的复位端点，给 e2e 用。
+       *
+       * mock 的状态会被下发改掉（草稿被消费、version 递增），用例之间会互相
+       * 影响。让每个用例自己复位，比让它们小心地共享一份漂移的状态可靠得多。
+       * 这个端点不在契约里，真主控上不存在 —— e2e 只跑 mock 模式。
+       */
+      server.middlewares.use((req, res, next) => {
+        if (req.url !== '/api/v1/__test/reset' || req.method !== 'POST') return next()
+        resetConfig()
+        resetNodes()
+        resetDeploys()
+        res.statusCode = 200
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ code: 0, data: null, msg: '' }))
+      })
+
       server.middlewares.use((req, res, next) => {
         const url = req.url ?? ''
         if (!MUTABLE.some((p) => url.startsWith(p))) return next()

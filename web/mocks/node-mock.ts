@@ -20,19 +20,28 @@ const LINE_NAMES: Record<string, string> = {
   ov: '境外 / 默认',
 }
 
-export const nodeState = {
-  nodes: seed.nodes.map((n) => ({ ...n, cpu_series: n.cpu_series ? [...n.cpu_series] : null })),
-  logs: Object.fromEntries(
-    Object.entries(seed.agentLogs).map(([k, v]) => [k, v.map((l) => ({ ...l }))]),
-  ) as Record<string, { at: string; level: LogLevel; msg: string }[]>,
-  /** 节点上 Caddy Admin 的可达性。与隧道可达性分开 —— 两种故障处置不同。 */
-  caddyAdmin: Object.fromEntries(seed.nodes.map((n) => [n.id, n.status !== 'down'])) as Record<
-    string,
-    boolean
-  >,
-  weights: Object.fromEntries(
-    seed.dnsLines.map((l) => [l.line_code, { ...l.weights }]),
-  ) as Record<string, Record<string, number>>,
+function freshNodes() {
+  return {
+    nodes: seed.nodes.map((n) => ({ ...n, cpu_series: n.cpu_series ? [...n.cpu_series] : null })),
+    logs: Object.fromEntries(
+      Object.entries(seed.agentLogs).map(([k, v]) => [k, v.map((l) => ({ ...l }))]),
+    ) as Record<string, { at: string; level: LogLevel; msg: string }[]>,
+    /** 节点上 Caddy Admin 的可达性。与隧道可达性分开 —— 两种故障处置不同。 */
+    caddyAdmin: Object.fromEntries(seed.nodes.map((n) => [n.id, n.status !== 'down'])) as Record<
+      string,
+      boolean
+    >,
+    weights: Object.fromEntries(
+      seed.dnsLines.map((l) => [l.line_code, { ...l.weights }]),
+    ) as Record<string, Record<string, number>>,
+  }
+}
+
+export const nodeState = freshNodes()
+
+/** 复位到 seed —— 只给 e2e 用。 */
+export function resetNodes(): void {
+  Object.assign(nodeState, freshNodes())
 }
 
 /**

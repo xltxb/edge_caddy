@@ -1,10 +1,11 @@
 <script setup lang="ts">
-defineProps<{ modelValue: unknown; dirty: boolean }>()
+defineProps<{ modelValue: unknown; dirty: boolean; id?: string }>()
 defineEmits<{ (e: 'update:modelValue', v: boolean): void }>()
 </script>
 
 <template>
   <button
+    :id="id"
     type="button"
     class="track"
     role="switch"
