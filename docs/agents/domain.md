@@ -29,7 +29,7 @@
 ├── cmd/            master 与 agent 两个可执行体（见 issue #17）
 ├── internal/       主控与 Agent 的实现
 ├── proto/          gRPC 隧道
-├── migrations/     PostgreSQL 迁移
+│   （迁移在 internal/store/migrations/，因为 Go 的 embed 够不到父目录）
 └── web/            Vue 3 控制台（由 frontend agent 维护，后端不动）
 ```
 

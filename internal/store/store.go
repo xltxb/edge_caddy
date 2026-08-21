@@ -19,6 +19,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// 迁移文件放在本包目录下而不是仓库根的 migrations/（后端开发文档 §2 画的是后者）：
+// Go 的 embed 够不到父目录，放根上就只能靠构建时拷贝，而那意味着仓库里会同时存在
+// 两份 schema，改错一份不会有任何症状。这里只有一份，它就是被编译进二进制的那份。
+//
 //go:embed all:migrations
 var migrationFS embed.FS
 

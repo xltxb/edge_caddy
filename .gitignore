@@ -16,3 +16,5 @@ web/node_modules/
 /tools/
 web/test-results/
 web/playwright-report/
+# 本地 agent 配置（各人不同，不进版本库）
+.claude/
