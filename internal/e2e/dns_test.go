@@ -217,3 +217,36 @@ func TestDNSProviderCredentialNotEchoed(t *testing.T) {
 		t.Errorf("其余字段应当被更新，sub = %q", d2.DNSProvider.Sub)
 	}
 }
+
+// **手动切换解析要真的同步到服务商，并如实说明同步了没有。**
+//
+// 这里原先只改标志位，注释写着「真正调服务商属于 #21」——而 #21 完成之后
+// 那句话没跟着改。于是心跳超时的**自动**摘除会同步服务商，人手动点
+// 「暂停解析」却不会：同一件事两条路径行为不一致，而不一致的那条恰恰是
+// 人主动做的那条。
+func TestNodeDNSToggleReportsWhetherProviderWasSynced(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	e := r.mustDo("POST", "/nodes/node-hk-01/dns", map[string]any{"enabled": false})
+	var d struct {
+		DNSEnabled bool   `json:"dns_enabled"`
+		DNSSynced  bool   `json:"dns_synced"`
+		Detail     string `json:"detail"`
+	}
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.DNSEnabled {
+		t.Fatal("标志位应当被关掉")
+	}
+	// 测试环境没配服务商，因此**必须说出来**，而不是让人以为解析已经变了。
+	if d.DNSSynced {
+		t.Error("没配服务商时不该声称已同步")
+	}
+	if !strings.Contains(d.Detail, "未配置") {
+		t.Errorf("detail 应当说清解析没被动过: %q", d.Detail)
+	}
+}

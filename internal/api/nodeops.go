@@ -1,10 +1,12 @@
 package api
 
 import (
+	"errors"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/xltxb/edge_caddy/internal/dnsops"
 )
 
 func queryInt(c *gin.Context, key string, def int) int {
@@ -68,14 +70,43 @@ func (s *Server) handleNodeDNS(c *gin.Context) {
 		c.Set(ctxKeyAction, "暂停解析")
 	}
 
-	if err := s.store.SetNodeDNS(c.Request.Context(), nodeID, *req.Enabled); err != nil {
+	ctx := c.Request.Context()
+	if err := s.store.SetNodeDNS(ctx, nodeID, *req.Enabled); err != nil {
 		s.log.Error("切换解析失败", "node", nodeID, "err", err)
 		Fail(c, CodeDownstream, "切换解析失败")
 		return
 	}
-	// 权重归一化与真正调服务商属于 #21。这里只改意图，
-	// 不声称解析已经变了——响应里因此没有 weights_rebalanced。
-	OK(c, gin.H{"id": nodeID, "dns_enabled": *req.Enabled})
+
+	// **改完标志位要真的同步到服务商。**
+	//
+	// 这里原先只改标志位，注释写着「真正调服务商属于 #21」——而 #21 完成之后
+	// 这句话没跟着改。于是心跳超时的**自动**摘除会同步服务商，人手动点
+	// 「暂停解析」却不会：同一件事两条路径行为不一致，而不一致的那条恰恰是
+	// 人主动做的那条。一个什么也不做的开关比没有这个开关更糟。
+	synced := false
+	if s.dns != nil {
+		switch err := s.dns.Sync(ctx, nil); {
+		case errors.Is(err, dnsops.ErrNoProvider):
+			// 没配服务商不是错误：标志位仍然有意义（它决定归一化里谁参与）。
+			// 但**必须说出来**，否则人以为解析已经变了。
+		case err != nil:
+			s.log.Error("同步解析失败", "node", nodeID, "err", err)
+			setAuditPartial(c, "标志位已改，但同步到 DNS 服务商失败："+err.Error())
+			OK(c, gin.H{
+				"id": nodeID, "dns_enabled": *req.Enabled, "dns_synced": false,
+				"detail": "标志位已改，但同步到 DNS 服务商失败：" + err.Error(),
+			})
+			return
+		default:
+			synced = true
+		}
+	}
+
+	detail := "解析安排已同步到服务商"
+	if !synced {
+		detail = "尚未配置 DNS 服务商，解析未变动"
+	}
+	OK(c, gin.H{"id": nodeID, "dns_enabled": *req.Enabled, "dns_synced": synced, "detail": detail})
 }
 
 func (s *Server) handleNodeProbe(c *gin.Context) {
