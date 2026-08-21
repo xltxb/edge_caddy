@@ -158,6 +158,8 @@ func (s *Server) handleDeleteRoute(c *gin.Context) {
 		Fail(c, CodeDownstream, "删除路由失败")
 		return
 	}
+	// 删的是路由，**不是规则**——规则只摘绑定。
+	// scripts/probes.py 的「删路由-摘绑定不是删规则」盯着这个区别。
 	if err := s.store.DeleteRoute(ctx, domain); err != nil {
 		s.log.Error("删除路由失败", "err", err)
 		Fail(c, CodeDownstream, "删除路由失败")

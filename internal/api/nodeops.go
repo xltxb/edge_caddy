@@ -252,6 +252,8 @@ const drainConnsTimeout = 30 * time.Second
 
 // drainStep 让节点排空已建立的连接，并把结果说成人能据此做决定的样子。
 func (s *Server) drainStep(ctx context.Context, nodeID string, dnsRemoved bool) gin.H {
+	// 这个判断与下面那句「已建立的连接都已结束」的措辞，各有一条探针盯着
+	// （scripts/probes.py 的「下线-排空真的跑到了」「下线-排空要说清它的边界」）。
 	if !dnsRemoved {
 		// 解析还指着这台机器，新连接源源不断，排空没有意义。
 		// 说清是「跳过」而不是「失败」——后者会让人去查节点。

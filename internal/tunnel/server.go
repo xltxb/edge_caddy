@@ -287,6 +287,8 @@ func (s *Server) identify(ctx context.Context, hello *edgev1.Hello) (string, *ed
 
 	// **先查验，最后才消耗。** 中间这几步都可能失败，而 Token 一旦烧掉，
 	// 人就得回控制台重签一张——即便失败的是主控自己（写库、签证书）。
+	// **Peek 与 Consume 之间的这一段不能提前消耗 Token**，
+	// 由 scripts/probes.py 的「接入Token-成功之后才消耗」盯着。
 	spec, err := s.opt.Store.PeekEnrollToken(ctx, hello.GetToken())
 	switch {
 	case errors.Is(err, store.ErrTokenInvalid):

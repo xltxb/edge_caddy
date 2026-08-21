@@ -119,6 +119,59 @@ def check_anchors(paths):
     return bad
 
 
+def check_backlinks(paths):
+    """产品代码里说「某条探针盯着这里」的，那条探针必须真的存在。
+
+    **这一族链接一直是单向的。** `probes.py` 里每条都写着它守着哪个不变量、
+    改哪个文件——**探针知道它守着谁，而被守的那一方不知道**。
+    改 `TouchHeartbeat` 那条 SQL 的人，此前完全不知道有一条探针盯着它。
+
+    （前端 agent 先看见这个不对称：他的 `check-premises.mjs` 每条都标了
+    「依赖处」指向代码，而代码那一侧一句都没说自己被守着。）
+
+    反向链接自己也会过期：探针删了或改了名，而代码里那句「有一条盯着」还在
+    ——**那是最坏的一种假话，它让人以为有保护**。所以这里查它。
+
+    **反方向不查**：一条探针没有反向链接只是少个指路牌，不是假话。
+    两个方向的失效后果不同，不该用同一条规则。
+
+    判据限定在**含 probes.py 的那个注释块内部**的「」引用。第一版限定成
+    「含连字符的引用」，而「心跳不冲掉下线标记」这条探针名恰好没有连字符，
+    于是探针改名之后核对静静地全绿——**又一次粒度不匹配**，
+    第二版放宽成「块内所有『』」，立刻把两句引用的措辞误报成探针名。
+
+    两次都是**按字符特征猜**；对的做法是**按结构定位**——只认紧跟在
+    「probes.py 的」后面的那一串。
+    """
+    probes = (ROOT / "scripts" / "probes.py").read_text(encoding="utf-8")
+    names = set(re.findall(r'Probe\(\s*\n\s*"([^"]+)"', probes))
+    if len(names) < 5:
+        print(f"  ✗ 只从 probes.py 解析出 {len(names)} 条探针名 —— "
+              "解析坏了，下面的核对没有意义")
+        return 1
+
+    bad, linked = 0, 0
+    for f in paths:
+        if f.name.endswith("_test.go"):
+            continue
+        for ln, text in blocks(f):
+            if "probes.py" not in text:
+                continue
+            # **按结构定位，不按字符特征猜。** 只认紧跟在「probes.py 的」
+            # 后面的那一串「」——同一个注释块里的别的「」是引用的措辞
+            # （detail 文案、假想的改动），不是探针名。
+            for run in re.findall(r"probes\.py 的((?:「[^」]+」)+)", text):
+                for quoted in re.findall(r"「([^」]+)」", run):
+                    linked += 1
+                    if quoted not in names:
+                        print(f"  ✗ {f.relative_to(ROOT)}:{ln} 说「{quoted}」"
+                              "盯着它，而 probes.py 里没有这条探针")
+                        bad += 1
+    if not bad:
+        print(f"  ✓ {linked} 处反向链接都指向真实存在的探针")
+    return bad
+
+
 def check_index():
     """scripts/README.md 那份索引必须与真实存在的脚本**双向**一致。
 
@@ -218,6 +271,8 @@ def main():
 
     print()
     bad = check_anchors(files)
+    print()
+    bad += check_backlinks(files)
     print()
     bad += check_index()
     return 1 if (found or bad) else 0

@@ -131,6 +131,8 @@ func (s *Sampler) sampleOnce(ctx context.Context, now time.Time) error {
 		// 记一行 0 会让第一台节点接入后的第二天出现一个从 0 起算的涨幅。
 		return nil
 	}
+	// **报数不齐就不记**，由 scripts/probes.py 的「流量采样-报数不齐就不记」盯着。
+	// 放宽它会让偏低的样本进库，而 24 小时后那个样本会成为同比的分母。
 	if reported < want {
 		// 有节点没报数：可能刚接入、可能心跳丢了、也可能主控刚起来。
 		// 三种都让这一分钟的数字偏低，而偏低的样本在 24 小时后会骗人。

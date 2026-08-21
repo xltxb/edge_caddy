@@ -27,6 +27,9 @@ const drainPoll = 500 * time.Millisecond
 func waitDrained(ctx context.Context, count func(context.Context) uint32,
 	timeout, poll time.Duration) (drained bool, remaining uint32) {
 
+	// 下面这两处（timeout 的默认值、超时后回报真实剩余数）各有一条探针盯着，
+	// 见 scripts/probes.py 的「排空-超时默认值」「排空-超时报真实剩余数」。
+	// **改它们之前先读那两条探针的 why**——它们记着为什么不能是别的样子。
 	if timeout <= 0 {
 		timeout = drainDeadline
 	}

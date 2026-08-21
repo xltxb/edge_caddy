@@ -120,6 +120,9 @@ func (h *captureHandler) WithGroup(name string) slog.Handler {
 //
 // 不用 slog 的 String()（它给 "INFO"/"WARN"）——那会让前端在四个已知取值之外
 // 再见到四个大写的，而契约里只列了小写的四个。
+// 这两个（levelName 的取值、putBack 的顺序）各有一条探针盯着，
+// 见 scripts/probes.py 的「节点日志-level 用契约的四个小写值」
+// 「节点日志-送失败要放回缓冲」。
 func levelName(l slog.Level) string {
 	switch {
 	case l < slog.LevelInfo:

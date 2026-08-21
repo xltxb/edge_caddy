@@ -70,6 +70,10 @@ func (s *Store) TouchHeartbeat(ctx context.Context, nodeID, cfgVersion, status s
 	if status != "warn" {
 		status = "ok"
 	}
+	// **这条 SQL 不碰 drained_at，那是 ADR-0014 的核心论据**，
+	// 由 scripts/probes.py 的「心跳不冲掉下线标记」盯着。
+	// 往这里加一句「节点回来了就清掉下线标记」听起来很合理，而那会让
+	// 下线在心跳到达的那一刻静默失效。
 	_, err := s.Pool.Exec(ctx,
 		`UPDATE edge_nodes SET last_hb_at = now(), status = $3::node_status, cfg_version = $2
 		 WHERE id = $1`, nodeID, cfgVersion, status)
