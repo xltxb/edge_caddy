@@ -29,8 +29,28 @@ interface Running {
 const running = new Map<number, Running>()
 let nextId = 90
 
+/**
+ * 已排定但还没跑的进度回调。
+ *
+ * 下发进度是用 setTimeout 排的，最长在响应后 2.6 秒才落定并消费草稿。
+ * 复位时不取消它们的话，上一个用例的下发会在下一个用例复位**之后**落定，
+ * 把刚恢复的草稿又删一次 —— 表现为「单独跑绿、一起跑红」，而那种失败
+ * 查起来最费时间。**一个不取消已排定工作的复位，不算复位。**
+ */
+const pending = new Set<ReturnType<typeof setTimeout>>()
+
+function later(fn: () => void, ms: number): void {
+  const t = setTimeout(() => {
+    pending.delete(t)
+    fn()
+  }, ms)
+  pending.add(t)
+}
+
 /** 复位 —— 只给 e2e 用。 */
 export function resetDeploys(): void {
+  for (const t of pending) clearTimeout(t)
+  pending.clear()
   running.clear()
   nextId = 90
 }
@@ -115,8 +135,8 @@ function runProgress(run: Running, deps: DeployMockDeps): void {
 
   nodes.forEach((id, i) => {
     const at = 300 + i * 420
-    setTimeout(() => frame({ node: id, state: 'run', detail: '热重载中', retrying: false }), at)
-    setTimeout(() => {
+    later(() => frame({ node: id, state: 'run', detail: '热重载中', retrying: false }), at)
+    later(() => {
       if (id === 'node-tw-01') {
         frame({ node: id, state: 'fail', detail: 'deadline exceeded', retrying: true })
       } else if (id === 'node-us-01') {
@@ -128,10 +148,10 @@ function runProgress(run: Running, deps: DeployMockDeps): void {
         // 重试要有归宿，否则那两行会永远停在「重试中」，弹层永远不落定。
         // 真后端会继续发帧（ADR-0005：只重试传输层失败），这里复现两种结局：
         // 台北重连成功，洛杉矶依然不可达且**停止重试**（转为终态，等人处理）。
-        setTimeout(() => {
+        later(() => {
           frame({ node: 'node-tw-01', state: 'ok', detail: '47ms（重试第 2 次）', retrying: false })
         }, 1400)
-        setTimeout(() => {
+        later(() => {
           frame({ node: 'node-us-01', state: 'fail', detail: '节点不可达 · 已放弃重试', retrying: false })
           settle(run, deps, nodes.length)
         }, 2600)
@@ -196,7 +216,7 @@ export async function handleDeploy(
     }
     running.set(run.id, run)
     ok(res, { deploy_id: run.id, cfg_version: run.cfgVersion, targets: seed.nodes.map((n) => n.id) })
-    setTimeout(() => runProgress(run, deps), 120)
+    later(() => runProgress(run, deps), 120)
     return true
   }
 

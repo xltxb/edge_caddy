@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { pendingBadge, resetMocks } from './helpers'
+import { pendingBadge, resetMocks, withDraftSaved } from './helpers'
 
 /**
  * 草稿语义的往返。
@@ -25,7 +25,7 @@ test.describe('草稿', () => {
     await expect(pendingBadge(page)).toHaveText('3 处变更') // 该字段本来就在草稿里，仍是 1 处
 
     // 改回 live 值：这个字段应当从草稿里被删掉（契约 §6.4）
-    await bodyMax.fill('5MB')
+    await withDraftSaved(page, () => bodyMax.fill('5MB'))
     await expect(pendingBadge(page)).toHaveText('2 处变更')
 
     // 刷新一次，确认写回后端的 Partial 也是干净的（不是只在内存里对）。
@@ -35,7 +35,7 @@ test.describe('草稿', () => {
   })
 
   test('放弃改动清掉该资源的全部草稿', async ({ page }) => {
-    await page.getByRole('button', { name: '放弃改动' }).click()
+    await withDraftSaved(page, () => page.getByRole('button', { name: '放弃改动' }).click())
     await expect(pendingBadge(page)).toHaveText('1 处变更')
     await page.reload()
     await expect(pendingBadge(page)).toHaveText('1 处变更')
