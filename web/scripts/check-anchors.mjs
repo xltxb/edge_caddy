@@ -117,14 +117,36 @@ for (const f of files) {
  */
 {
   const premises = readFileSync('scripts/check-premises.mjs', 'utf8')
+
+  /*
+   * **按结构定位，不按特征猜。**
+   *
+   * 只取 `await check('前提', '依赖处', …)` 的**第二个参数** —— 那是「依赖处」
+   * 这个字段本身，不是「这个文件名在脚本里出现过」。
+   *
+   * 第一版就是按特征写的：`premises.includes(base)`。于是把某条前提的依赖处整个
+   * 抹掉、而文件名仍在别处（比如一句注释里）出现时，核对**照样全绿**。
+   * 我当时验过它「认得出」，那次之所以红，只是因为我顺手把文件名也一起抹了 ——
+   * **探针撞对了，而它验的不是我以为的那件事。**
+   *
+   * 这是「用特征代替结构」，比粒度不对更靠前一层：粒度不对至少还在找结构。
+   * （判据来自后端，它在同一处栽了两版。）
+   */
+  const deps = [...premises.matchAll(/await check\(\s*\n?\s*'[^']*',\s*\n?\s*'([^']*)'/g)].map(
+    (m) => m[1],
+  )
+  if (deps.length === 0) {
+    console.error('✗ 一条前提的「依赖处」都没解析出来 —— 核对的装置坏了\n')
+    process.exit(2)
+  }
+
   const claims = []
   for (const f of files) {
     const src = readFileSync(f, 'utf8')
     if (!/check-premises/.test(src)) continue
-    const base = f.split('/').pop()
-    claims.push({ f, base })
+    claims.push({ f, base: f.split('/').pop() })
   }
-  const broken = claims.filter((c) => !premises.includes(c.base))
+  const broken = claims.filter((c) => !deps.some((d) => d.includes(c.base)))
   if (broken.length) {
     console.error(
       `\n✗ ${broken.length} 处反向链接指向的前提已经不在了：\n` +
