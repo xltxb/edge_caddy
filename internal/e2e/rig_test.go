@@ -332,16 +332,39 @@ func (r *rig) baseline() string {
 	return d.Baseline
 }
 
+// isOnline 回答一个节点此刻在不在线。
+//
+// **它不吞错误，这是刻意的。** 原先这里写着 `_ = json.Unmarshal(...)`，
+// 于是 /nodes 请求失败、响应结构变了、Data 是 null——任何一种情况下 Items 都是空，
+// 函数返回 false，而 stayOffline 会一路绿地说「很好，节点确实没连回来」。
+//
+// 这是否定断言的第三种坏法（前端 agent 命名的）：不是装置没打开，
+// 也不是断言比意图宽，而是**断言被「对象消失」满足，不是被「对象正确」满足**。
+// 三种的共同点是「绿」这个信号被别的东西冒领了。
+//
+// waitOnline 不吃这一套——它要求 Online 为真，装置坏了它会超时报错。
+// 又一次印证：肯定断言天然带自检。
 func (r *rig) isOnline(nodeID string) bool {
 	r.t.Helper()
-	_, e := r.do("GET", "/nodes", nil)
+	status, e := r.do("GET", "/nodes", nil)
+	if status != 200 || e.Code != 0 {
+		r.t.Fatalf("GET /nodes 失败（http=%d code=%d msg=%q）—— "+
+			"在线判定拿不到数据时必须炸，不能静静地回 false", status, e.Code, e.Msg)
+	}
 	var d struct {
 		Items []struct {
 			ID     string `json:"id"`
 			Online bool   `json:"online"`
 		} `json:"items"`
 	}
-	_ = json.Unmarshal(e.Data, &d)
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		r.t.Fatalf("解析 /nodes 失败：%v\n%s", err, e.Data)
+	}
+	if len(d.Items) == 0 {
+		// 调用方都是在节点接入过之后才问的。一个空列表意味着这份响应
+		// 不是我们以为的东西，而不是「节点不在线」。
+		r.t.Fatalf("/nodes 一个节点都没有 —— 这份响应不是我们以为的东西：%s", e.Data)
+	}
 	for _, n := range d.Items {
 		if n.ID == nodeID && n.Online {
 			return true
