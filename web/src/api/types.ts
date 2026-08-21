@@ -401,6 +401,31 @@ export interface NodeTokenWire {
   install_cmd: string
 }
 
+/**
+ * 最近一次把解析安排推给服务商的结果。**常驻**。
+ *
+ * 与权重里的 `share` 是两件事：`share` 是我们**打算**怎么分，`dns_sync` 说的是
+ * **服务商那边真的这样了没有**。界面上「已退出解析」那类徽标也是常驻的，只靠
+ * `POST /nodes/:id/dns` 那个一次性的 `dns_synced`，一次失败的同步会留下一个
+ * 一直撒谎到下次有人再点开关为止的徽标 —— 常驻的说法需要常驻的真相来源。
+ */
+export interface DnsSyncWire {
+  ok: boolean
+  /**
+   * 上次同步的时刻。**从没同步过时后端给的是 Go 的零值时间**
+   * （`0001-01-01T00:00:00Z`），契约没规定这一点。直接格式化会显示成
+   * `00:00:00`，读起来像「凌晨同步过一次」—— 用 `isZeroTime()` 挡掉。
+   */
+  at: string
+  detail: string
+}
+
+/** `GET /nodes` 的响应。除了分页，还带着两个全局事实。 */
+export interface NodesPageWire extends Paged<NodeWire> {
+  baseline: string
+  dns_sync: DnsSyncWire
+}
+
 export interface DnsToggleWire {
   id: string
   dns_enabled: boolean
@@ -500,6 +525,8 @@ export interface DnsWeightsWire {
   domain?: string
   lines: DnsLineWire[]
   capabilities?: DnsCapabilitiesWire
+  /** 服务商那边真的这样了没有。与 lines 里的 share（我们打算怎么分）是两件事。 */
+  dns_sync?: DnsSyncWire
 }
 
 /* ── 11. 系统设置与告警 ── */

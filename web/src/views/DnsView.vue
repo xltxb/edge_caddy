@@ -5,6 +5,8 @@ import { http, errorText } from '@/api/http'
 import type { DnsWeightsWire } from '@/api/types'
 import { isDivergent, lineInputs, mergedWeight, type LineInput } from '@/dns/capability'
 import { useUiStore } from '@/stores/ui'
+import { isZeroTime } from '@/model'
+import { fmtClock } from '@/utils/format'
 
 /**
  * DNS 调度。
@@ -45,6 +47,7 @@ onMounted(load)
 
 const caps = computed(() => data.value?.capabilities)
 const configured = computed(() => !!caps.value?.kind)
+const sync = computed(() => data.value?.dns_sync)
 
 /** 契约线路码 → 该线路的原始 entries，供合并组取值与算占比。 */
 const byCode = computed(() => {
@@ -187,6 +190,21 @@ async function save(): Promise<void> {
     </div>
     <div v-else-if="caps?.notes" class="banner info">
       <b>{{ caps.kind }}</b> · {{ caps.notes }}
+    </div>
+    <!--
+      这一页画的是**我们打算**怎么分（share），而 dns_sync 说的是**服务商那边
+      真的这样了没有**。两者从来不是一回事：一次失败的同步之后，下面那些百分比
+      仍然是一份完整、自洽、看着已经生效了的安排。
+    -->
+    <!--
+      只在**配了服务商却没同步成**时出现。没配服务商时上面那条能力横幅已经把
+      话说完了，两条横幅讲同一件事只会互相稀释，人会两条都不读。
+    -->
+    <div v-if="configured && sync && !sync.ok" class="banner warn">
+      下面这些权重是<b>待生效的安排</b>，服务商那边还没反映：{{ sync.detail }}
+    </div>
+    <div v-else-if="sync?.ok && !isZeroTime(sync.at)" class="banner info">
+      上次同步到服务商：{{ fmtClock(sync.at) }}
     </div>
     <div v-if="divergent.length" class="banner warn">
       {{ divergent.join('、') }} 下各线路的权重当前并不一致（可能是在别的服务商下配的）。

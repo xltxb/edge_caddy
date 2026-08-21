@@ -2,12 +2,13 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { http, errorText } from '@/api/http'
 import type {
+  DnsSyncWire,
   DnsToggleWire,
   DrainWire,
   HeartbeatFrame,
   LogLevel,
   NodeTokenWire,
-  NodeWire,
+  NodesPageWire,
   Paged,
   ProbeWire,
 } from '@/api/types'
@@ -27,14 +28,17 @@ export const useNodesStore = defineStore('nodes', () => {
   /** 最近一次探活结果。Caddy Admin 与隧道分开报 —— 两种故障处置不同。 */
   const probes = ref<Record<string, ProbeWire>>({})
   /**
-   * DNS 服务商配没配。null = 还没问过。
+   * 服务商那边有没有反映我们的解析安排。null = 还没取到。
    *
    * 节点上的 `dns_enabled` 是**本地标志位**，它决定归一化里谁参与；解析记录真的
-   * 变没变是另一件事。没配服务商时，一个「已退出解析」的徽标就是在撒谎 ——
-   * 那台机器照旧在解析里。这个布尔只够判「压根没配」这一种，**判不了「上次同步
-   * 失败了」**：那需要 /nodes 上有个常驻事实，契约里目前没有。
+   * 变没变是另一件事。没同步时，一个「已退出解析」的徽标就是在撒谎 —— 那台机器
+   * 照旧在解析里。
+   *
+   * 这份来自 `GET /nodes` 顶层，与列表同一个响应，所以不用额外发请求；早先我是
+   * 从 `/dns/weights` 的 `capabilities.kind` 推「压根没配」，那推不出「上次同步
+   * 失败了」。
    */
-  const dnsProvider = ref<string | null>(null)
+  const dnsSync = ref<DnsSyncWire | null>(null)
 
   const byId = computed(() => new Map(items.value.map((n) => [n.id, n])))
   /**
@@ -50,23 +54,14 @@ export const useNodesStore = defineStore('nodes', () => {
     loading.value = true
     error.value = null
     try {
-      const page = await http.get<Paged<NodeWire>>('/nodes')
+      const page = await http.get<NodesPageWire>('/nodes')
       items.value = page.items.map((w) => fromNodeWire(w))
+      dnsSync.value = page.dns_sync ?? null
     } catch (e) {
       error.value = errorText(e, '加载节点失败')
       throw e
     } finally {
       loading.value = false
-    }
-  }
-
-  /** 顺带问一次 DNS 服务商能力 —— 只取「配没配」，不取权重。 */
-  async function fetchDnsProvider(): Promise<void> {
-    try {
-      const w = await http.get<{ capabilities?: { kind?: string } }>('/dns/weights')
-      dnsProvider.value = w.capabilities?.kind ?? ''
-    } catch {
-      // 问不到就维持 null：宁可不显示那句限定，也不要因为它没答上来就说节点在撒谎
     }
   }
 
@@ -166,8 +161,7 @@ export const useNodesStore = defineStore('nodes', () => {
     busy,
     logs,
     probes,
-    dnsProvider,
-    fetchDnsProvider,
+    dnsSync,
     byId,
     online,
     drifted,

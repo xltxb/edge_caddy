@@ -110,6 +110,17 @@ function pushEvent(deps: NodeMockDeps, node: string | null, kind: string, msg: s
 }
 
 /** 返回 true 表示已处理。 */
+/**
+ * mock 里当作同步过一次。
+ *
+ * 真主控在从没同步过时给的是 Go 的**零值时间**（`0001-01-01T00:00:00Z`），
+ * 不是 null 也不是空串——前端用 isZeroTime() 挡着。mock 这边给真实时刻，
+ * 两条路径（有时刻 / 零值）在单测里各有一条，不靠 mock 覆盖。
+ */
+function dnsSync() {
+  return { ok: true, at: new Date().toISOString(), detail: '解析安排已同步到服务商' }
+}
+
 export async function handleNodes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -121,10 +132,12 @@ export async function handleNodes(
   if (m === 'GET' && path === '/api/v1/nodes') {
     const baseline = deps.baseline()
     return (
-      paged(
-        res,
-        nodeState.nodes.map((n) => ({ ...n, drift: n.cfg_version !== baseline })),
-      ),
+      ok(res, {
+        items: nodeState.nodes.map((n) => ({ ...n, drift: n.cfg_version !== baseline })),
+        next_before_id: null,
+        baseline,
+        dns_sync: dnsSync(),
+      }),
       true
     )
   }
@@ -233,6 +246,7 @@ export async function handleDns(req: IncomingMessage, res: ServerResponse): Prom
     return (
       ok(res, {
         domain: 'cdn.example.com',
+        dns_sync: dnsSync(),
         lines: buildLines(),
         capabilities: {
           kind: 'cloudflare',

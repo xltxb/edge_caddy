@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useNodesStore } from './nodes'
-import { fromNodeWire } from '@/model'
+import { fromNodeWire, isZeroTime } from '@/model'
 import type { HeartbeatFrame, NodeWire } from '@/api/types'
 
 const getMock = vi.fn()
@@ -124,30 +124,44 @@ describe('useNodesStore', () => {
  * 解析开关的两个事实必须分开。
  *
  * `dns_enabled` 是本地标志位，决定归一化里谁参与；解析记录真的变没变是另一件事。
- * 没配服务商时，一个「已退出解析」的徽标是常驻的谎 —— toast 会消失，徽标不会。
+ * 没同步时，一个「已退出解析」的徽标是常驻的谎 —— toast 会消失，徽标不会。
  */
-describe('DNS 服务商配没配', () => {
+describe('dns_sync：服务商那边真的这样了没有', () => {
   beforeEach(() => setActivePinia(createPinia()))
 
-  it('没配时 kind 是空串，界面据此把徽标降级为「已标记退出」', async () => {
-    getMock.mockReset().mockResolvedValue({ capabilities: { kind: '', lines: null } })
+  it('与节点列表同一个响应取到，不额外发请求', async () => {
+    getMock.mockReset().mockResolvedValue({
+      items: [wire('node-hk-01', 'cfg-1')],
+      baseline: 'cfg-1',
+      dns_sync: { ok: false, at: '0001-01-01T00:00:00Z', detail: '尚未向 DNS 服务商同步过' },
+    })
     const store = useNodesStore()
-    await store.fetchDnsProvider()
-    expect(store.dnsProvider).toBe('')
+    await store.fetchAll()
+    expect(getMock).toHaveBeenCalledTimes(1)
+    expect(store.dnsSync?.ok).toBe(false)
+    expect(store.dnsSync?.detail).toContain('尚未')
   })
 
-  it('配了就给出服务商名', async () => {
-    getMock.mockReset().mockResolvedValue({ capabilities: { kind: 'cloudflare' } })
+  it('同步过就是 ok', async () => {
+    getMock.mockReset().mockResolvedValue({
+      items: [],
+      baseline: 'cfg-1',
+      dns_sync: { ok: true, at: '2026-08-21T15:40:00+08:00', detail: '已同步' },
+    })
     const store = useNodesStore()
-    await store.fetchDnsProvider()
-    expect(store.dnsProvider).toBe('cloudflare')
+    await store.fetchAll()
+    expect(store.dnsSync?.ok).toBe(true)
   })
 
-  // 问不到时维持 null：宁可不显示那句限定，也不要因为它没答上来就反过来说节点在撒谎
-  it('请求失败时维持 null，不假装没配', async () => {
-    getMock.mockReset().mockRejectedValue(new Error('断网'))
-    const store = useNodesStore()
-    await store.fetchDnsProvider()
-    expect(store.dnsProvider).toBeNull()
+  /*
+   * 后端在「从没同步过」时给的是 Go 的零值时间，契约没规定这一点。
+   * 不挡的话它会被格式化成一个像模像样的 00:00:00 —— 一个**格式正确但意思是
+   * 假的**值，比一个空白危险得多。
+   */
+  it('零值时间要被认出来，不能当成一个真的时刻', () => {
+    expect(isZeroTime('0001-01-01T00:00:00Z')).toBe(true)
+    expect(isZeroTime('')).toBe(true)
+    expect(isZeroTime(null)).toBe(true)
+    expect(isZeroTime('2026-08-21T15:40:00+08:00')).toBe(false)
   })
 })

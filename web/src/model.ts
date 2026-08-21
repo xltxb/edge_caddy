@@ -85,6 +85,16 @@ export interface ConsoleEvent {
  * 只判 null 的话，空串会原样渲染成一个空位，看起来像界面漏了内容。
  * 对上游的写法宽容，对自己的输出严格。
  */
+/**
+ * Go 的零值时间。后端在「从没发生过」时给这个，而不是 null 或空串。
+ *
+ * 不挡的话，`0001-01-01T00:00:00Z` 会被格式化成一个像模像样的 `00:00:00`——
+ * 一个**格式正确但意思是假的**值，比一个空白危险得多。
+ */
+export function isZeroTime(iso: string | null | undefined): boolean {
+  return !iso || iso.startsWith('0001-01-01')
+}
+
 export function orDash(v: string | null | undefined): string {
   return v === null || v === undefined || v === '' ? '—' : v
 }
