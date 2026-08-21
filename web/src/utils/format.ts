@@ -39,7 +39,15 @@ export function fmtHbAge(sec: number): string {
 }
 
 /** RFC3339 → HH:MM:SS，事件流与日志用。 */
-export function fmtClock(iso: string): string {
+/**
+ * 时刻 → `HH:MM:SS`。取不到就给破折号。
+ *
+ * 接受 null 是因为契约 §0.4 把「没有这个值」定为 null —— 时间戳字段是这条规矩
+ * 最要紧的落点：一个缺失的时间被渲染成 `00:00:00` 是**格式正确而意思是假的**，
+ * 而空白会让人去查，一个像样的时间不会。
+ */
+export function fmtClock(iso: string | null | undefined): string {
+  if (!iso) return '—'
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return '—'
   const p = (n: number) => String(n).padStart(2, '0')

@@ -113,9 +113,8 @@ function pushEvent(deps: NodeMockDeps, node: string | null, kind: string, msg: s
 /**
  * mock 里当作同步过一次。
  *
- * 真主控在从没同步过时给的是 Go 的**零值时间**（`0001-01-01T00:00:00Z`），
- * 不是 null 也不是空串——前端用 isZeroTime() 挡着。mock 这边给真实时刻，
- * 两条路径（有时刻 / 零值）在单测里各有一条，不靠 mock 覆盖。
+ * 真主控在从没同步过时给 `null`（契约 §0.4）。mock 这边给真实时刻，
+ * 「没有时刻」那条路径在单测里覆盖，不靠 mock。
  */
 function dnsSync() {
   return { ok: true, at: new Date().toISOString(), detail: '解析安排已同步到服务商' }
