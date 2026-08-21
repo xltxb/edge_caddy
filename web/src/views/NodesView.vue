@@ -9,9 +9,10 @@ import VStatusPill from '@/components/base/VStatusPill.vue'
 import { useNodesStore } from '@/stores/nodes'
 import { useOverviewStore } from '@/stores/overview'
 import { useUiStore } from '@/stores/ui'
-import { hbAgeSec } from '@/model'
+import { hbAgeSec, type EdgeNode } from '@/model'
 import { fmtClock, fmtConns, fmtHbAge } from '@/utils/format'
 import type { DrainStep } from '@/api/types'
+import { canEnableDns, nodeFlags } from '@/nodes/flags'
 
 const route = useRoute()
 const nodes = useNodesStore()
@@ -28,17 +29,15 @@ const addOpen = ref(false)
 const now = ref(Date.now())
 
 /**
- * 解析安排还没到服务商那边。
+ * 行上那几句**断言**都在 `@/nodes/flags` 里，不在模板里。
  *
- * `dns_enabled` 只是个**本地标志位**：它决定归一化里谁参与，但解析记录一个字
- * 都没改 —— 那台机器照旧在解析里。这时把「已退出解析」原样显示出去就是在撒谎，
- * 而且是**常驻**的谎：那句 toast 会消失，这个徽标不会。
- * **消失的那个说了真话，留下的那个不能反着说。**
- *
- * `dnsSync` 为 null 表示还没取到 —— 那时不加限定，宁可少说一句，也不要因为
- * 自己没问到就反过来说节点在撒谎。
+ * 抽出去不是为了复用（只有这一处用），是为了**能被证伪**：写在模板里的断言，
+ * 只有人盯着截图看的时候才会被检查一次。那几条对应的测试是照后端在 ADR-0014
+ * 上的办法验的 —— 四种改坏方式各红一条。
  */
-const dnsNotSynced = computed(() => nodes.dnsSync?.ok === false)
+const dnsSyncOk = computed(() => nodes.dnsSync?.ok ?? null)
+const flagsOf = (n: EdgeNode) => nodeFlags(n, dnsSyncOk.value)
+const dnsGate = (n: EdgeNode) => canEnableDns(n)
 let ticker: ReturnType<typeof setInterval> | null = null
 
 onMounted(() => {
@@ -225,19 +224,18 @@ const LEVEL_COLOR: Record<string, string> = {
 
           <span class="flags">
             <!--
-              下线与离线**各占一格，永不合并**。
-              status 是观察（主控没收到心跳），drained_at 是意图（人按了下线）。
-              一台节点可以「已下线且在线」，也可以「未下线但离线」——前者是
-              「我关的」，后者是故障。合成一个徽标，运维半夜分不清该不该起床
-              （CONTEXT.md、ADR-0014）。左边那个 VStatusPill 就是 status 那一格。
+              status 不在这里 —— 它由左边那个 VStatusPill 单独占一格。
+              下线（意图）与离线（观察）永不合并，判断在 @/nodes/flags 里，有测试。
             -->
-            <span v-if="n.drainedAt" class="flag drained" :title="`下线于 ${fmtClock(n.drainedAt)}`">
-              已下线（人为）
+            <span
+              v-for="f in flagsOf(n)"
+              :key="f.text"
+              class="flag"
+              :class="f.tone === 'muted' ? 'drained' : 'warn'"
+              :title="f.title"
+            >
+              {{ f.text }}
             </span>
-            <span v-if="!n.dnsEnabled" class="flag warn">
-              {{ dnsNotSynced ? '已标记退出（解析未变）' : '已退出解析' }}
-            </span>
-            <span v-if="n.drift" class="flag warn">未收到最近下发</span>
           </span>
 
           <span class="chev">{{ open.has(n.id) ? '收起' : '展开' }}</span>
@@ -261,7 +259,7 @@ const LEVEL_COLOR: Record<string, string> = {
                 <dd :class="{ warn: !n.dnsEnabled }">
                   {{ n.dnsEnabled ? '正常参与解析' : '已暂停' }}
                   <!-- detail 是后端给的原话，不要自己编：它区分「没配服务商」和「同步失败了」 -->
-                  <span v-if="dnsNotSynced" class="warn">· {{ nodes.dnsSync!.detail }}</span>
+                  <span v-if="dnsSyncOk === false" class="warn">· {{ nodes.dnsSync!.detail }}</span>
                 </dd>
               </dl>
 
@@ -307,8 +305,8 @@ const LEVEL_COLOR: Record<string, string> = {
             <button
               class="mini"
               type="button"
-              :disabled="!!nodes.busy[n.id] || (!!n.drainedAt && !n.dnsEnabled)"
-              :title="!!n.drainedAt && !n.dnsEnabled ? '该节点已被下线，先「重新上线」再恢复解析' : ''"
+              :disabled="!!nodes.busy[n.id] || !dnsGate(n).ok"
+              :title="dnsGate(n).reason"
               @click="onDns(n.id, !n.dnsEnabled)"
             >
               {{ n.dnsEnabled ? '暂停解析' : '恢复解析' }}
