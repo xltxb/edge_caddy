@@ -22,18 +22,21 @@ func TestDeployPhase(t *testing.T) {
 		return store.DeployResult{Node: node, State: "fail", Detail: "deadline exceeded", Retrying: true}
 	}
 
+	three := []string{"a", "b", "c"}
+	two := []string{"a", "b"}
+
 	cases := []struct {
 		name    string
-		targets int
+		targets []string
 		results []store.DeployResult
 		want    string
 	}{
-		{"一个都还没回报", 3, nil, "running"},
-		{"回报了一部分", 3, []store.DeployResult{ok("a")}, "running"},
-		{"全部成功", 2, []store.DeployResult{ok("a"), ok("b")}, "done"},
-		{"有终态失败也算结束", 2, []store.DeployResult{ok("a"), failTerminal("b")}, "done"},
-		{"6/6 但有节点重试中 —— 没结束", 2, []store.DeployResult{ok("a"), failRetrying("b")}, "running"},
-		{"目标数未知时不敢说结束", 0, []store.DeployResult{ok("a")}, "running"},
+		{"一个都还没回报", three, nil, "running"},
+		{"回报了一部分", three, []store.DeployResult{ok("a")}, "running"},
+		{"全部成功", two, []store.DeployResult{ok("a"), ok("b")}, "done"},
+		{"有终态失败也算结束", two, []store.DeployResult{ok("a"), failTerminal("b")}, "done"},
+		{"6/6 但有节点重试中 —— 没结束", two, []store.DeployResult{ok("a"), failRetrying("b")}, "running"},
+		{"目标列表为空时不敢说结束", nil, []store.DeployResult{ok("a")}, "running"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

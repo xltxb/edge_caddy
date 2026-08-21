@@ -74,7 +74,7 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 	}
 
 	cfgVersion := store.NewCfgVersion()
-	deployID, err := s.Store.CreateDeploy(ctx, cfgVersion, operator, resKeys, cfg, len(targets))
+	deployID, err := s.Store.CreateDeploy(ctx, cfgVersion, operator, resKeys, cfg, targets)
 	if err != nil {
 		return Result{}, nil, fmt.Errorf("写入下发记录: %w", err)
 	}

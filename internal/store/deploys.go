@@ -19,7 +19,7 @@ type Deploy struct {
 	ResKeys    []string        `json:"res_keys"`
 	OKCount    int             `json:"ok_count"`
 	FailCount  int             `json:"fail_count"`
-	Targets    int             `json:"target_count"`
+	Targets    []string        `json:"targets"`
 	IsBaseline bool            `json:"is_baseline"`
 	CreatedAt  time.Time       `json:"created_at"`
 	Snapshot   json.RawMessage `json:"-"`
@@ -43,19 +43,26 @@ func NewCfgVersion() string {
 	return "cfg-" + hex.EncodeToString(b[:])
 }
 
-// CreateDeploy 记下一次下发。targetCount 是本次**应当**回报的节点数——
-// 没有它就无法判断「结束了没有」，只能靠「有节点回报过」，
-// 而那在还有节点在飞时会谎报为已完成。
-func (s *Store) CreateDeploy(ctx context.Context, cfgVersion, operator string, resKeys []string, snapshot []byte, targetCount int) (int64, error) {
+// CreateDeploy 记下一次下发。targets 是本次**应当**回报的节点列表。
+//
+// 存列表而不是只存个数：个数说得出「少了几个」，说不出「少的是哪几个」。
+// 用户在下发进行中刷新页面时，前端手上没有 POST /deploys 那次响应里的目标列表，
+// 只有从这里读回来才画得出「待下发」的那几行——而「还有谁没回来」正是断线降级时
+// 最需要看见的信息。
+func (s *Store) CreateDeploy(ctx context.Context, cfgVersion, operator string, resKeys []string, snapshot []byte, targets []string) (int64, error) {
 	keys, err := json.Marshal(defaultSlice(resKeys))
+	if err != nil {
+		return 0, err
+	}
+	tg, err := json.Marshal(defaultSlice(targets))
 	if err != nil {
 		return 0, err
 	}
 	var id int64
 	err = s.Pool.QueryRow(ctx,
-		`INSERT INTO deploys (cfg_version, operator, res_keys, snapshot, target_count)
+		`INSERT INTO deploys (cfg_version, operator, res_keys, snapshot, targets)
 		 VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-		cfgVersion, operator, keys, snapshot, targetCount).Scan(&id)
+		cfgVersion, operator, keys, snapshot, tg).Scan(&id)
 	return id, err
 }
 
@@ -102,13 +109,13 @@ func (s *Store) Baseline(ctx context.Context) (string, error) {
 
 func (s *Store) GetDeploy(ctx context.Context, id int64) (Deploy, []DeployResult, error) {
 	var d Deploy
-	var keys []byte
+	var keys, tg []byte
 	err := s.Pool.QueryRow(ctx,
-		`SELECT d.id, d.cfg_version, d.operator, d.res_keys, d.ok_count, d.fail_count, d.target_count, d.created_at,
+		`SELECT d.id, d.cfg_version, d.operator, d.res_keys, d.ok_count, d.fail_count, d.targets, d.created_at,
 		        (b.cfg_version IS NOT NULL AND b.cfg_version = d.cfg_version) AS is_baseline
 		 FROM deploys d LEFT JOIN baseline b ON TRUE
 		 WHERE d.id = $1`, id).
-		Scan(&d.ID, &d.CfgVersion, &d.Operator, &keys, &d.OKCount, &d.FailCount, &d.Targets, &d.CreatedAt, &d.IsBaseline)
+		Scan(&d.ID, &d.CfgVersion, &d.Operator, &keys, &d.OKCount, &d.FailCount, &tg, &d.CreatedAt, &d.IsBaseline)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return d, nil, ErrNotFound
 	}
@@ -116,6 +123,9 @@ func (s *Store) GetDeploy(ctx context.Context, id int64) (Deploy, []DeployResult
 		return d, nil, err
 	}
 	if err := json.Unmarshal(keys, &d.ResKeys); err != nil {
+		return d, nil, err
+	}
+	if err := json.Unmarshal(tg, &d.Targets); err != nil {
 		return d, nil, err
 	}
 
@@ -142,7 +152,7 @@ func (s *Store) ListDeploys(ctx context.Context, limit int, beforeID int64) ([]D
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	q := `SELECT d.id, d.cfg_version, d.operator, d.res_keys, d.ok_count, d.fail_count, d.target_count, d.created_at,
+	q := `SELECT d.id, d.cfg_version, d.operator, d.res_keys, d.ok_count, d.fail_count, d.targets, d.created_at,
 	             (b.cfg_version IS NOT NULL AND b.cfg_version = d.cfg_version) AS is_baseline
 	      FROM deploys d LEFT JOIN baseline b ON TRUE
 	      WHERE ($2 = 0 OR d.id < $2)
@@ -156,12 +166,15 @@ func (s *Store) ListDeploys(ctx context.Context, limit int, beforeID int64) ([]D
 	var out []Deploy
 	for rows.Next() {
 		var d Deploy
-		var keys []byte
+		var keys, tg []byte
 		if err := rows.Scan(&d.ID, &d.CfgVersion, &d.Operator, &keys,
-			&d.OKCount, &d.FailCount, &d.Targets, &d.CreatedAt, &d.IsBaseline); err != nil {
+			&d.OKCount, &d.FailCount, &tg, &d.CreatedAt, &d.IsBaseline); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(keys, &d.ResKeys); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(tg, &d.Targets); err != nil {
 			return nil, err
 		}
 		out = append(out, d)

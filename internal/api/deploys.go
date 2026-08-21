@@ -83,7 +83,10 @@ func (s *Server) handleGetDeploy(c *gin.Context) {
 	OK(c, gin.H{
 		"id": d.ID, "cfg_version": d.CfgVersion, "operator": d.Operator,
 		"res_keys": d.ResKeys, "ok_count": d.OKCount, "fail_count": d.FailCount,
-		"target_count": d.Targets, "is_baseline": d.IsBaseline, "created_at": d.CreatedAt,
+		// targets 与 target_count 是同一件事的两个投影，库里只存前者——
+		// 存两份迟早会不一致。target_count 保留是因为前端已经在用它。
+		"targets": d.Targets, "target_count": len(d.Targets),
+		"is_baseline": d.IsBaseline, "created_at": d.CreatedAt,
 		"phase": deployPhase(d.Targets, results), "results": results,
 	})
 }
@@ -93,8 +96,8 @@ func (s *Server) handleGetDeploy(c *gin.Context) {
 // 不能用「有节点回报过」来判断：那在还有节点在飞时会谎报为已完成。
 // 也不能只看回报数：重试中的节点已经回报过一次失败，但它那一行还会变
 // （ADR-0005 的分类落地在 #19，届时 retrying 会真的为 true）。
-func deployPhase(targetCount int, results []store.DeployResult) string {
-	if targetCount == 0 || len(results) < targetCount {
+func deployPhase(targets []string, results []store.DeployResult) string {
+	if len(targets) == 0 || len(results) < len(targets) {
 		return "running"
 	}
 	for _, r := range results {

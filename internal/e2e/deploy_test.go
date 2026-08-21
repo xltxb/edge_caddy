@@ -245,8 +245,9 @@ func TestDeployDetailMirrorsProgressFrames(t *testing.T) {
 
 	detail := r.mustDo("GET", "/deploys/"+itoa(d.DeployID), nil)
 	var dd struct {
-		Phase       string `json:"phase"`
-		TargetCount int    `json:"target_count"`
+		Phase       string   `json:"phase"`
+		TargetCount int      `json:"target_count"`
+		Targets     []string `json:"targets"`
 		Results     []struct {
 			Node     string `json:"node"`
 			State    string `json:"state"`
@@ -260,6 +261,13 @@ func TestDeployDetailMirrorsProgressFrames(t *testing.T) {
 
 	if dd.TargetCount != 1 {
 		t.Fatalf("target_count = %d，想要 1；没有它就判断不出「结束了没有」", dd.TargetCount)
+	}
+	// targets 必须给出**是哪几个**节点，不只是几个。
+	// 用户在下发进行中刷新页面时，前端手上没有 POST /deploys 那次响应，
+	// 只有从这里读回来才画得出「待下发」的那几行——而「还有谁没回来」
+	// 正是断线降级时最需要看见的信息。
+	if len(dd.Targets) != 1 || dd.Targets[0] != "node-hk-01" {
+		t.Fatalf("targets = %v，想要 [node-hk-01]", dd.Targets)
 	}
 	if dd.Phase != "done" {
 		t.Fatalf("phase = %q，想要 done", dd.Phase)
