@@ -151,6 +151,22 @@ export interface NodeWire {
    * 非 null 时该节点：不参与解析、不进下发目标、不接受接入、也不报离线告警。
    */
   drained_at: string | null
+  /**
+   * 解析**是谁关的**。空串 = 从没人动过（与「manual 而操作人不详」是两回事）。
+   *
+   * 三种对人的意思不同，而不同的是**接下来该做什么**：
+   *   `manual`       人在控制台点的 → 他心里有数，想开就开回来
+   *   `auto_offline` 心跳超时，系统自动摘的 → **先去修那台机器**，开解析没用
+   *   `drained`      人把节点下线了 → 要用先「重新上线」
+   */
+  dns_reason: 'manual' | 'auto_offline' | 'drained' | ''
+  /**
+   * 操作人账号名。**系统自动摘除时是 `null`，不是 `"system"`** ——
+   * 一个叫 system 的操作人会在界面上冒出一个不存在的账号，而人会去问那是谁。
+   */
+  dns_actor: string | null
+  /** 改动时刻。永远是真实时刻或 null，不会是零值时间（契约 §0.4）。 */
+  dns_changed_at: string | null
   /** 该节点**当前生效配置**里的数量，由 Agent 上报，不是全局数量。 */
   routes: number
   rules: number

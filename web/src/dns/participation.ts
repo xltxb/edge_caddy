@@ -1,41 +1,72 @@
 /**
- * 一个节点为什么没在参与解析。
+ * 一个节点为什么没在参与解析，以及**接下来该做什么**。
  *
  * 这一页要回答的是「我配了 40，为什么它没在扛流量」。而**「谁让它退出的」和
  * 「它现在是死是活」是两件事**（CONTEXT.md、ADR-0014）：
  *
  * - `drainedAt` 是**意图**：人明确让它退出服务，回来要走「重新上线」。
- * - `status: down` 是**观察**：主控没收到心跳。它**不蕴含**解析被自动摘掉 ——
- *   那还取决于设置里的 `auto_drop_dns`，关掉的话离线节点的权重照样留着。
+ * - `status: down` 是**观察**：主控没收到心跳。
  *
- * 早先这里只凭 `status === 'down'` 就断言「离线，已自动退出解析」，于是一台
- * **被人下线之后又离线**的机器会被说成是系统干的 —— **把人做的事归给系统**，
- * 而两者的补救动作完全不同（重新上线 vs 恢复解析）。归错因比不归因贵：
- * 不归因的人会去查，归错因的人会照着那个方向查。
+ * 三种原因由后端给（契约 §4 的 `dns_reason`），不由前端推。它们的区别不在
+ * 「谁干的」，在**要人做的事完全不同**：手动关的想开就开回来；系统因离线自动
+ * 摘的，开解析没用，得先去修那台机器；被下线的要先「重新上线」。
+ *
+ * 早先这里只凭 `status === 'down'` 就断言「离线，已自动退出解析」，把**人做的
+ * 事归给了系统** —— 归错因比不归因贵：不归因的人会去查，归错因的人会照着那个
+ * 方向查。后来收成两支（人为下线 / 不归因），那时后端确实只答得出两分；
+ * 现在三分都答得出，那句「不归因」才展开。
  */
+
+import type { NodeWire } from '@/api/types'
 
 export type Participation =
   | { kind: 'active' }
   | { kind: 'drained'; text: string; hint: string }
+  | { kind: 'auto'; text: string; hint: string }
   | { kind: 'paused'; text: string; hint: string }
+
+export interface DnsWho {
+  /** 后端给的原因；空串 = 从没人动过。取不到该节点时传 undefined。 */
+  reason?: NodeWire['dns_reason']
+  /** 操作人；系统自动摘除时后端给 null，界面不要编一个「system」出来。 */
+  actor?: string | null
+  offline: boolean
+}
 
 /**
  * @param dnsEnabled 该节点在这条线路上的解析开关（来自 `/dns/weights`）
- * @param drainedAt  人为下线的时刻；取不到该节点时传 undefined
- * @param offline    主控此刻是否判它离线
+ * @param who        谁关的 —— 来自 `/nodes` 的 dns_reason / dns_actor
  */
-export function participation(
-  dnsEnabled: boolean,
-  drainedAt: string | null | undefined,
-  offline: boolean,
-): Participation {
+export function participation(dnsEnabled: boolean, who: DnsWho): Participation {
   if (dnsEnabled) return { kind: 'active' }
 
-  if (drainedAt) {
+  if (who.reason === 'drained') {
     return {
       kind: 'drained',
       text: '已下线（人为）',
       hint: '权重保留着，但要先「重新上线」才会回到解析里。',
+    }
+  }
+
+  /*
+   * 系统因离线自动摘的：**这一支的重点是「开解析没用」**。
+   *
+   * 人看到解析关着的第一反应是去开它，而这台机器心跳都没了 —— 开回来只会把
+   * 流量送给一台不在的机器。所以这句话要把人推向那台机器，不是推向那个开关。
+   */
+  if (who.reason === 'auto_offline') {
+    return {
+      kind: 'auto',
+      text: '离线，系统已自动摘除',
+      hint: '权重保留着。**先去修那台机器** —— 它心跳没了，把解析开回来只会把流量送过去。',
+    }
+  }
+
+  if (who.reason === 'manual') {
+    return {
+      kind: 'paused',
+      text: who.actor ? `已暂停（${who.actor}）` : '已暂停解析',
+      hint: '权重保留着，恢复解析后即可重新分流量。',
     }
   }
 
@@ -54,7 +85,7 @@ export function participation(
    */
   return {
     kind: 'paused',
-    text: offline ? '未参与解析（该节点离线）' : '未参与解析',
+    text: who.offline ? '未参与解析（该节点离线）' : '未参与解析',
     hint: '权重保留着。这里看不出是谁关的解析 —— 恢复解析后即可重新分流量。',
   }
 }

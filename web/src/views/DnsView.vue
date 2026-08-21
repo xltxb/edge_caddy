@@ -64,11 +64,15 @@ const sync = computed(() => data.value?.dns_sync)
  * 而不是照 status 猜 —— 猜错的方向恰好是「把人做的事归给系统」。
  */
 const nodes = useNodesStore()
-const drainedOf = (id: string) => nodes.byId.get(id)?.drainedAt
 
 /** 返回给模板用的两句话；解析开着时两句都是空的（模板那一支不渲染）。 */
 function why(node: string, status: string): { text: string; hint: string } {
-  const p = whyNotServing(false, drainedOf(node), status === 'down')
+  const n = nodes.byId.get(node)
+  const p = whyNotServing(false, {
+    reason: n?.dnsReason,
+    actor: n?.dnsActor,
+    offline: status === 'down',
+  })
   return p.kind === 'active' ? { text: '', hint: '' } : { text: p.text, hint: p.hint }
 }
 

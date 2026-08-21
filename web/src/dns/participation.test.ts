@@ -1,74 +1,71 @@
 import { describe, expect, it } from 'vitest'
 import { participation } from './participation'
 
-const AT = '2026-08-21T16:52:26+08:00'
 
-describe('为什么这个节点没在扛流量', () => {
+
+describe('为什么这个节点没在扛流量 —— 以及该做什么', () => {
   it('解析开着就没什么可解释的', () => {
-    expect(participation(true, null, false).kind).toBe('active')
-    // 一台已下线的机器解析仍开着时也不解释 —— 那是 dns_enabled 说了算
-    expect(participation(true, AT, true).kind).toBe('active')
+    expect(participation(true, { offline: false }).kind).toBe('active')
+    expect(participation(true, { reason: 'drained', offline: true }).kind).toBe('active')
   })
 
   /*
-   * 这一条是这组的理由。
-   *
-   * 早先只凭 status === 'down' 判「离线，已自动退出解析」，于是一台**被人下线
-   * 之后又离线**的机器会被说成是系统干的。两者的补救动作完全不同：
-   * 重新上线 vs 恢复解析 —— 归错因的人会照着错的方向查。
+   * 三支的区别不在「谁干的」，在**要人做的事完全不同**。所以每一条验的是
+   * 「它把人推向哪里」，不是「它说对了名字」。
    */
-  it('人为下线 + 已离线：说人为，不说自动', () => {
-    const p = participation(false, AT, true)
+  it('被下线：推向「重新上线」，不是推向那个开关', () => {
+    const p = participation(false, { reason: 'drained', offline: true })
     expect(p.kind).toBe('drained')
     expect(p.kind === 'drained' && p.hint).toContain('重新上线')
   })
 
-  it('人为下线但还在线：一样说人为', () => {
-    expect(participation(false, AT, false).kind).toBe('drained')
+  /*
+   * 这一支是三支里最要紧的：人看到解析关着的第一反应是去开它，而这台机器
+   * 心跳都没了 —— 开回来只会把流量送给一台不在的机器。
+   */
+  it('系统因离线自动摘的：推向那台机器，并说清开解析没用', () => {
+    const p = participation(false, { reason: 'auto_offline', offline: true })
+    expect(p.kind).toBe('auto')
+    const hint = p.kind === 'auto' ? p.hint : ''
+    expect(hint).toContain('先去修那台机器')
+    expect(hint).toContain('把解析开回来只会')
   })
 
-  /*
-   * 没下线过的离线节点：**一个字都不归因**。
-   *
-   * 「人手动暂停」和「离线自动摘除」这两支后端也分不出来（dns_enabled 就是个
-   * 布尔，没记是谁关的）。谁都答不出的问题，界面不该假装答得出。
-   *
-   * 也不提 auto_drop_dns —— 那是后端的设置项，在前端拼一句解释后端行为的话，
-   * 就是同一份知识存两处；而且套个「若」字的归因仍然是归因。
-   */
-  it('没下线过 + 离线：只说观察，不提原因也不提后端的设置项', () => {
-    const p = participation(false, null, true)
+  it('人手动关的：带上是谁关的，他心里有数', () => {
+    const p = participation(false, { reason: 'manual', actor: 'abiu', offline: false })
     expect(p.kind).toBe('paused')
-    // 「离线」是可观察的事实，进正文
-    expect(p.kind === 'paused' && p.text).toContain('离线')
-    const hint = p.kind === 'paused' ? p.hint : ''
-    // 正面对照先行：hint 要是变成空串，下面三条否定断言会全部**因为没东西可查
-    // 而变绿**，而那时提示语已经整个消失了
-    expect(hint).toContain('权重保留')
-    expect(hint).not.toContain('自动')
-    expect(hint).not.toContain('设置')
-    expect(hint).not.toContain('若')
-  })
-
-  /*
-   * 没下线过、又在线，仍然**不归因** —— 因为 `rejoin` 之后正好是这个状态：
-   * 下线标记清了、解析仍关着、节点在线。说「有人手动关的」会漏掉这一支。
-   *
-   * （历史：这条第一版的名字就叫「就是有人手动关的」。函数本身没归因，只有
-   * 测试名归了 —— **测试名是唯一一个不会被执行的部分**：断言会被跑、会红、
-   * 会被改坏验证，名字不会。）
-   */
-  it('没下线过 + 在线：仍然不归因（rejoin 之后正是这个状态）', () => {
-    const p = participation(false, null, false)
-    expect(p.kind).toBe('paused')
-    expect(p.kind === 'paused' && p.text).toBe('未参与解析')
+    expect(p.kind === 'paused' && p.text).toContain('abiu')
     expect(p.kind === 'paused' && p.hint).toContain('恢复解析')
-    // 不能说「有人手动关的」—— rejoin 会留下同样的状态
-    expect(p.kind === 'paused' && p.hint).not.toContain('手动')
   })
 
-  // 取不到该节点时（/nodes 与 /dns/weights 不同步）不能因此断言「没被下线过」
-  it('drainedAt 取不到时按未知处理，退回不归因的那一支', () => {
-    expect(participation(false, undefined, false).kind).toBe('paused')
+  /*
+   * 自动摘除时后端给的 actor 是 null，不是 "system"。界面也不该编一个出来 ——
+   * **一个叫 system 的操作人会让人去问那是谁**，而那个账号不存在。
+   */
+  it('不编造操作人：系统摘的那一支不出现任何名字', () => {
+    const p = participation(false, { reason: 'auto_offline', actor: null, offline: true })
+    const text = p.kind === 'auto' ? p.text : ''
+    expect(text).not.toContain('system')
+    expect(text).not.toContain('系统管理员')
+  })
+
+  it('manual 但没给操作人：不留一个空括号', () => {
+    const p = participation(false, { reason: 'manual', actor: null, offline: false })
+    expect(p.kind === 'paused' && p.text).toBe('已暂停解析')
+  })
+
+  /*
+   * reason 为空串 = 从没人动过；取不到 = /nodes 与 /dns/weights 不同步
+   * （那个窗口真实存在，两个接口不是一次查询）。两种都不猜。
+   */
+  it('从没人动过：只说观察，不归因', () => {
+    const p = participation(false, { reason: '', offline: true })
+    expect(p.kind).toBe('paused')
+    expect(p.kind === 'paused' && p.text).toContain('离线')
+    expect(p.kind === 'paused' && p.hint).toContain('看不出是谁关的')
+  })
+
+  it('取不到该节点时退回不归因那一支', () => {
+    expect(participation(false, { offline: false }).kind).toBe('paused')
   })
 })

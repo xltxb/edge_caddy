@@ -42,6 +42,11 @@ export interface EdgeNode {
    * status 是观察，这个是意图（CONTEXT.md）。
    */
   drainedAt: string | null
+  /** 解析是谁关的；空串 = 从没人动过。三种要人做的事不同。 */
+  dnsReason: NodeWire['dns_reason']
+  /** 操作人；系统自动摘除时是 null，不是 'system'。 */
+  dnsActor: string | null
+  dnsChangedAt: string | null
   /** 该节点**当前生效配置**里的数量，漂移节点会显示旧值。 */
   routes: number
   rules: number
@@ -65,6 +70,9 @@ export function fromNodeWire(w: NodeWire, stampedAt = Date.now()): EdgeNode {
     drift: w.drift,
     dnsEnabled: w.dns_enabled,
     drainedAt: w.drained_at ?? null,
+    dnsReason: w.dns_reason ?? '',
+    dnsActor: w.dns_actor ?? null,
+    dnsChangedAt: w.dns_changed_at ?? null,
     routes: w.routes,
     rules: w.rules,
   }

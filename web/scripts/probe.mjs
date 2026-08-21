@@ -160,6 +160,29 @@ const PROBES = [
    * 那条被保护住了。**探针当场证明我打偏了**：那个改法下，一台已下线且离线的
    * 机器仍然走进 drained 分支、输出碰巧一样，我想验的那条自始至终是绿的。）
    */
+  /*
+   * 从名字推：怎么让「系统因离线自动摘的：推向那台机器」为假？
+   * —— 让它跟手动那支说同一句话（推向那个开关）。人看到解析关着的第一反应
+   * 就是去开它，而这台机器心跳都没了。
+   */
+  {
+    name: '让自动摘除那支也说「恢复解析即可」',
+    invariant: '离线自动摘除要把人推向那台机器，不是推向那个开关',
+    file: 'src/dns/participation.ts',
+    from: "      hint: '权重保留着。**先去修那台机器** —— 它心跳没了，把解析开回来只会把流量送过去。',",
+    to: "      hint: '权重保留着，恢复解析后即可重新分流量。',",
+    spec: 'src/dns/participation.test.ts',
+    expect: '推向那台机器',
+  },
+  {
+    name: '给自动摘除那支编一个操作人',
+    invariant: '不编造不存在的账号 —— 一个叫 system 的操作人会让人去问那是谁',
+    file: 'src/dns/participation.ts',
+    from: "      text: '离线，系统已自动摘除',",
+    to: "      text: '离线，已由 system 自动摘除',",
+    spec: 'src/dns/participation.test.ts',
+    expect: '不编造操作人',
+  },
   {
     name: 'DNS 归因退回原来那个二选一（只凭 status 判自动/手动）',
     invariant: '人做的事不能归给系统 —— 归错因的人会照着错方向查',
@@ -167,11 +190,11 @@ const PROBES = [
     fromRe: /if \(dnsEnabled\) return \{ kind: 'active' \}/,
     to:
       "if (dnsEnabled) return { kind: 'active' }\n" +
-      "  return offline\n" +
+      "  return who.offline\n" +
       "    ? { kind: 'paused', text: '离线，已自动退出解析', hint: '' }\n" +
       "    : { kind: 'paused', text: '已手动暂停解析', hint: '' }",
     spec: 'src/dns/participation.test.ts',
-    expect: '人为下线 + 已离线',
+    expect: '被下线：推向「重新上线」',
   },
   {
     name: '渲染器空转（装置失效）—— 否定断言该被正面对照挡住',

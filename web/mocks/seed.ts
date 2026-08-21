@@ -88,6 +88,21 @@ const node = (
   dns_enabled,
   // 下线是**意图**，与 status 各记各的（CONTEXT.md）。默认没人下过线。
   drained_at,
+  /*
+   * 解析是谁关的（契约 §4）。seed 里按各节点的处境给：
+   * 关着且离线的记 auto_offline，关着且在线的记 manual（带操作人），
+   * 开着的三样都空 —— **从没人动过与「manual 而操作人不详」是两回事**。
+   */
+  /*
+   * **drained 优先**：被下线的机器解析也是关的，但原因是下线，不是有人手动关。
+   * 第一版这里只看 dns_enabled 与 status，于是 node-de-01（有 drained_at）
+   * 被推成了 manual —— DNS 页说「已暂停（abiu）」而节点页说「已下线（人为）」，
+   * **两页各说各的**。夹具自己自相矛盾时，界面上那两句都是「对的」，
+   * 而它们对不上账。
+   */
+  dns_reason: dns_enabled ? '' : drained_at ? 'drained' : status === 'down' ? 'auto_offline' : 'manual',
+  dns_actor: dns_enabled || status === 'down' ? null : 'abiu',
+  dns_changed_at: dns_enabled ? null : ago(1_800),
   routes,
   rules,
   created_at: ago(86_400 * 20),
