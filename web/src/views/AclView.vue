@@ -32,7 +32,7 @@ function summary(r: RuleWire): string {
 }
 
 function edit(id: string): void {
-  void router.push({ name: 'workbench', params: { key: encodeURIComponent(`rule:${id}`) } })
+  void router.push({ name: 'workbench', params: { key: `rule:${id}` } })
 }
 </script>
 

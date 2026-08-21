@@ -54,12 +54,12 @@ export const handlers = [
 
   /* ── 7. 下发 ── */
   http.get(`${BASE}/deploys`, () => paged(seed.deploys)),
+
   // 注意：下发相关的端点（preview / 创建 / 单次详情）**都不在这里**，
   // 由 Vite 插件在 Node 侧处理 —— 进度要经 WS 推回来，而 MSW 活在浏览器里
   // 且先于网络拦截，放在这里的话请求永远到不了 ws 服务端。
 
-  /* ── 8. DNS ── */
-  http.get(`${BASE}/dns/weights`, () => ok(seed.dnsLines)),
+  /* DNS 权重在 Node 侧：share 要按节点的 dns_enabled 实时归一化。 */
 
   /* ── 9. 证书 ── */
   http.get(`${BASE}/certs`, () => paged(seed.certs)),
@@ -76,5 +76,34 @@ export const handlers = [
 
   /* ── 11. 设置与告警 ── */
   http.get(`${BASE}/settings`, () => ok(seed.settings)),
+  http.put(`${BASE}/settings`, async ({ request }) => {
+    const b = (await request.json()) as Record<string, unknown>
+    // master_endpoint 必须是域名不是 IP（契约 §11）
+    const ep = String(b.master_endpoint ?? '')
+    if (/^\d{1,3}(\.\d{1,3}){3}(:\d+)?$/.test(ep)) {
+      return fail(1001, '主控接入地址必须是域名，不能是 IP')
+    }
+    Object.assign(seed.settings, b)
+    // 凭证只写入不回显：带了就是替换（标记为已配置），不带就是保持不变
+    if (b.dns_credential) {
+      seed.settings.dns_provider = { ...seed.settings.dns_provider, configured: true }
+    }
+    delete (seed.settings as Record<string, unknown>).dns_credential
+    return ok(seed.settings)
+  }),
+
   http.get(`${BASE}/alerts`, () => ok(seed.alerts)),
+  http.put(`${BASE}/alerts`, async ({ request }) => {
+    const b = (await request.json()) as Record<string, unknown>
+    Object.assign(seed.alerts, b)
+    return ok(seed.alerts)
+  }),
+  http.post(`${BASE}/alerts/test`, async ({ request }) => {
+    const b = (await request.json()) as { channel?: string }
+    if (b.channel === 'lark' && !seed.alerts.lark.webhook_configured) {
+      // 下游失败带上服务商原文错误 —— 那是排查 webhook 配错的唯一线索
+      return fail(3001, 'Lark 返回 19021: bot not enabled in this chat')
+    }
+    return ok({ sent: true, detail: '卡片已投递' })
+  }),
 ]

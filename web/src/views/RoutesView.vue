@@ -18,10 +18,7 @@ onMounted(() => {
 })
 
 function edit(domain: string): void {
-  void router.push({
-    name: 'workbench',
-    params: { key: encodeURIComponent(`route:${domain}`) },
-  })
+  void router.push({ name: 'workbench', params: { key: `route:${domain}` } })
 }
 
 const BLOCK_LABEL: Record<string, string> = {

@@ -11,6 +11,15 @@ import * as seed from './seed'
 
 type Rec = Record<string, unknown>
 
+/** 各线路的权重配置。weight 是配置值，share 由 dns_enabled 实时算出来。 */
+const LINE_NAMES: Record<string, string> = {
+  ct: '电信',
+  cu: '联通',
+  cm: '移动',
+  tw: '台湾',
+  ov: '境外 / 默认',
+}
+
 export const nodeState = {
   nodes: seed.nodes.map((n) => ({ ...n, cpu_series: n.cpu_series ? [...n.cpu_series] : null })),
   logs: Object.fromEntries(
@@ -21,6 +30,40 @@ export const nodeState = {
     string,
     boolean
   >,
+  weights: Object.fromEntries(
+    seed.dnsLines.map((l) => [l.line_code, { ...l.weights }]),
+  ) as Record<string, Record<string, number>>,
+}
+
+/**
+ * 算出各线路的实际占比。
+ *
+ * 退出解析的节点 share 为 0，它的权重在该线路内的其余节点间**重新归一化** ——
+ * 所以在命令面板 pause 一个节点，这一页的占比条会立刻重排。
+ */
+function buildLines() {
+  return Object.entries(nodeState.weights).map(([code, weights]) => {
+    const enabled = Object.entries(weights).filter(([id]) => {
+      const n = nodeState.nodes.find((x) => x.id === id)
+      return n?.dns_enabled === true
+    })
+    const total = enabled.reduce((s, [, w]) => s + w, 0)
+    return {
+      code,
+      name: LINE_NAMES[code] ?? code,
+      entries: Object.entries(weights).map(([id, weight]) => {
+        const n = nodeState.nodes.find((x) => x.id === id)
+        const on = n?.dns_enabled === true
+        return {
+          node: id,
+          weight,
+          share: on && total > 0 ? Math.round((weight / total) * 1000) / 10 : 0,
+          dns_enabled: on,
+          status: n?.status ?? 'down',
+        }
+      }),
+    }
+  })
 }
 
 function log(nodeId: string, level: LogLevel, msg: string): void {
@@ -157,6 +200,25 @@ export async function handleNodes(
     )
   }
 
+  return false
+}
+
+/** DNS 权重。与节点状态同侧，因为 share 要按 dns_enabled 实时归一化。 */
+export async function handleDns(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
+  const path = (req.url ?? '').split('?')[0] ?? ''
+  if (path !== '/api/v1/dns/weights') return false
+
+  if (req.method === 'GET') return ok(res, { lines: buildLines() }), true
+
+  if (req.method === 'PUT') {
+    const b = (await readBody(req)) as { lines?: { code: string; entries: { node: string; weight: number }[] }[] }
+    for (const l of b.lines ?? []) {
+      const bucket = nodeState.weights[l.code]
+      if (!bucket) continue
+      for (const e of l.entries) bucket[e.node] = Math.max(0, Math.round(e.weight))
+    }
+    return ok(res, { lines: buildLines() }), true
+  }
   return false
 }
 

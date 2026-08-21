@@ -20,6 +20,7 @@
  */
 
 import type {
+  AlertsWire,
   AuditResult,
   CertWire,
   DeployDetailWire,
@@ -33,6 +34,7 @@ import type {
   PolicyWire,
   RouteWire,
   RuleWire,
+  SettingsWire,
 } from '../src/api/types'
 
 export const BASELINE = 'cfg-2f9a1c'
@@ -293,23 +295,20 @@ export const audit: AuditWire[] = [
 
 /* ── 系统设置与告警 ── */
 
-export const settings = {
-  api_endpoint: 'https://cdn.example.com:8001',
-  grpc_listen: '0.0.0.0:9000',
-  heartbeat_sec: 3,
-  probe_fail_times: 3,
-  auto_pause_dns: true,
-  dns_provider: 'cloudflare',
-  dns_email: 'ops@example.com',
-  dns_cred_type: 'global_key',
+export const settings: SettingsWire & Record<string, unknown> = {
+  master_endpoint: 'ec.internal:9000',
+  heartbeat_interval_s: 3,
+  offline_threshold_count: 3,
+  auto_drop_dns: true,
+  // 凭证只写入不回显：这里永远没有明文，只有「配没配」
+  dns_provider: { kind: 'cloudflare', credential_mode: 'api_token', configured: true },
+  ops_bot_token_configured: true,
 }
 
-export const alerts = {
-  webhook: 'https://hooks.example.com/edge/alert',
+export const alerts: AlertsWire = {
   notify_level: 'warn',
-  lark_enabled: true,
-  lark_webhook: 'https://open.larksuite.com/open-apis/bot/v2/hook/7f3a-demo-token',
-  lark_at_all: true,
+  webhook: { url_configured: true },
+  lark: { webhook_configured: true, at_all_on_crit: true },
 }
 
 /* ── Agent 日志 ── */

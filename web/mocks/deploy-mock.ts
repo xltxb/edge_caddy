@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { DeployProgressState } from '../src/api/types'
-import { applyToLive, effective, state } from './config-mock'
+import { applyToLive, effective, findLive, state } from './config-mock'
 import * as seed from './seed'
 
 /**
@@ -223,6 +223,26 @@ export async function handleDeploy(
       phase: run.phase,
       results,
     })
+    return true
+  }
+
+  const rb = /^\/api\/v1\/deploys\/([^/]+)\/rollback$/.exec(path)
+  if (req.method === 'POST' && rb) {
+    const cfg = decodeURIComponent(rb[1]!)
+    const hist = seed.deploys.find((d) => d.cfg_version === cfg)
+    if (!hist) return json(res, { code: 1003, data: null, msg: '找不到这个版本' }), true
+    if (hist.is_baseline) {
+      return json(res, { code: 2001, data: null, msg: '这是当前基线，无需回滚' }), true
+    }
+    // 回滚**不直接下发**：把差异写回草稿，由人在工作台确认后走同一条流水线。
+    // mock 里简化成「把该次下发涉及的资源各造一处改动」，形状与真实一致。
+    for (const key of hist.res_keys) {
+      const live = findLive(key)
+      if (!live) continue
+      state.drafts[key] = { body_max: '8MB' }
+      state.draftMeta[key] = { by: 'abiu', at: new Date().toISOString() }
+    }
+    ok(res, { res_keys: hist.res_keys })
     return true
   }
 

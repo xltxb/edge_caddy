@@ -3,7 +3,7 @@ import { WebSocketServer, type WebSocket } from 'ws'
 import type { EventKind } from '../src/api/types'
 import { handleConfig } from './config-mock'
 import { handleDeploy } from './deploy-mock'
-import { handleNodes, heartbeatNodes } from './node-mock'
+import { handleDns, handleNodes, heartbeatNodes } from './node-mock'
 import * as seed from './seed'
 
 const WS_PATH = '/api/v1/ws'
@@ -59,6 +59,7 @@ export function wsMockPlugin(): Plugin {
         '/api/v1/rules',
         '/api/v1/policies',
         '/api/v1/nodes',
+        '/api/v1/dns',
       ]
       server.middlewares.use((req, res, next) => {
         const url = req.url ?? ''
@@ -67,7 +68,9 @@ export function wsMockPlugin(): Plugin {
           ? handleDeploy(req, res, { send })
           : url.startsWith('/api/v1/nodes')
             ? handleNodes(req, res, { send, baseline: () => seed.BASELINE })
-            : handleConfig(req, res)
+            : url.startsWith('/api/v1/dns')
+              ? handleDns(req, res)
+              : handleConfig(req, res)
         run.then(
           (handled) => {
             if (!handled) next()

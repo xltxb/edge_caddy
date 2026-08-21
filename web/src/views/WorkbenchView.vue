@@ -26,16 +26,21 @@ onMounted(async () => {
   if (await deploy.resume()) modalOpen.value = true
 })
 
-/** 选中的资源。URL 是唯一真相，刷新与外部跳转（如「在工作台编辑」）都靠它。 */
+/**
+ * 选中的资源。URL 是唯一真相，刷新与外部跳转（如「在工作台编辑」）都靠它。
+ *
+ * **不要手动 encode/decode** —— vue-router 已经负责参数的编解码。自己再编一次
+ * 会得到 `route%253A…` 这种双重编码的地址，靠「两次编码配两次解码」侥幸能跑，
+ * 但 URL 不可读，复制出去也不对。
+ */
 const selected = computed(() => {
   const fromUrl = route.params.key
   const key = Array.isArray(fromUrl) ? fromUrl[0] : fromUrl
-  if (key) return decodeURIComponent(key)
-  return config.tree[0]?.key ?? ''
+  return key || config.tree[0]?.key || ''
 })
 
 function select(key: string): void {
-  void router.replace({ name: 'workbench', params: { key: encodeURIComponent(key) } })
+  void router.replace({ name: 'workbench', params: { key } })
 }
 
 const live = computed(() => config.live(selected.value))
@@ -156,7 +161,18 @@ watch(selected, () => {
           不要叫「预览 JSON」或「Caddy JSON 预览」—— 那会让人以为它可下发。
         -->
         <div class="col-title">可读表示</div>
-        <span class="col-note">变更摘要，非下发内容</span>
+        <!--
+          与弹层里的权威 diff 长得不一样是**正常的**，两者回答的是不同的问题。
+          尤其服务密钥这类规则：密钥不进 Caddy 配置（Admin API 能读回整份运行
+          配置，放进去等于摆在一个可读接口后面），所以真实渲染里只有委托路径，
+          没有 spec 字段。不说清楚的话，人并排一看会以为其中一份是错的。
+        -->
+        <span
+          class="col-note"
+          title="这一栏回答「我改了什么」；确认弹层里的权威 diff 回答「将要下发什么」。两者由不同的渲染器产出，长得不一样是正常的——例如服务密钥不会出现在下发内容里。"
+        >
+          我改了什么 <span class="info">ⓘ</span>
+        </span>
       </header>
       <div class="repr">
         <JsonDiff :before="readableBefore" :after="readableAfter" />
@@ -237,6 +253,10 @@ watch(selected, () => {
   margin-left: auto;
   font-size: var(--fs-micro);
   color: var(--text-faint);
+  cursor: help;
+}
+.col-note .info:hover {
+  color: var(--accent-text);
 }
 .badge {
   font-size: var(--fs-micro);

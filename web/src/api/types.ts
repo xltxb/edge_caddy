@@ -329,6 +329,25 @@ export interface DeployDetailWire extends DeployWire {
   results: DeployResultWire[]
 }
 
+export interface RollbackWire {
+  /** 被写回草稿的资源。回滚**不直接下发** —— 人要在工作台确认 diff 后走同一条流水线。 */
+  res_keys: string[]
+}
+
+/* ── 10. 审计 ── */
+
+export interface AuditWire {
+  id: number
+  at: string
+  operator: string
+  /** 取值见契约 §5 的术语表。由后端产生、前端原样显示，所以措辞是契约的一部分。 */
+  action: string
+  target: string
+  src_ip: string | null
+  result: AuditResult
+  detail?: string
+}
+
 /* ── 9. 证书 ── */
 
 export interface CertWire {
@@ -382,4 +401,68 @@ export interface DrainStep {
 
 export interface DrainWire {
   steps: DrainStep[]
+}
+
+/* ── 8. DNS 调度 ── */
+
+export interface DnsEntryWire {
+  node: string
+  /** 配置值 —— 输入框绑这个。 */
+  weight: number
+  /**
+   * 实际占比 —— 占比条画这个。
+   *
+   * 与 weight **不是一回事**：`dns_enabled: false` 的节点（手动暂停或心跳超时
+   * 自动摘除）share 为 0，它的权重在该线路内的其余节点间重新归一化。
+   * 把两者混成一个数字，就说不清「我配了 40，为什么它没在扛流量」。
+   */
+  share: number
+  dns_enabled: boolean
+  status: NodeStatus
+}
+
+export interface DnsLineWire {
+  /** 固定五个：ct 电信 / cu 联通 / cm 移动 / tw 台湾 / ov 境外 */
+  code: string
+  name: string
+  entries: DnsEntryWire[]
+}
+
+export interface DnsWeightsWire {
+  lines: DnsLineWire[]
+}
+
+/* ── 11. 系统设置与告警 ── */
+
+export type CredentialMode = 'api_token' | 'global_key'
+
+export interface DnsProviderWire {
+  kind: string
+  credential_mode: CredentialMode
+  /** 凭证只写入不回显 —— 这里永远没有明文，只有「配没配」。 */
+  configured: boolean
+}
+
+export interface SettingsWire {
+  /** 必须是域名不是 IP，后端校验，违反返回 code 1001。 */
+  master_endpoint: string
+  heartbeat_interval_s: number
+  offline_threshold_count: number
+  auto_drop_dns: boolean
+  dns_provider: DnsProviderWire
+  ops_bot_token_configured: boolean
+}
+
+export type NotifyLevel = 'all' | 'warn' | 'crit'
+
+export interface AlertsWire {
+  /** 渠道**共用**这一个级别。 */
+  notify_level: NotifyLevel
+  webhook: { url_configured: boolean }
+  lark: { webhook_configured: boolean; at_all_on_crit: boolean }
+}
+
+export interface AlertTestWire {
+  sent: boolean
+  detail: string
 }

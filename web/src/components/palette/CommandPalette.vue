@@ -85,10 +85,7 @@ async function run(): Promise<void> {
       break
     case 'goto':
       if (s!.resKey) {
-        await router.push({
-          name: 'workbench',
-          params: { key: encodeURIComponent(s!.resKey) },
-        })
+        await router.push({ name: 'workbench', params: { key: s!.resKey } })
       }
       break
   }

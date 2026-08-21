@@ -2,13 +2,6 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { setUnauthorizedHandler } from '@/api/http'
 import { useSessionStore } from '@/stores/session'
 
-/** 骨架阶段：只有集群总览是真的，其余先占位，但导航不留死链。 */
-const placeholder = (title: string) => () =>
-  import('@/views/PlaceholderView.vue').then((m) => ({
-    ...m.default,
-    props: { title },
-  }))
-
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/overview' },
   {
@@ -19,7 +12,7 @@ const routes: RouteRecordRaw[] = [
   },
   { path: '/overview', name: 'overview', component: () => import('@/views/OverviewView.vue') },
   { path: '/nodes', name: 'nodes', component: () => import('@/views/NodesView.vue') },
-  { path: '/dns', name: 'dns', component: placeholder('DNS 调度') },
+  { path: '/dns', name: 'dns', component: () => import('@/views/DnsView.vue') },
   {
     path: '/workbench/:key?',
     name: 'workbench',
@@ -34,10 +27,10 @@ const routes: RouteRecordRaw[] = [
   { path: '/routes', name: 'routes', component: () => import('@/views/RoutesView.vue') },
   { path: '/acl', name: 'acl', component: () => import('@/views/AclView.vue') },
   { path: '/certs', name: 'certs', component: () => import('@/views/CertsView.vue') },
-  { path: '/deploys', name: 'deploys', component: placeholder('下发记录') },
-  { path: '/audit', name: 'audit', component: placeholder('审计日志') },
-  { path: '/alerts', name: 'alerts', component: placeholder('告警通知') },
-  { path: '/settings', name: 'settings', component: placeholder('系统设置') },
+  { path: '/deploys', name: 'deploys', component: () => import('@/views/DeploysView.vue') },
+  { path: '/audit', name: 'audit', component: () => import('@/views/AuditView.vue') },
+  { path: '/alerts', name: 'alerts', component: () => import('@/views/AlertsView.vue') },
+  { path: '/settings', name: 'settings', component: () => import('@/views/SettingsView.vue') },
   { path: '/:pathMatch(.*)*', redirect: '/overview' },
 ]
 
