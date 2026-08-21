@@ -361,15 +361,34 @@ export const LOG_FIELDS = fieldsOf<LogPolicy>([
     onText: '移除 Server 与 X-Powered-By 响应头。',
     offText: '保留默认响应头。',
   },
+  /*
+   * 限流三项：**官方 Caddy 没有限流模块**。
+   *
+   * 2.11.4 的 132 个标准模块里一个都没有，caddy-ratelimit 是插件；要装它就得
+   * 自建 Caddy 二进制，而「节点跑官方包」是 ADR-0001 与 ADR-0003 **共同的**前提。
+   * 设计稿画了这个开关，但画得出不等于做得到 —— 这已是第三次（前两次是
+   * 「回源率靠缓存」与「Cloudflare 分线路权重」）。
+   *
+   * 置灰而不是删掉：删掉的话，看过设计稿的人会以为这一版还没做，过两天再问一次；
+   * 置灰 + 就地说清原因，问题当场被回答掉。
+   */
   {
     kind: 'switch',
     field: 'spec.rate_limit',
     label: '请求限流',
     onText: '按来源 IP 限速。',
     offText: '不限流。',
+    // 已经是 true 时不置灰 —— 那是个下发一定会被拒的状态，必须留一条出路
+    unavailable: (v) =>
+      v.spec.rate_limit === true
+        ? null
+        : '官方 Caddy 没有限流模块（caddy-ratelimit 是插件），当前做不到。要用它就得自建 Caddy 二进制，而那会推翻「节点跑官方包」这个前提。',
+    validate: (v) =>
+      v.spec.rate_limit === true ? '这条会让下发被拒绝：官方 Caddy 没有限流模块。请关掉。' : null,
   },
   // 条件字段：契约 §6.3 说 rate_limit=false 时这两个键可能根本不存在，
   // 关闭时不渲染，也不要偷偷填默认值——那会让 diff 里凭空多出两行。
+  // 只有库里已经是 true（非法）时才会露面，所以一并置灰：改了也不会生效。
   {
     kind: 'text',
     field: 'spec.rate_rps',
@@ -377,6 +396,7 @@ export const LOG_FIELDS = fieldsOf<LogPolicy>([
     width: '130px',
     numeric: true,
     visible: (v) => v.spec.rate_limit === true,
+    unavailable: () => '限流做不到，这个值不会生效。',
   },
   {
     kind: 'text',
@@ -385,6 +405,7 @@ export const LOG_FIELDS = fieldsOf<LogPolicy>([
     width: '130px',
     numeric: true,
     visible: (v) => v.spec.rate_limit === true,
+    unavailable: () => '限流做不到，这个值不会生效。',
   },
 ])
 

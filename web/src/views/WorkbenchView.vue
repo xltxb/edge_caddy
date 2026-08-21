@@ -43,6 +43,16 @@ function select(key: string): void {
   void router.replace({ name: 'workbench', params: { key } })
 }
 
+/**
+ * 签名规则的**共享密钥不在工作台**。
+ *
+ * 它不进草稿（草稿由 `GET /drafts` 全局回显），走 `PUT /rules/:id` 的顶层
+ * `secret` 直写。不说这一句的话，人在这张表单上找不到密钥，只会当成「还没做」。
+ */
+const isServiceSecret = computed(
+  () => (effective.value as { type?: string } | undefined)?.type === 'service_secret',
+)
+
 const live = computed(() => config.live(selected.value))
 const effective = computed(() => config.effective(selected.value))
 const patch = computed(() => config.patches[selected.value])
@@ -146,6 +156,10 @@ watch(selected, () => {
       <div v-else class="form">
         <p v-if="config.updated[selected]" class="who">
           最近由 {{ config.updated[selected]!.by }} 修改 · 草稿全局可见
+        </p>
+        <p v-if="isServiceSecret" class="elsewhere">
+          共享密钥不在这里改：它只写入不回显，也不进草稿。到
+          <RouterLink to="/acl">访问控制</RouterLink> 页设置，那里是直写立即生效的。
         </p>
         <FieldList
           :specs="specs"
@@ -303,6 +317,18 @@ watch(selected, () => {
   color: var(--warning-text);
   font-size: var(--fs-2xs);
   line-height: 1.6;
+}
+.elsewhere {
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 2px solid var(--accent);
+  background: var(--surface-sunken, var(--bg-subtle));
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  line-height: 1.7;
+}
+.elsewhere a {
+  color: var(--accent);
 }
 .who {
   margin: 0 0 var(--space-3);

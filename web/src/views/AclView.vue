@@ -1,11 +1,16 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useConfigStore } from '@/stores/config'
 import type { RuleWire } from '@/api/types'
 
 /**
- * 访问控制 —— **只读目录**。启停、编辑、域名绑定都在工作台完成。
+ * 访问控制 —— 目录页。启停、编辑、域名绑定都在工作台完成。
+ *
+ * **唯一在这一页写的是共享密钥**，因为它不能走草稿：草稿存在主控上、由
+ * `GET /drafts` 全局回显（契约 §6.4），密钥进草稿就等于被回显。它走
+ * `PUT /rules/:id` 的顶层 `secret`，直写立即生效、不排队等下发 —— 放进工作台
+ * 会让人以为它也在等下发，那是个会误事的错觉。
  *
  * 一条规则的 `apply_to` 为空数组时，它**不生效**。那是半成品状态，
  * 不是「对所有域名生效」（契约 §6.2）——这一页必须把它显示成未绑定，
@@ -29,6 +34,58 @@ function summary(r: RuleWire): string {
   if (r.type === 'ip_whitelist') return `${(s.ips as string[] | undefined)?.length ?? 0} 条来源`
   if (r.type === 'service_secret') return `${String(s.header ?? '')} · ${String(s.algo ?? '')}`
   return String(s.iss ?? '')
+}
+
+/**
+ * 状态列说的是**这条规则此刻做不做事**，不是那个开关的位置。
+ *
+ * 只看 enabled 的话，一条启用了但没绑任何域名的规则会显示「生效中」，而右边的
+ * 「应用到」同时说它不生效 —— 两列各说各话，人只会信左边那个绿的。
+ *
+ * 「不做事」的三种原因都收在这里，而不是各开一列：多一列就多一次自相矛盾的机会。
+ * 密钥那一条在真主控上进不来（`PUT /rules/:id` 不给密钥就被 1002 拒），
+ * 但这个布尔是后端真发的字段 —— 它要是 false，说「生效中」就是撒谎。
+ */
+function statusOf(r: RuleWire): { text: string; tone: 'ok' | 'warn' } {
+  if (!r.enabled) return { text: '已停用', tone: 'warn' }
+  if (!r.apply_to.length) return { text: '已启用，未生效', tone: 'warn' }
+  if (r.type === 'service_secret' && r.spec.secret_configured === false) {
+    return { text: '未设置密钥', tone: 'warn' }
+  }
+  return { text: '生效中', tone: 'ok' }
+}
+
+/* ── 设置共享密钥（直写，不进草稿）── */
+
+const editingSecret = ref<string | null>(null)
+const secretInput = ref('')
+const saving = ref(false)
+const secretError = ref<string | null>(null)
+
+function openSecret(id: string): void {
+  editingSecret.value = id
+  secretInput.value = ''
+  secretError.value = null
+}
+
+async function saveSecret(id: string): Promise<void> {
+  // 留空即不改（契约 §6.2）。这里干脆不发请求：发一个什么也不改的 PUT 会写下
+  // 一条审计，读起来像「有人换过密钥」，而其实没有。
+  if (!secretInput.value) {
+    editingSecret.value = null
+    return
+  }
+  saving.value = true
+  secretError.value = null
+  try {
+    await config.setRuleSecret(id, secretInput.value)
+    editingSecret.value = null
+    secretInput.value = ''
+  } catch (e) {
+    secretError.value = e instanceof Error ? e.message : '保存失败'
+  } finally {
+    saving.value = false
+  }
 }
 
 function edit(id: string): void {
@@ -73,7 +130,8 @@ function edit(id: string): void {
         </tr>
       </thead>
       <tbody>
-        <tr v-for="r in config.rules" :key="r.id">
+        <template v-for="r in config.rules" :key="r.id">
+          <tr>
           <td>
             <div class="strong">{{ r.name }}</div>
             <div class="mono muted small">{{ r.id }}</div>
@@ -81,20 +139,51 @@ function edit(id: string): void {
           <td class="mono">{{ TYPE_LABEL[r.type] }}</td>
           <td class="mono muted">{{ summary(r) }}</td>
           <td>
-            <span class="tag" :class="r.enabled ? 'ok' : 'warn'">
-              {{ r.enabled ? '生效中' : '已停用' }}
-            </span>
+            <span class="tag" :class="statusOf(r).tone">{{ statusOf(r).text }}</span>
           </td>
           <td>
             <!-- 空绑定必须显示成「未绑定」，不能留白让人以为是全局生效 -->
-            <span v-if="!r.apply_to.length" class="tag warn">未绑定域名，不生效</span>
+            <span v-if="!r.apply_to.length" class="tag warn">未绑定域名</span>
             <span v-else class="mono muted">{{ r.apply_to.join('、') }}</span>
           </td>
           <td class="mono muted">v{{ r.version }}</td>
           <td class="right">
+            <button
+              v-if="r.type === 'service_secret'"
+              class="mini"
+              type="button"
+              @click="openSecret(r.id)"
+            >
+              更换密钥
+            </button>
             <button class="mini" type="button" @click="edit(r.id)">在工作台编辑</button>
           </td>
-        </tr>
+          </tr>
+
+          <tr v-if="editingSecret === r.id" class="secret-row">
+            <td colspan="7">
+              <form class="secret-form" @submit.prevent="saveSecret(r.id)">
+                <label class="secret-label" :for="`secret-${r.id}`">共享密钥</label>
+                <input
+                  :id="`secret-${r.id}`"
+                  v-model="secretInput"
+                  class="secret-input"
+                  type="password"
+                  autocomplete="new-password"
+                  placeholder="留空并保存不会改动密钥"
+                />
+                <button class="mini primary" type="submit" :disabled="saving">
+                  {{ saving ? '保存中…' : '保存' }}
+                </button>
+                <button class="mini" type="button" @click="editingSecret = null">取消</button>
+                <p class="secret-note">
+                  只写入不回显，任何接口都取不回原值。<b>直写立即生效</b>，不进草稿、不等下发。
+                </p>
+                <p v-if="secretError" class="secret-err">{{ secretError }}</p>
+              </form>
+            </td>
+          </tr>
+        </template>
       </tbody>
     </table>
   </section>
@@ -102,6 +191,47 @@ function edit(id: string): void {
 
 <style scoped>
 @import './catalog.css';
+.secret-row td {
+  background: var(--surface-sunken, var(--bg-subtle));
+}
+.secret-form {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.secret-label {
+  font-size: var(--fs-2xs);
+  color: var(--text-body);
+  font-weight: var(--weight-medium);
+}
+.secret-input {
+  width: 260px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-body);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+}
+.secret-note {
+  margin: 0;
+  flex-basis: 100%;
+  font-size: var(--fs-micro);
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+.secret-note b {
+  color: var(--warning-text);
+  font-weight: var(--weight-semibold);
+}
+.secret-err {
+  margin: 0;
+  flex-basis: 100%;
+  font-size: var(--fs-micro);
+  color: var(--danger-text);
+}
 .small {
   font-size: var(--fs-micro);
 }

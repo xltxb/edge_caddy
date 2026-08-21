@@ -8,6 +8,7 @@ const props = defineProps<{
   invalid: boolean
   width?: string
   numeric?: boolean
+  disabled?: boolean
 }>()
 const emit = defineEmits<{ (e: 'update:modelValue', v: string | number): void }>()
 
@@ -24,12 +25,17 @@ function onInput(e: Event): void {
     type="text"
     :inputmode="numeric ? 'numeric' : undefined"
     :value="modelValue ?? ''"
+    :disabled="disabled"
     :style="{ ...fieldTone(dirty, invalid), width: width ?? '100%' }"
     @input="onInput"
   />
 </template>
 
 <style scoped>
+.field:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
 .field {
   padding: 7px 10px;
   border: 1px solid var(--border-default);

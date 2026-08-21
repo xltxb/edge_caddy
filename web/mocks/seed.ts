@@ -144,14 +144,16 @@ export const routes: RouteWire[] = [
 
 export const rules: RuleWire[] = [
   { id: 'office-wl', name: '办公出口白名单', type: 'ip_whitelist', enabled: true, version: 4, spec: { ips: ['203.0.113.7', '198.51.100.24', '192.0.2.15', '203.0.113.88', '198.51.100.161', '10.8.0.0/24'] }, apply_to: ['api.example.com', 'admin.example.com'] },
-  { id: 'partner-secret', name: '合作方服务密钥', type: 'service_secret', enabled: true, version: 2, spec: { header: 'X-Service-Secret', algo: 'hmac-sha256', ttl_s: 300, replay_protection: true }, apply_to: ['api.example.com'] },
+  { id: 'partner-secret', name: '合作方服务密钥', type: 'service_secret', enabled: true, version: 2, spec: { header: 'X-Service-Secret', algo: 'hmac-sha256', ttl_s: 300, replay_protection: true, secret_configured: true }, apply_to: ['api.example.com'] },
   { id: 'app-jwt', name: 'App 客户端 JWT', type: 'jwt_bearer', enabled: true, version: 6, spec: { iss: 'https://auth.example.com/', aud: 'edge-api', jwks_url: 'https://auth.example.com/.well-known/jwks.json', skew_s: 60 }, apply_to: ['api.example.com', 'push.example.com'] },
 ]
 
 export const policies: PolicyWire[] = [
   { id: 'tls', name: 'TLS / 证书策略', version: 3, spec: { ca: 'letsencrypt', email: 'ops@example.com', key_type: 'p256', min_version: '1.2', hsts: true, hsts_max_age: 63072000, http3: true, ocsp: false } },
-  // rate_limit 关掉时 rate_rps / rate_burst 是**条件字段**，spec 里可以不存在
-  { id: 'log', name: '日志与限流', version: 5, spec: { format: 'json', level: 'INFO', roll_size: 50, roll_keep: 5, strip_headers: true, rate_limit: true, rate_rps: 200, rate_burst: 400 } },
+  // rate_limit 关掉时 rate_rps / rate_burst 是**条件字段**，spec 里可以不存在。
+  // 这里跟真主控一样是 false —— 官方 Caddy 没有限流模块，true 是个下发一定会被拒的
+  // 状态。让 mock 里躺着一份「能成功下发的 true」，等于把真实的失败藏起来。
+  { id: 'log', name: '日志与限流', version: 5, spec: { format: 'json', level: 'INFO', roll_size: 50, roll_keep: 5, strip_headers: true, rate_limit: false } },
 ]
 
 /** 预置草稿：顶栏「待下发」非零，工作台资源树带蓝点。 */

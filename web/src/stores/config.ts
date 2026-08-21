@@ -252,6 +252,24 @@ export const useConfigStore = defineStore('config', () => {
     updated.value = {}
   }
 
+  /**
+   * 设置一条 service_secret 规则的共享密钥。
+   *
+   * **这条不走草稿。** 草稿是 `PUT /drafts/:key` 存在主控上、由 `GET /drafts`
+   * 全局回显的（契约 §6.4）—— 密钥进草稿就等于被回显，那正是后端把它挪出
+   * `spec` 要躲的那件事。它走 `PUT /rules/:id` 的顶层 `secret`：直写、加封存库、
+   * 任何读接口都不回显，只回 `spec.secret_configured` 布尔。
+   *
+   * 提交的规则体取 **live 而不是 effective**：这条规则上可能正压着未下发的草稿，
+   * 把 effective 发出去，等于「保存一个密钥」顺手让半截改动绕过下发流水线生效了。
+   */
+  async function setRuleSecret(id: string, secret: string): Promise<void> {
+    const cur = rules.value.find((r) => r.id === id)
+    if (!cur) throw new Error(`没有这条规则：${id}`)
+    await http.put(`/rules/${id}`, { ...cur, secret })
+    await fetchAll().catch(() => {})
+  }
+
   /** 下发成功后清掉已下发的那几条，并把版本推进。 */
   function commit(keys: string[]): void {
     const copy = { ...patches.value }
@@ -260,6 +278,7 @@ export const useConfigStore = defineStore('config', () => {
   }
 
   return {
+    setRuleSecret,
     routes,
     rules,
     policies,

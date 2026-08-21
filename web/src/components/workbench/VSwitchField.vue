@@ -1,5 +1,5 @@
 <script setup lang="ts">
-defineProps<{ modelValue: unknown; dirty: boolean; id?: string }>()
+defineProps<{ modelValue: unknown; dirty: boolean; id?: string; disabled?: boolean }>()
 defineEmits<{ (e: 'update:modelValue', v: boolean): void }>()
 </script>
 
@@ -10,6 +10,7 @@ defineEmits<{ (e: 'update:modelValue', v: boolean): void }>()
     class="track"
     role="switch"
     :aria-checked="modelValue === true"
+    :disabled="disabled"
     :class="{ on: modelValue === true, dirty }"
     @click="$emit('update:modelValue', modelValue !== true)"
   >
@@ -18,6 +19,10 @@ defineEmits<{ (e: 'update:modelValue', v: boolean): void }>()
 </template>
 
 <style scoped>
+.track:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
 .track {
   width: 34px;
   height: 18px;

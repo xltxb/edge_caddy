@@ -178,6 +178,30 @@ function settle(run: Running, deps: DeployMockDeps, total: number): void {
   })
 }
 
+/**
+ * mock 侧的预校验。
+ *
+ * 只实现真后端**真的会拒**的那一条：官方 Caddy 没有限流模块，
+ * `rate_limit = true` 下发会被拒（契约 §6.3）。
+ *
+ * 不做全套校验 —— mock 复刻一份会漂移的校验器没有意义。但让 mock 对一个真后端
+ * 会拒的配置回 `ok: true`，就是把真实的失败藏起来：那正是下发进度那次坑我的形状
+ * （mock 的时序恰好掩盖了进度帧比 current 先到）。
+ */
+function validateEffective(): { res_key: string; field: string; reason: string }[] {
+  const log = effective('global:log') as { spec?: { rate_limit?: boolean } } | undefined
+  if (log?.spec?.rate_limit !== true) return []
+  return [
+    {
+      res_key: 'global:log',
+      field: 'spec.rate_limit',
+      reason:
+        '官方 Caddy 没有限流模块（caddy-ratelimit 是插件），当前做不到；' +
+        '要用它就得自建 Caddy 二进制，而那会推翻「节点跑官方包」这个前提',
+    },
+  ]
+}
+
 /** 返回 true 表示这个请求已被处理。 */
 export async function handleDeploy(
   req: IncomingMessage,
@@ -193,12 +217,15 @@ export async function handleDeploy(
     // 校验失败在预览里返回 code: 0 —— 预览成功地告诉了你「校验没过」（契约 §7.1）
     // 没有 cfg_version：新版本号在 POST /deploys 那一刻才生成，
     // 预览时给一个必然对不上的号，就是在弹层和下发记录之间埋一处不一致。
+    const errors = validateEffective()
     ok(res, {
       before: renderAll(false),
-      after: renderAll(true),
+      // 校验没过时 after 必须是 null（契约 §7.1）：渲染不出来的东西绝不能拿去 diff，
+      // 那会画出一份根本不存在的目标配置。
+      after: errors.length ? null : renderAll(true),
       baseline: seed.BASELINE,
       targets: seed.nodes.map((n) => ({ id: n.id, status: n.status })),
-      validation: { ok: true, errors: [] },
+      validation: { ok: errors.length === 0, errors },
       _res_keys: resKeys,
     })
     return true

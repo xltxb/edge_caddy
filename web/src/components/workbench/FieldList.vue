@@ -6,7 +6,7 @@ import VSegField from './VSegField.vue'
 import VSwitchField from './VSwitchField.vue'
 import VTextField from './VTextField.vue'
 import type { FieldSpec } from '@/workbench/field-spec'
-import { getPath, isVisible, resolveHint } from '@/workbench/field-spec'
+import { getPath, isVisible, resolveHint, resolveUnavailable } from '@/workbench/field-spec'
 import { isFieldDirty, type Patch } from '@/workbench/draft'
 
 /**
@@ -45,6 +45,8 @@ interface Row {
   /** 本地校验 + 后端校验，本地优先（它更即时） */
   error: string | null
   hint: string
+  /** 「这件事我们做不到」的原因；非 null 时控件置灰。 */
+  unavailable: string | null
   current: unknown
 }
 
@@ -59,6 +61,7 @@ const rows = computed<Row[]>(() =>
         dirty: isFieldDirty(props.live, props.patch, spec.field),
         error: local ?? props.serverErrors?.[spec.field] ?? null,
         hint: resolveHint(spec, props.value as never),
+        unavailable: resolveUnavailable(spec, props.value as never),
         current: getPath(props.value, spec.field),
       }
     }),
@@ -109,6 +112,7 @@ function switchWarn(r: Row): boolean {
             :invalid="!!r.error"
             :width="r.spec.width"
             :numeric="r.spec.numeric"
+            :disabled="!!r.unavailable"
             @update:model-value="(v) => emit('change', r.spec.field, v)"
           />
           <VAreaField
@@ -132,6 +136,7 @@ function switchWarn(r: Row): boolean {
               :id="fieldId(r.spec.field)"
               :model-value="r.current"
               :dirty="r.dirty"
+              :disabled="!!r.unavailable"
               @update:model-value="(v) => emit('change', r.spec.field, v)"
             />
             <span class="switch-text" :class="{ warn: switchWarn(r) }">{{ switchText(r) }}</span>
@@ -144,7 +149,13 @@ function switchWarn(r: Row): boolean {
             @update:model-value="(v) => emit('change', r.spec.field, v)"
           />
 
+          <!--
+            三条说明只出现一条，优先级是 错误 > 做不到 > 提示。
+            「做不到」不是校验失败 —— 没人填错任何东西，是组件没有这个能力，
+            所以它不用 danger 色；但也不能混进普通 hint 里被读成一句闲话。
+          -->
           <p v-if="r.error" class="err">{{ r.error }}</p>
+          <p v-else-if="r.unavailable" class="unavail">{{ r.unavailable }}</p>
           <p v-else-if="r.hint" class="hint">{{ r.hint }}</p>
         </div>
       </div>
@@ -214,6 +225,14 @@ function switchWarn(r: Row): boolean {
   margin: 0;
   font-size: var(--fs-2xs);
   color: var(--text-muted);
+  line-height: 1.6;
+}
+.unavail {
+  margin: 0;
+  padding-left: var(--space-2);
+  border-left: 2px solid var(--warning-text);
+  font-size: var(--fs-2xs);
+  color: var(--warning-text);
   line-height: 1.6;
 }
 .err {
