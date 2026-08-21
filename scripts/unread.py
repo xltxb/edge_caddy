@@ -110,7 +110,7 @@ def scan_proto_fields(gosrc):
 
 
 def main():
-    gosrc = ""
+    gosrc = go_source()
     # 装置自检：Go 源码得真的读进来了。
     # 没这一句的话，gosrc 为空会让**每一个**字段都显示为「没人读」——
     # 一个把所有东西都报成问题的扫描，跟一个什么都不报的一样没用。
