@@ -132,6 +132,50 @@ func deployPhase(targets []string, results []store.DeployResult) string {
 	return "done"
 }
 
+// handleRollback —— 回滚**不直接下发**：差异写回草稿，人在工作台确认 diff 后
+// 走同一条流水线。回滚不绕过校验，也同样留审计（PRD §6.3）。
+//
+// 一个「点一下就把线上换掉」的回滚按钮，和它要修复的那类事故是同一种性质。
+func (s *Server) handleRollback(c *gin.Context) {
+	cfgVersion := c.Param("id")
+	setAuditTarget(c, cfgVersion)
+
+	if s.deployer == nil {
+		Fail(c, CodeStateConflict, "下发调度器未装配")
+		return
+	}
+
+	ctx := c.Request.Context()
+	baseline, err := s.store.Baseline(ctx)
+	if err != nil {
+		s.log.Error("读取基线失败", "err", err)
+		Fail(c, CodeDownstream, "回滚失败")
+		return
+	}
+	if baseline != "" && baseline == cfgVersion {
+		// 回到自己是空操作。返回成功会让人以为发生了什么，
+		// 而工作台上一处改动都不会出现。
+		Fail(c, CodeStateConflict, "这一版就是当前基线，无需回滚")
+		return
+	}
+
+	p, _ := principalOf(c)
+	res, err := s.deployer.Rollback(ctx, cfgVersion, p.Name)
+	if errors.Is(err, store.ErrNotFound) {
+		Fail(c, CodeNotFound, "没有这个版本的下发记录")
+		return
+	}
+	if err != nil {
+		s.log.Error("回滚失败", "err", err)
+		Fail(c, CodeDownstream, "回滚失败："+err.Error())
+		return
+	}
+	if len(res.Skipped) > 0 {
+		setAuditPartial(c, fmt.Sprintf("写回 %d 处，%d 处无法恢复", len(res.ResKeys), len(res.Skipped)))
+	}
+	OK(c, res)
+}
+
 func (s *Server) handleListDeploys(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	before, _ := strconv.ParseInt(c.DefaultQuery("before_id", "0"), 10, 64)

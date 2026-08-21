@@ -268,3 +268,18 @@ func (r *rig) countDeploys() int {
 	}
 	return n
 }
+
+func (r *rig) ctx() context.Context { return context.Background() }
+
+// deployNow 下发并返回本次的版本号。
+func (r *rig) deployNow(resKeys ...string) string {
+	r.t.Helper()
+	e := r.mustDo("POST", "/deploys", map[string]any{"res_keys": resKeys})
+	var d struct {
+		CfgVersion string `json:"cfg_version"`
+	}
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		r.t.Fatal(err)
+	}
+	return d.CfgVersion
+}

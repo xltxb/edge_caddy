@@ -216,3 +216,14 @@ func (s *Store) ClearStaleRetries(ctx context.Context) (int64, error) {
 	}
 	return tag.RowsAffected(), nil
 }
+
+// DeploySnapshot 按版本号取出那次下发固化的资源状态。
+func (s *Store) DeploySnapshot(ctx context.Context, cfgVersion string) ([]byte, error) {
+	var raw []byte
+	err := s.Pool.QueryRow(ctx,
+		`SELECT snapshot FROM deploys WHERE cfg_version = $1`, cfgVersion).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return raw, err
+}

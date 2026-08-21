@@ -382,6 +382,14 @@ func validateRules(rules []model.Rule, domains map[string]bool) []Issue {
 	for _, rule := range rules {
 		key := "rule:" + rule.ID
 
+		// **只校验真正会被渲染的规则。** 停用的、以及未绑定域名的都不生效
+		// （CONTEXT.md「访问规则」：那是半成品状态，不是「对所有域名生效」）。
+		// 校验它们会让一条还没填完的规则挡住全站的下发——而人本来就是
+		// 「先建规则、再慢慢配」的顺序。
+		if !rule.Enabled || len(rule.ApplyTo) == 0 {
+			continue
+		}
+
 		if rule.ID == "" {
 			issues = append(issues, Issue{key, "id", "规则标识不能为空"})
 		} else if seen[rule.ID] {

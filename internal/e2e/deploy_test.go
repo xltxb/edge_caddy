@@ -282,3 +282,58 @@ func TestDeployDetailMirrorsProgressFrames(t *testing.T) {
 		t.Errorf("轮询返回的字段不完整: %+v", got)
 	}
 }
+
+// 下发成功后，**live 必须变成下发的样子**。
+//
+// 这条是补的回归测试：先前 Deploy 清空了草稿、推到了节点，却从没把合并结果
+// 写回 proxy_routes。于是节点上跑着新配置而真相源里还是旧值，下一次下发会把
+// 旧值推回去——现象是「我明明改过、也下发成功了，怎么又变回去了」，
+// 中间没有任何报错。
+//
+// 已有的测试没抓到它，因为它们只验了「节点上生效了」和「草稿清空了」。
+// 那两件事在 bug 存在时**也是真的**。
+func TestDeployCommitsDraftIntoLive(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "live.example.com", "upstream": "127.0.0.1:1111",
+		"block_mode": "abort", "body_max": "64MB",
+	})
+	r.mustDo("PUT", "/drafts/route:live.example.com", map[string]any{
+		"upstream": r.upstream, "body_max": "8MB",
+	})
+	r.deployNow("route:live.example.com")
+
+	routes := r.mustDo("GET", "/routes", nil)
+	var d struct {
+		Items []struct {
+			Domain   string `json:"domain"`
+			Upstream string `json:"upstream"`
+			BodyMax  string `json:"body_max"`
+			Version  int    `json:"version"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(routes.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Items) != 1 {
+		t.Fatalf("items = %+v", d.Items)
+	}
+	got := d.Items[0]
+	if got.Upstream != r.upstream || got.BodyMax != "8MB" {
+		t.Fatalf("下发之后 live = %+v，想要草稿里的值（upstream=%s body_max=8MB）——"+
+			"否则下一次下发会把旧值推回去", got, r.upstream)
+	}
+	if got.Version == 0 {
+		t.Error("下发之后版本号应当前进，0 表示「尚未下发到任何节点」")
+	}
+
+	// 再下发一次（不带草稿）：配置必须保持不变，而不是回到 127.0.0.1:1111。
+	r.deployNow()
+	if code, body := r.curlVia("live.example.com"); code != 200 || body != "UPSTREAM OK" {
+		t.Fatalf("空下发之后配置被推回了旧值：得到 %d %q", code, body)
+	}
+}

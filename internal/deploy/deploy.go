@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -104,8 +105,15 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 		return Result{}, nil, ErrNoOnlineNodes
 	}
 
+	// 快照存的是**资源状态**，不是渲染后的 Caddy JSON：回滚要逐资源比对差异
+	// 并写回草稿，而渲染产物是把全部资源揉在一起之后的样子，拆不回来。
+	snapshot, err := json.Marshal(Snapshot{Routes: routes, Rules: rules})
+	if err != nil {
+		return Result{}, nil, fmt.Errorf("序列化快照: %w", err)
+	}
+
 	cfgVersion := store.NewCfgVersion()
-	deployID, err := s.Store.CreateDeploy(ctx, cfgVersion, operator, resKeys, cfg, targets)
+	deployID, err := s.Store.CreateDeploy(ctx, cfgVersion, operator, resKeys, snapshot, targets)
 	if err != nil {
 		return Result{}, nil, fmt.Errorf("写入下发记录: %w", err)
 	}
@@ -176,6 +184,16 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 	}
 
 	if okCount > 0 {
+		// **把本次下发的内容合入 live。**
+		//
+		// 草稿是叠加在 live 之上的 Partial；下发之后那些改动已经是基线的一部分，
+		// 不落回 live 就等于：节点上跑着新配置，而真相源里还是旧值，
+		// 下一次下发会把旧值推回去。而现象是「我明明改过、也下发成功了，
+		// 怎么又变回去了」——中间没有任何报错。
+		if err := s.commit(ctx, resKeys, routes, rules); err != nil {
+			log.Error("把下发内容合入基线失败", "err", err)
+		}
+
 		// 至少有一台真的应用了，基线才前进。全部失败时什么都没变，
 		// 让基线前进会让「配置漂移」把所有节点都算成漂移，而真相是没人变过。
 		if err := s.Store.SetBaseline(ctx, cfgVersion, deployID); err != nil {
@@ -424,4 +442,89 @@ func (s *Scheduler) Preview(ctx context.Context, resKeys []string) (Preview, err
 		p.Targets = []PreviewTarget{}
 	}
 	return p, nil
+}
+
+// commit 把本次勾选的资源的**合并结果**写回 live。
+//
+// 只写本次勾选的：未勾选的草稿仍然是草稿，它们的值不该被顺手落地。
+func (s *Scheduler) commit(ctx context.Context, resKeys []string, routes []model.Route, rules []model.Rule) error {
+	selected := map[string]bool{}
+	for _, k := range resKeys {
+		selected[k] = true
+	}
+	for _, r := range routes {
+		if selected["route:"+r.Domain] {
+			if err := s.Store.UpsertRoute(ctx, r); err != nil {
+				return fmt.Errorf("合入路由 %s: %w", r.Domain, err)
+			}
+		}
+	}
+	for _, r := range rules {
+		if selected["rule:"+r.ID] {
+			// 密钥传空串表示保持不变——它不在草稿里，也不该被这一步碰。
+			if err := s.Store.UpsertRule(ctx, r, "", s.Sealer); err != nil {
+				return fmt.Errorf("合入规则 %s: %w", r.ID, err)
+			}
+		}
+	}
+	return nil
+}
+
+// RollbackResult 是一次回滚写回了什么。
+type RollbackResult struct {
+	ResKeys []string  `json:"res_keys"`
+	Skipped []Skipped `json:"skipped"`
+}
+
+// Rollback 把某一版的资源状态与当前 live 逐资源比对，差异**写回草稿**。
+//
+// **它不直接下发。** 人要在工作台看过 diff、确认之后走同一条流水线——
+// 回滚不绕过校验，也同样留审计（PRD §6.3）。一个「点一下就把线上换掉」的
+// 回滚按钮，和它要修复的那类事故是同一种性质。
+func (s *Scheduler) Rollback(ctx context.Context, cfgVersion, operator string) (RollbackResult, error) {
+	var out RollbackResult
+
+	raw, err := s.Store.DeploySnapshot(ctx, cfgVersion)
+	if err != nil {
+		return out, err
+	}
+	var snap Snapshot
+	if err := json.Unmarshal(raw, &snap); err != nil {
+		return out, fmt.Errorf("解析快照: %w", err)
+	}
+
+	liveRoutes, err := s.Store.ListRoutes(ctx)
+	if err != nil {
+		return out, fmt.Errorf("读取路由: %w", err)
+	}
+	liveRules, err := s.Store.ListRules(ctx, nil)
+	if err != nil {
+		return out, fmt.Errorf("读取访问规则: %w", err)
+	}
+
+	patches, skipped, err := diffToDrafts(snap, liveRoutes, liveRules)
+	if err != nil {
+		return out, err
+	}
+	out.Skipped = skipped
+	if out.Skipped == nil {
+		out.Skipped = []Skipped{}
+	}
+
+	keys := make([]string, 0, len(patches))
+	for k := range patches {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, k := range keys {
+		if err := s.Store.PutDraft(ctx, k, patches[k], operator); err != nil {
+			return out, fmt.Errorf("写回草稿 %s: %w", k, err)
+		}
+	}
+	out.ResKeys = keys
+
+	s.event(ctx, "", "info",
+		fmt.Sprintf("已把 %s 的差异写回草稿（%d 处），等待人工确认后下发", cfgVersion, len(keys)))
+	return out, nil
 }

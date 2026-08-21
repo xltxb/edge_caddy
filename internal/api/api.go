@@ -101,6 +101,7 @@ func New(o Options) *gin.Engine {
 	authed.POST("/deploys", audited("下发配置", s.handleDeploy))
 	authed.GET("/deploys", s.handleListDeploys)
 	authed.GET("/deploys/:id", s.handleGetDeploy)
+	authed.POST("/deploys/:id/rollback", audited("回滚配置", s.handleRollback))
 
 	// 端点不存在用 HTTP 404，而不是 CodeNotFound——后者表示**资源**不存在。
 	// 混在一起前端就分不清「路由写错了」和「这条路由被别人删了」。
