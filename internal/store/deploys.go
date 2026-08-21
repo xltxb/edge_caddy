@@ -19,6 +19,7 @@ type Deploy struct {
 	ResKeys    []string        `json:"res_keys"`
 	OKCount    int             `json:"ok_count"`
 	FailCount  int             `json:"fail_count"`
+	Targets    int             `json:"target_count"`
 	IsBaseline bool            `json:"is_baseline"`
 	CreatedAt  time.Time       `json:"created_at"`
 	Snapshot   json.RawMessage `json:"-"`
@@ -42,16 +43,19 @@ func NewCfgVersion() string {
 	return "cfg-" + hex.EncodeToString(b[:])
 }
 
-func (s *Store) CreateDeploy(ctx context.Context, cfgVersion, operator string, resKeys []string, snapshot []byte) (int64, error) {
+// CreateDeploy 记下一次下发。targetCount 是本次**应当**回报的节点数——
+// 没有它就无法判断「结束了没有」，只能靠「有节点回报过」，
+// 而那在还有节点在飞时会谎报为已完成。
+func (s *Store) CreateDeploy(ctx context.Context, cfgVersion, operator string, resKeys []string, snapshot []byte, targetCount int) (int64, error) {
 	keys, err := json.Marshal(defaultSlice(resKeys))
 	if err != nil {
 		return 0, err
 	}
 	var id int64
 	err = s.Pool.QueryRow(ctx,
-		`INSERT INTO deploys (cfg_version, operator, res_keys, snapshot)
-		 VALUES ($1,$2,$3,$4) RETURNING id`,
-		cfgVersion, operator, keys, snapshot).Scan(&id)
+		`INSERT INTO deploys (cfg_version, operator, res_keys, snapshot, target_count)
+		 VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+		cfgVersion, operator, keys, snapshot, targetCount).Scan(&id)
 	return id, err
 }
 
@@ -100,11 +104,11 @@ func (s *Store) GetDeploy(ctx context.Context, id int64) (Deploy, []DeployResult
 	var d Deploy
 	var keys []byte
 	err := s.Pool.QueryRow(ctx,
-		`SELECT d.id, d.cfg_version, d.operator, d.res_keys, d.ok_count, d.fail_count, d.created_at,
+		`SELECT d.id, d.cfg_version, d.operator, d.res_keys, d.ok_count, d.fail_count, d.target_count, d.created_at,
 		        (b.cfg_version IS NOT NULL AND b.cfg_version = d.cfg_version) AS is_baseline
 		 FROM deploys d LEFT JOIN baseline b ON TRUE
 		 WHERE d.id = $1`, id).
-		Scan(&d.ID, &d.CfgVersion, &d.Operator, &keys, &d.OKCount, &d.FailCount, &d.CreatedAt, &d.IsBaseline)
+		Scan(&d.ID, &d.CfgVersion, &d.Operator, &keys, &d.OKCount, &d.FailCount, &d.Targets, &d.CreatedAt, &d.IsBaseline)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return d, nil, ErrNotFound
 	}
@@ -138,7 +142,7 @@ func (s *Store) ListDeploys(ctx context.Context, limit int, beforeID int64) ([]D
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	q := `SELECT d.id, d.cfg_version, d.operator, d.res_keys, d.ok_count, d.fail_count, d.created_at,
+	q := `SELECT d.id, d.cfg_version, d.operator, d.res_keys, d.ok_count, d.fail_count, d.target_count, d.created_at,
 	             (b.cfg_version IS NOT NULL AND b.cfg_version = d.cfg_version) AS is_baseline
 	      FROM deploys d LEFT JOIN baseline b ON TRUE
 	      WHERE ($2 = 0 OR d.id < $2)
@@ -154,7 +158,7 @@ func (s *Store) ListDeploys(ctx context.Context, limit int, beforeID int64) ([]D
 		var d Deploy
 		var keys []byte
 		if err := rows.Scan(&d.ID, &d.CfgVersion, &d.Operator, &keys,
-			&d.OKCount, &d.FailCount, &d.CreatedAt, &d.IsBaseline); err != nil {
+			&d.OKCount, &d.FailCount, &d.Targets, &d.CreatedAt, &d.IsBaseline); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(keys, &d.ResKeys); err != nil {

@@ -598,7 +598,8 @@ cursor 分页（§0.5）。
 ```json
 {
   "…列表项字段…": null,
-  "phase": "done",
+  "target_count": 6,
+  "phase": "running",
   "results": [
     { "node": "node-hk-01", "state": "ok",   "detail": "31ms",              "retrying": false },
     { "node": "node-tw-01", "state": "fail", "detail": "deadline exceeded", "retrying": true  }
@@ -608,6 +609,18 @@ cursor 分页（§0.5）。
 
 `phase`：`running` | `done`。`results[]` 的字段与 WS `deploy_progress` 帧一一对应，
 所以前端的 `PushProgress` 组件两条数据源可以共用一套渲染。
+
+**`phase` 的判据是「`results` 覆盖了全部 `target_count` 个节点，且没有一条
+`retrying: true`」——不是「有节点回报过」，也不是「回报数 == 目标数」。**
+
+> **`6/6` 不等于结束了。** 重试中的节点已经回报过一次失败，但它那一行还会再变。
+> 把它算成终态会让确认弹层提前落定，而用户以为下发已经收尾。
+> （这条是前端 agent 在 mock 上撞出来的：让失败节点恒为 `retrying: true`，
+> 弹层就永远不落定——反过来说明落定条件必须同时看这两个量。）
+
+**结果是逐节点到达即写入**，不是攒到全部结束再写。攒到最后会让这个端点在整个
+下发过程中什么都返回不了，而它正是 WS 断线时的降级路径（§2）——那恰恰是用户
+最需要被告知的时刻。
 
 ### 7.5 `POST /deploys/:cfg_version/rollback` —— 回滚
 

@@ -77,19 +77,32 @@ func (s *Server) handleGetDeploy(c *gin.Context) {
 		return
 	}
 
-	phase := "done"
-	if d.OKCount+d.FailCount == 0 {
-		phase = "running"
-	}
 	if results == nil {
 		results = []store.DeployResult{}
 	}
 	OK(c, gin.H{
 		"id": d.ID, "cfg_version": d.CfgVersion, "operator": d.Operator,
 		"res_keys": d.ResKeys, "ok_count": d.OKCount, "fail_count": d.FailCount,
-		"is_baseline": d.IsBaseline, "created_at": d.CreatedAt,
-		"phase": phase, "results": results,
+		"target_count": d.Targets, "is_baseline": d.IsBaseline, "created_at": d.CreatedAt,
+		"phase": deployPhase(d.Targets, results), "results": results,
 	})
+}
+
+// deployPhase —— 「结束了」的定义是**全部目标都回报了，且没有还会再动的**。
+//
+// 不能用「有节点回报过」来判断：那在还有节点在飞时会谎报为已完成。
+// 也不能只看回报数：重试中的节点已经回报过一次失败，但它那一行还会变
+// （ADR-0005 的分类落地在 #19，届时 retrying 会真的为 true）。
+func deployPhase(targetCount int, results []store.DeployResult) string {
+	if targetCount == 0 || len(results) < targetCount {
+		return "running"
+	}
+	for _, r := range results {
+		if r.Retrying {
+			return "running"
+		}
+	}
+	return "done"
 }
 
 func (s *Server) handleListDeploys(c *gin.Context) {

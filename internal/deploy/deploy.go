@@ -74,7 +74,7 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 	}
 
 	cfgVersion := store.NewCfgVersion()
-	deployID, err := s.Store.CreateDeploy(ctx, cfgVersion, operator, resKeys, cfg)
+	deployID, err := s.Store.CreateDeploy(ctx, cfgVersion, operator, resKeys, cfg, len(targets))
 	if err != nil {
 		return Result{}, nil, fmt.Errorf("写入下发记录: %w", err)
 	}
@@ -94,16 +94,34 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 		go func(i int, node string) {
 			defer wg.Done()
 			s.progress(deployID, cfgVersion, node, "run", "", false)
-			results[i] = outcome{node, s.Pusher.Push(ctx, node, cfgVersion, cfg, PushDeadline)}
+			out := s.Pusher.Push(ctx, node, cfgVersion, cfg, PushDeadline)
+			results[i] = outcome{node, out}
+
+			// **结果一到就落库**，不等其余节点。
+			//
+			// 契约 §2 承诺 WS 断线时降级为轮询 GET /deploys/:id，且它的字段与
+			// deploy_progress 帧一一对应。攒到最后再写会让轮询在整个下发过程中
+			// 什么都看不到，降级路径就成了摆设——而那恰恰是用户最需要被告知的时刻。
+			state, detail := "fail", out.Detail
+			if out.OK {
+				state = "ok"
+			}
+			// 本切片不实现重试队列（属于 #19）。没有队列却报 retrying=true，
+			// 是在界面上承诺一件不会发生的事。
+			const retrying = false
+			if err := s.Store.SaveDeployResult(ctx, deployID, store.DeployResult{
+				Node: node, State: state, Detail: detail, Retrying: retrying,
+			}); err != nil {
+				log.Error("保存下发结果失败", "node", node, "err", err)
+			}
+			s.progress(deployID, cfgVersion, node, state, detail, retrying)
 		}(i, node)
 	}
 	wg.Wait()
 
 	var okCount, failCount int
 	for _, r := range results {
-		state, detail := "fail", r.out.Detail
 		if r.out.OK {
-			state, detail = "ok", r.out.Detail
 			okCount++
 			if err := s.Store.SetNodeCfgVersion(ctx, r.node, cfgVersion); err != nil {
 				log.Error("更新节点配置版本失败", "node", r.node, "err", err)
@@ -111,17 +129,6 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 		} else {
 			failCount++
 		}
-
-		// 本切片**不实现重试队列**（属于 #19）。因此一律记 false ——
-		// 没有队列却报 retrying=true，是在界面上承诺一件不会发生的事。
-		const retrying = false
-
-		if err := s.Store.SaveDeployResult(ctx, deployID, store.DeployResult{
-			Node: r.node, State: state, Detail: detail, Retrying: retrying,
-		}); err != nil {
-			log.Error("保存下发结果失败", "node", r.node, "err", err)
-		}
-		s.progress(deployID, cfgVersion, r.node, state, detail, retrying)
 	}
 
 	if err := s.Store.FinishDeploy(ctx, deployID, okCount, failCount); err != nil {

@@ -222,3 +222,55 @@ func itoa(v int64) string {
 	}
 	return string(b)
 }
+
+// 轮询降级要真的能用：契约 §2 承诺 WS 断线时降级为 2s 轮询 GET /deploys/:id，
+// 且它的字段与 deploy_progress 帧一一对应。
+//
+// 这条锁住的是「结果一到就落库」——攒到最后再写会让轮询在整个下发过程中
+// 什么都看不到，降级路径就成了摆设，而那恰恰是用户最需要被告知的时刻。
+func TestDeployDetailMirrorsProgressFrames(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "poll.example.com", "upstream": r.upstream, "block_mode": "abort",
+	})
+	e := r.mustDo("POST", "/deploys", map[string]any{"res_keys": []string{"route:poll.example.com"}})
+	var d struct {
+		DeployID int64 `json:"deploy_id"`
+	}
+	_ = json.Unmarshal(e.Data, &d)
+
+	detail := r.mustDo("GET", "/deploys/"+itoa(d.DeployID), nil)
+	var dd struct {
+		Phase       string `json:"phase"`
+		TargetCount int    `json:"target_count"`
+		Results     []struct {
+			Node     string `json:"node"`
+			State    string `json:"state"`
+			Detail   string `json:"detail"`
+			Retrying bool   `json:"retrying"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(detail.Data, &dd); err != nil {
+		t.Fatal(err)
+	}
+
+	if dd.TargetCount != 1 {
+		t.Fatalf("target_count = %d，想要 1；没有它就判断不出「结束了没有」", dd.TargetCount)
+	}
+	if dd.Phase != "done" {
+		t.Fatalf("phase = %q，想要 done", dd.Phase)
+	}
+	// 与 deploy_progress 帧同构：node / state / detail / retrying 四个字段都要在，
+	// 前端的 PushProgress 组件两条数据源共用一套渲染。
+	if len(dd.Results) != 1 {
+		t.Fatalf("results = %+v", dd.Results)
+	}
+	got := dd.Results[0]
+	if got.Node == "" || got.State == "" || got.Detail == "" {
+		t.Errorf("轮询返回的字段不完整: %+v", got)
+	}
+}
