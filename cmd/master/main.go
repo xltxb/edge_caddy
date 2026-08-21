@@ -109,8 +109,10 @@ func main() {
 	}
 	monitor := health.New(health.Config{
 		Store: st, Hub: hub, Log: log, Alert: notifier,
-		Interval:  time.Duration(sys.HeartbeatInterval) * time.Second,
-		Threshold: sys.OfflineThreshold,
+		Interval:   time.Duration(sys.HeartbeatInterval) * time.Second,
+		Threshold:  sys.OfflineThreshold,
+		WarnCPUPct: sys.WarnCPUPct,
+		WarnMemPct: sys.WarnMemPct,
 	})
 	go monitor.Run(ctx)
 
@@ -121,13 +123,14 @@ func main() {
 	tun, err := tunnel.New(tunnel.Options{
 		Store: st, CA: ca, Log: log,
 		Advertise: []string{advertiseHost, "127.0.0.1", "localhost"},
-		OnHeartbeat: func(hb tunnel.Heartbeat) {
-			monitor.Observe(hb)
+		OnHeartbeat: func(hb tunnel.Heartbeat) string {
+			status := monitor.Observe(hb)
 			hub.Broadcast(ws.TypeHeartbeat, ws.Heartbeat{
-				ID: hb.NodeID, Status: "ok", CPU: hb.CPU, Mem: hb.Mem,
+				ID: hb.NodeID, Status: status, CPU: hb.CPU, Mem: hb.Mem,
 				Conns: hb.Conns, HBAgeMS: 0, CfgVersion: hb.CfgVersion,
 				Routes: hb.Routes, Rules: hb.Rules,
 			})
+			return status
 		},
 	})
 	if err != nil {

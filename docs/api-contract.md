@@ -229,7 +229,7 @@ WS 断开时前端按指数退避重连；重连期间对进行中的下发降�
 {
   "baseline": "cfg-2f9a1c",
   "kpi": {
-    "nodes_online":  5,   "nodes_total": 6,
+    "nodes_online":  3,   "nodes_warn": 2,   "nodes_down": 1,   "nodes_total": 6,
     "conns_total":   48200,
     "conns_delta_pct": 12.4,
     "origin_rate":   8.7,
@@ -247,6 +247,19 @@ WS 断开时前端按指数退避重连；重连期间对进行中的下发降�
   众数给出旧版，于是 `drift_nodes` 会算成 2 而真相是 4——**方向正好反了**。
   基线的定义是「最近一次成功下发确立的那一版」（CONTEXT.md），只有主控知道。
   `drift_nodes` 也以它为准，两者同源才不会互相打架。
+- **`nodes_online` 只算 `status == "ok"`，不含 `warn`。** 四个数字满足
+  `online + warn + down == total`，由后端同一条语句产出。
+
+  > `warn` 是「连着但不健康」（负载超过阈值）。把它算进「在线」，KPI 会在一台
+  > CPU 81%、内存快满的机器上仍然显示绿色——而巡检时最该被看见的恰恰是那台。
+  > 而且账要算得平：`在线 5 · 异常 2 · 离线 1` 里那 2 台既被算进在线、又被单独
+  > 点名，读的人两种理解都对不上另一半。
+  >
+  > 前端**不要自己从节点列表推导这几个数**：两边分别推导迟早会算不平，
+  > 而一处口径错会在界面上冒出来两次（侧栏角标与 KPI），那比单个错数字
+  > 更让人怀疑整个系统。阈值在系统设置里（`warn_cpu_pct` / `warn_mem_pct`，
+  > 默认 80 / 90）。
+
 - `conns_delta_pct` 是**较昨日同时段**的连接数变化百分比，可为负，**可为 `null`**
   （历史不足 24 小时时——冷启动后的第一天就是这种情况，前端要按空态处理而不是显示 0%）。
   数据来自 `traffic_samples` 表：每分钟一行全局聚合，保留 7 天，约 1440 行/天。
@@ -816,11 +829,16 @@ cursor 分页（§0.5），可选 `?operator=abiu`。倒序。
   "heartbeat_interval_s": 3,
   "offline_threshold_count": 3,
   "auto_drop_dns": true,
+  "warn_cpu_pct": 80,
+  "warn_mem_pct": 90,
   "dns_provider": { "kind": "cloudflare", "credential_mode": "api_token", "configured": true },
   "ops_bot_token_configured": true
 }
 ```
 
+- `warn_cpu_pct` / `warn_mem_pct` 决定一台节点什么时候进 `warn`（默认 80 / 90）。
+  没有阈值的话 `warn` 永远不会被写入，「异常 N 个」那个桶就恒为 0——
+  **一个永远是零的计数比没有这个计数更糟**，它会让人以为「系统看过了，没问题」。
 - `master_endpoint` **必须是域名不是 IP**，后端校验，违反返回 `code: 1001`。
 - 「节点最长 N 秒后被摘除」= `heartbeat_interval_s × offline_threshold_count`，
   由前端算出来实时显示（这是设置页的联动提示，不需要后端给）。

@@ -264,3 +264,36 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+// **在线 + 异常 + 离线 == 总数。**
+//
+// 这条是前端在对高保真设计稿时发现的：它原先把 warn 算进「在线」，于是
+// 「在线 5/6」配「异常 2 · 离线 1」——那 2 台既被算进在线、又被单独点名，
+// 读的人两种理解都对不上另一半。三档由后端同一条语句产出，
+// 两边分别推导迟早会算不平，而一处口径错会在界面上冒出来两次。
+func TestOverviewNodeCountsPartitionCleanly(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	e := r.mustDo("GET", "/overview", nil)
+	var d struct {
+		KPI struct {
+			Online int `json:"nodes_online"`
+			Warn   int `json:"nodes_warn"`
+			Down   int `json:"nodes_down"`
+			Total  int `json:"nodes_total"`
+		} `json:"kpi"`
+	}
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.KPI.Online+d.KPI.Warn+d.KPI.Down != d.KPI.Total {
+		t.Fatalf("三档之和 %d+%d+%d ≠ 总数 %d",
+			d.KPI.Online, d.KPI.Warn, d.KPI.Down, d.KPI.Total)
+	}
+	if d.KPI.Total != 1 || d.KPI.Online != 1 {
+		t.Fatalf("一台健康节点应当是 1/0/0/1，实际 %+v", d.KPI)
+	}
+}

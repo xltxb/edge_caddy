@@ -84,11 +84,12 @@ type PushOutcome struct {
 }
 
 type Options struct {
-	Store       *store.Store
-	CA          *pki.CA
-	Log         *slog.Logger
-	Advertise   []string // 服务端证书的 SAN
-	OnHeartbeat func(Heartbeat)
+	Store     *store.Store
+	CA        *pki.CA
+	Log       *slog.Logger
+	Advertise []string // 服务端证书的 SAN
+	// OnHeartbeat 返回这次心跳代表的健康分档（ok / warn）。
+	OnHeartbeat func(Heartbeat) string
 }
 
 type Server struct {

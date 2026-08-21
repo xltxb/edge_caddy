@@ -77,10 +77,11 @@ func newRig(t *testing.T) *rig {
 	var monitorRef *health.Monitor
 	tun, err := tunnel.New(tunnel.Options{
 		Store: st, CA: ca, Advertise: []string{"127.0.0.1"},
-		OnHeartbeat: func(hb tunnel.Heartbeat) {
+		OnHeartbeat: func(hb tunnel.Heartbeat) string {
 			if monitorRef != nil {
-				monitorRef.Observe(hb)
+				return monitorRef.Observe(hb)
 			}
+			return "ok"
 		},
 	})
 	if err != nil {

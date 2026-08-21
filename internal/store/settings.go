@@ -35,6 +35,14 @@ type SystemSettings struct {
 	HeartbeatInterval int    `json:"heartbeat_interval_s"`
 	OfflineThreshold  int    `json:"offline_threshold_count"`
 	AutoDropDNS       bool   `json:"auto_drop_dns"`
+
+	// WarnCPUPct / WarnMemPct 决定一台**连着但不健康**的机器什么时候进 warn。
+	//
+	// 没有这两个阈值的话 warn 永远不会被写入，而界面上「异常 N 个」那个桶
+	// 就恒为 0——一个永远是零的计数比没有这个计数更糟，它会让人以为
+	// 「系统看过了，没问题」。
+	WarnCPUPct float64 `json:"warn_cpu_pct"`
+	WarnMemPct float64 `json:"warn_mem_pct"`
 }
 
 func DefaultSystemSettings() SystemSettings {
@@ -42,6 +50,8 @@ func DefaultSystemSettings() SystemSettings {
 		HeartbeatInterval: 3,
 		OfflineThreshold:  3,
 		AutoDropDNS:       true,
+		WarnCPUPct:        80,
+		WarnMemPct:        90,
 	}
 }
 

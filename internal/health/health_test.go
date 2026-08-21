@@ -215,3 +215,62 @@ func contains(s, sub string) bool {
 		return false
 	})()
 }
+
+// warn 是「连着但不健康」：高负载的心跳判 warn，而不是 ok。
+//
+// 把这样一台机器算进「在线」，KPI 会在一台 CPU 81%、内存快满的机器上仍然
+// 显示绿色——而巡检时最该被看见的恰恰是那台。
+func TestHighLoadHeartbeatClassifiesAsWarn(t *testing.T) {
+	a := &recordingAlerter{}
+	m, st := newMonitor(t, a, nil)
+	ctx := context.Background()
+
+	if got := m.Observe(tunnel.Heartbeat{NodeID: "node-a", CPU: 12, CfgVersion: "cfg-1"}); got != "ok" {
+		t.Fatalf("低负载应当是 ok，实际 %q", got)
+	}
+	if got := m.Observe(tunnel.Heartbeat{NodeID: "node-a", CPU: 81, CfgVersion: "cfg-1"}); got != "warn" {
+		t.Fatalf("CPU 81%% 应当是 warn，实际 %q", got)
+	}
+	if got := m.Observe(tunnel.Heartbeat{NodeID: "node-a", Mem: 95, CfgVersion: "cfg-1"}); got != "warn" {
+		t.Fatalf("内存 95%% 应当是 warn，实际 %q", got)
+	}
+
+	// 状态变化时写事件并告警，且只在**变化**时——
+	// 一台持续高负载的机器会把事件流刷满，而那条流的价值在于「有事发生了」。
+	waitFor(t, 2*time.Second, func() bool { return len(a.all()) > 0 })
+	before := len(a.all())
+	for i := 0; i < 5; i++ {
+		m.Observe(tunnel.Heartbeat{NodeID: "node-a", CPU: 85, CfgVersion: "cfg-1"})
+	}
+	time.Sleep(120 * time.Millisecond)
+	if got := len(a.all()); got != before {
+		t.Fatalf("持续高负载不该反复告警：%d → %d", before, got)
+	}
+
+	events, err := st.RecentEvents(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawWarn bool
+	for _, e := range events {
+		if e.Kind == "warn" && contains(e.Msg, "负载偏高") {
+			sawWarn = true
+		}
+	}
+	if !sawWarn {
+		t.Fatalf("应当写一条负载偏高的事件，实际 %+v", events)
+	}
+}
+
+// 负载回落时要回到 ok 并说一声，否则那台机器会永远挂着「异常」。
+func TestLoadRecoveryReturnsToOK(t *testing.T) {
+	a := &recordingAlerter{}
+	m, _ := newMonitor(t, a, nil)
+
+	m.Observe(tunnel.Heartbeat{NodeID: "node-a", CPU: 90, CfgVersion: "cfg-1"})
+	waitFor(t, 2*time.Second, func() bool { return len(a.all()) > 0 })
+
+	if got := m.Observe(tunnel.Heartbeat{NodeID: "node-a", CPU: 10, CfgVersion: "cfg-1"}); got != "ok" {
+		t.Fatalf("负载回落后应当回到 ok，实际 %q", got)
+	}
+}

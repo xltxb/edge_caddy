@@ -7,6 +7,7 @@ package health
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -41,6 +42,7 @@ type nodeState struct {
 	seen     bool
 	misses   int
 	downSent bool
+	status   string
 
 	// 上一轮的累计计数，用来算窗口内的回源率。
 	prevReq, prevOrigin uint64
@@ -71,6 +73,12 @@ type Config struct {
 	// 界面上那句「节点最长 N 秒后被摘除」= Interval × Threshold。
 	Interval  time.Duration
 	Threshold int
+
+	// WarnCPUPct / WarnMemPct 决定「连着但不健康」的界线。
+	// 为 0 时用默认值——不设阈值会让 warn 永远不被写入，
+	// 而界面上「异常 N 个」那个桶就恒为 0。
+	WarnCPUPct float64
+	WarnMemPct float64
 }
 
 type Monitor struct {
@@ -90,11 +98,17 @@ func New(c Config) *Monitor {
 	if c.Threshold <= 0 {
 		c.Threshold = 3
 	}
+	if c.WarnCPUPct <= 0 {
+		c.WarnCPUPct = 80
+	}
+	if c.WarnMemPct <= 0 {
+		c.WarnMemPct = 90
+	}
 	return &Monitor{Config: c, nodes: map[string]*nodeState{}}
 }
 
-// Observe 记下一次心跳。由隧道在收到心跳时调用。
-func (m *Monitor) Observe(hb tunnel.Heartbeat) {
+// Observe 记下一次心跳，返回它代表的健康分档（ok / warn）。
+func (m *Monitor) Observe(hb tunnel.Heartbeat) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -117,10 +131,45 @@ func (m *Monitor) Observe(hb tunnel.Heartbeat) {
 	st.seen = true
 	st.misses = 0
 
+	status := m.classify(hb)
+	if status != st.status {
+		st.status = status
+		go m.announce(hb.NodeID, status, hb)
+	}
+
 	if st.downSent {
 		st.downSent = false
 		go m.recover(hb.NodeID)
 	}
+	return status
+}
+
+// Classify 判断一次心跳代表的健康状态。
+//
+// **`warn` 是「连着但不健康」**，不是「快离线了」。把这样一台机器算进「在线」，
+// 会让 KPI 在一台 CPU 81%、内存快满的机器上仍然显示绿色——而巡检时最该被
+// 看见的恰恰是那台。
+func (m *Monitor) classify(hb tunnel.Heartbeat) string {
+	if hb.CPU >= m.WarnCPUPct || hb.Mem >= m.WarnMemPct {
+		return "warn"
+	}
+	return "ok"
+}
+
+// announce 在健康状态变化时写事件。只在**变化**时写，不是每个心跳都写——
+// 一台持续高负载的机器会把事件流刷满，而那条流的价值在于「有事发生了」。
+func (m *Monitor) announce(nodeID, status string, hb tunnel.Heartbeat) {
+	ctx := context.Background()
+	if status == "warn" {
+		m.emit(ctx, nodeID, "warn",
+			fmt.Sprintf("负载偏高：CPU %.1f%%，内存 %.1f%%", hb.CPU, hb.Mem))
+		if m.Alert != nil {
+			m.Alert.Notify(ctx, "warn", "节点负载偏高 "+nodeID,
+				fmt.Sprintf("CPU %.1f%% / 内存 %.1f%%", hb.CPU, hb.Mem))
+		}
+		return
+	}
+	m.emit(ctx, nodeID, "ok", "负载已回落")
 }
 
 // CPUSeries 返回节点最近的 CPU 点。

@@ -37,20 +37,19 @@ func (s *Server) handleOverview(c *gin.Context) {
 		return
 	}
 
-	online := map[string]bool{}
-	if s.tunnel != nil {
-		for _, id := range s.tunnel.OnlineNodes() {
-			online[id] = true
-		}
+	// 三档由同一条语句产出，保证 在线 + 异常 + 离线 == 总数。
+	// 分别推导迟早会算不平，而一处口径错会在界面上冒出来两次。
+	okCount, warnCount, downCount, total, err := s.store.CountNodesByStatus(ctx)
+	if err != nil {
+		s.log.Error("统计节点状态失败", "err", err)
+		Fail(c, CodeDownstream, "读取总览失败")
+		return
 	}
 
-	var onlineCount, driftCount int
+	var driftCount int
 	var connsTotal uint64
 	var reqTotal, originTotal uint64
 	for _, n := range nodes {
-		if online[n.ID] {
-			onlineCount++
-		}
 		if baseline != "" && n.CfgVersion != baseline {
 			driftCount++
 		}
@@ -64,8 +63,16 @@ func (s *Server) handleOverview(c *gin.Context) {
 	}
 
 	kpi := gin.H{
-		"nodes_online": onlineCount,
-		"nodes_total":  len(nodes),
+		// **在线只算 status == ok，不含 warn。**
+		//
+		// warn 是「连着但不健康」。把它算进在线，KPI 会在一台 CPU 81%、
+		// 内存快满的机器上仍然显示绿色——而巡检时最该被看见的恰恰是那台。
+		// 而且账要算得平：在线 + 异常 + 离线 == 总数，否则那几个异常节点
+		// 会既被算进在线、又被单独点名，读的人两种理解都对不上另一半。
+		"nodes_online": okCount,
+		"nodes_warn":   warnCount,
+		"nodes_down":   downCount,
+		"nodes_total":  total,
 		"conns_total":  connsTotal,
 		// 「较昨日同时段」需要至少 24 小时历史；不足时给 null 而不是 0 ——
 		// 0 会被读成「持平」（api-contract §3）。traffic_samples 的采集与

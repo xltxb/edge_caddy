@@ -67,16 +67,20 @@ func (s *session) readLoop(ctx context.Context, srv *Server) error {
 		switch m := msg.M.(type) {
 		case *edgev1.AgentMsg_Hb:
 			hb := m.Hb
-			if err := srv.opt.Store.TouchHeartbeat(ctx, s.nodeID, hb.GetCfgVersion()); err != nil {
-				srv.log.Error("记录心跳失败", "node_id", s.nodeID, "err", err)
+			beat := Heartbeat{
+				NodeID: s.nodeID, CPU: hb.GetCpu(), Mem: hb.GetMem(),
+				Conns: hb.GetConns(), CfgVersion: hb.GetCfgVersion(),
+				Routes: hb.GetRoutes(), Rules: hb.GetRules(),
+				ReqTotal: hb.GetReqTotal(), OriginTotal: hb.GetOriginTotal(),
 			}
+			// 健康分档由 OnHeartbeat 那一侧给出——判断标准（阈值）在那里，
+			// 隧道只负责把心跳原样送过去。
+			status := "ok"
 			if srv.opt.OnHeartbeat != nil {
-				srv.opt.OnHeartbeat(Heartbeat{
-					NodeID: s.nodeID, CPU: hb.GetCpu(), Mem: hb.GetMem(),
-					Conns: hb.GetConns(), CfgVersion: hb.GetCfgVersion(),
-					Routes: hb.GetRoutes(), Rules: hb.GetRules(),
-					ReqTotal: hb.GetReqTotal(), OriginTotal: hb.GetOriginTotal(),
-				})
+				status = srv.opt.OnHeartbeat(beat)
+			}
+			if err := srv.opt.Store.TouchHeartbeat(ctx, s.nodeID, hb.GetCfgVersion(), status); err != nil {
+				srv.log.Error("记录心跳失败", "node_id", s.nodeID, "err", err)
 			}
 
 		case *edgev1.AgentMsg_PushResult:

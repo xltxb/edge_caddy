@@ -56,11 +56,32 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 
 // TouchHeartbeat 记下一次心跳。cfg_version 来自节点上报——它是**节点说的**
 // 自己在跑哪一版，主控拿它与基线比对得出配置漂移（ADR-0002）。
-func (s *Store) TouchHeartbeat(ctx context.Context, nodeID, cfgVersion string) error {
+//
+// status 只在 ok / warn 之间取：判定离线是 health 模块的事，
+// 而一次到达的心跳按定义就说明它没离线。
+func (s *Store) TouchHeartbeat(ctx context.Context, nodeID, cfgVersion, status string) error {
+	if status != "warn" {
+		status = "ok"
+	}
 	_, err := s.Pool.Exec(ctx,
-		`UPDATE edge_nodes SET last_hb_at = now(), status = 'ok', cfg_version = $2 WHERE id = $1`,
-		nodeID, cfgVersion)
+		`UPDATE edge_nodes SET last_hb_at = now(), status = $3::node_status, cfg_version = $2
+		 WHERE id = $1`, nodeID, cfgVersion, status)
 	return err
+}
+
+// CountNodesByStatus 返回 ok / warn / down 三档的数量。
+//
+// **三档由同一条语句产出**，而不是让调用方各算各的：总览上「在线 N · 异常 M ·
+// 离线 K」必须等于总数，两处分别推导迟早会算不平——而一处口径错会在界面上
+// 冒出来两次，那比单个错数字更让人怀疑整个系统。
+func (s *Store) CountNodesByStatus(ctx context.Context) (ok, warn, down, total int, err error) {
+	err = s.Pool.QueryRow(ctx,
+		`SELECT count(*) FILTER (WHERE status = 'ok'),
+		        count(*) FILTER (WHERE status = 'warn'),
+		        count(*) FILTER (WHERE status = 'down'),
+		        count(*)
+		 FROM edge_nodes`).Scan(&ok, &warn, &down, &total)
+	return
 }
 
 func (s *Store) SetNodeCfgVersion(ctx context.Context, nodeID, cfgVersion string) error {
