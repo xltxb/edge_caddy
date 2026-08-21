@@ -44,6 +44,12 @@ const STEPS = [
     ranRe: /(\d+) 个模板/,
   },
   {
+    name: '后端理由的出处',
+    cmd: 'node',
+    args: ['scripts/check-anchors.mjs'],
+    ranRe: /(\d+) 处用后端行为解释/,
+  },
+  {
     name: '复盘注释首句',
     cmd: 'node',
     args: ['scripts/check-comments.mjs'],

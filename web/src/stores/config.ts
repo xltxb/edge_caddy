@@ -36,8 +36,8 @@ export const useConfigStore = defineStore('config', () => {
    * 草稿**没能写到主控上**的那些资源，按 key 记原因。
    *
    * 与 `patches` 是两回事：`patches` 是本地有什么，这个是**主控上缺什么**。
-   * 下发用的是主控那一份，所以这里非空时，界面上那个「N 处未下发改动」
-   * 正在虚报 —— 它数的是本地的。
+   * 下发消费的是主控上的草稿（契约 §7.2：一次成功的下发把草稿删掉并合入 live），
+   * 所以这里非空时，界面上那个「N 处未下发改动」正在虚报 —— 它数的是本地的。
    */
   const unsaved = ref<Record<string, string>>({})
   const updated = ref<Record<string, DraftMeta>>({})

@@ -49,7 +49,13 @@ pnpm check:premises      # 9 条，需要真主控在 localhost:8080
 ```bash
 pnpm check:templates   # 模板里有没有会被字面渲染的 markdown 标记（我犯过两次）
 pnpm check:comments    # 含复盘的注释块，首句是不是在讲被改掉的那件事
+pnpm check:anchors     # 用后端行为讲的理由，挂没挂在会通知我的东西上
 ```
+
+`check:anchors` 的判据：**它依赖的那个东西，改的时候会不会有人通知我。**
+契约会（改它等于改接口），ADR 会（要写 supersedes）；对方的内部实现不会。
+挂不上的不是不许写，是要把保质期写进句子里——「这依赖后端当前的 X」读起来
+自带提醒，「后端会 X」读起来像一条恒真的道理。
 
 这两条快且无副作用，所以也在 `pnpm check` 里。单独跑只是为了改的时候快速回看。
 

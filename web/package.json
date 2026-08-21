@@ -18,7 +18,8 @@
     "check:templates": "node scripts/check-templates.mjs",
     "check": "node scripts/test.mjs",
     "check:fast": "node scripts/test.mjs --fast",
-    "check:comments": "node scripts/check-comments.mjs"
+    "check:comments": "node scripts/check-comments.mjs",
+    "check:anchors": "node scripts/check-anchors.mjs"
   },
   "dependencies": {
     "pinia": "^2.2.6",
