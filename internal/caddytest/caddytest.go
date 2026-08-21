@@ -34,6 +34,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -124,9 +125,32 @@ func New(t *testing.T) *Caddy {
 	c.admin = unixClient(c.adminSock)
 
 	t.Cleanup(func() {
+		// **先看它是不是已经自己退出了，再去杀。**
+		//
+		// 全量并行跑时见过一次「POST /config/... : EOF」——admin socket 在
+		// 响应之前被关掉了。那次没能复现，而当时最缺的一个事实正是
+		// 「Caddy 是自己死了，还是只是那一次连接出了问题」。
+		//
+		// 这里不加重试来「修」它：重试会把这个信号永久掩埋，而 ADR-0005 的
+		// 整套分类恰恰依赖「连不上」与「被拒绝」的区分。留下证据，
+		// 下次复现时至少知道该往哪儿看。
+		exitedOnItsOwn := cmd.ProcessState != nil
+		if !exitedOnItsOwn {
+			// Signal(0) 只探活、不真的发信号。
+			if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+				exitedOnItsOwn = true
+			}
+		}
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
+
 		if t.Failed() {
+			if exitedOnItsOwn {
+				t.Logf("caddy 进程在测试结束前**已经自己退出**（state=%v）—— "+
+					"这多半就是失败的原因", cmd.ProcessState)
+			} else {
+				t.Log("caddy 进程直到测试结束仍然活着 —— 失败不是因为它死了")
+			}
 			if b, err := os.ReadFile(logPath); err == nil && len(b) > 0 {
 				t.Logf("caddy 日志:\n%s", b)
 			}
