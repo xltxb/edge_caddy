@@ -76,6 +76,32 @@ if (scanned === 0) {
   process.exit(2)
 }
 
+/*
+ * 顺带核对 scripts/README.md 与 package.json 对不对得上。
+ *
+ * 一份手写的索引**正是最会过期的那种东西**：加一个脚本忘了写进去，或者删掉一个
+ * 而索引还指着它 —— 前者让人找不到，后者让人照着一条不存在的命令去跑。
+ * 而索引过期不会有任何东西报错，它只会在有人照它做的时候才显形。
+ *
+ * 双向查：索引里提到的必须存在，存在的必须被提到。后者是关键 ——
+ * 只查前者的话，加脚本忘了写索引永远不会被发现。
+ */
+{
+  const pkg = JSON.parse(readFileSync('package.json', 'utf8')).scripts ?? {}
+  const doc = readFileSync('scripts/README.md', 'utf8')
+  const named = new Set([...doc.matchAll(/pnpm (check[\w:]*)/g)].map((m) => m[1]))
+  const ghost = [...named].filter((n) => !(n in pkg))
+  const unlisted = Object.keys(pkg).filter((k) => k.startsWith('check') && !named.has(k))
+  if (ghost.length || unlisted.length) {
+    console.error('\n✗ scripts/README.md 与 package.json 对不上：')
+    if (ghost.length) console.error(`    索引提到但不存在：${ghost.join('、')}`)
+    if (unlisted.length) console.error(`    存在但索引没提：${unlisted.join('、')}`)
+    console.error('')
+    process.exit(1)
+  }
+  console.log(`  索引与 package.json 一致（${named.size} 条命令）`)
+}
+
 if (hits.length) {
   console.error(`\n${hits.length} / ${scanned} 个复盘块的首句在讲旧事：\n\n${hits.join('\n')}\n`)
   console.error('  把结论提到首句，历史放它后面。\n')
