@@ -17,7 +17,7 @@ test.describe('配置下发', () => {
 
   test('从改动到落定的完整链路', async ({ page }) => {
     // seed 预置了两条草稿、共 3 处改动
-    await expect(pendingBadge(page)).toHaveText('3 项')
+    await expect(pendingBadge(page)).toHaveText('3 处变更')
     await expect(page.getByRole('button', { name: /校验并下发/ })).toBeEnabled()
 
     await page.getByRole('button', { name: /校验并下发/ }).click()

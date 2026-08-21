@@ -27,13 +27,22 @@ const title = computed(
   () => NAV.find((n) => route.path.startsWith(n.path))?.label ?? 'Edge Controller',
 )
 
+/*
+ * 侧栏角标。
+ *
+ * 只显示**外壳本来就加载**的数据。下发记录与审计日志是 cursor 分页的流，
+ * 拿第一页的长度当计数会显示成页大小而不是真实总数 —— 那是在撒一个
+ * 没人会去核对的谎，不如不显示。
+ */
 const counts = computed<Record<string, number | string>>(() => ({
-  overview: nodes.items.length ? `${nodes.online.length}/${nodes.items.length}` : '',
+  overview: nodes.items.length || '',
   nodes: nodes.items.length || '',
   dns: nodes.items.filter((n) => n.dnsEnabled).length || '',
   // 与工作台底栏同源。两个地方各算一遍迟早会对不上，而对不上的那个数字
   // 恰好长在「怕推错」这条主线上。
   workbench: config.totalChanges || '',
+  routes: config.routes.length || '',
+  acl: config.rules.length || '',
 }))
 
 async function loadShell(): Promise<void> {

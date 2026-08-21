@@ -120,7 +120,9 @@ export const events: EventWire[] = [
 ]
 
 export const kpi = () => ({
-  nodes_online: nodes.filter((n) => n.status !== 'down').length,
+  // 只有 ok 算在线。warn 的节点连着但不健康，把它算进「在线」会让
+  // 脚注「异常 N 个 · 离线 M 个」与分子对不上账。
+  nodes_online: nodes.filter((n) => n.status === 'ok').length,
   nodes_total: nodes.length,
   conns_total: nodes.reduce((s, n) => s + n.conns, 0),
   conns_delta_pct: 12.4,

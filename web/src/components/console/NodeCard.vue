@@ -9,9 +9,13 @@ defineEmits<{ (e: 'select', id: string): void }>()
 </script>
 
 <template>
+  <!--
+    卡片边框按 status 着色，而不是只按漂移。异常与离线是「需要处理」的信号，
+    在一屏六张卡片里必须一眼扫得出来 —— 这正是那句「颜色只留给状态语义」的用处。
+  -->
   <button
     class="card"
-    :class="{ selected, drift: node.drift }"
+    :class="[`st-${node.status}`, { selected, drift: node.drift }]"
     type="button"
     @click="$emit('select', node.id)"
   >
@@ -59,7 +63,15 @@ defineEmits<{ (e: 'select', id: string): void }>()
   border-color: var(--accent);
   box-shadow: var(--glow-sm);
 }
-.card.drift {
+.card.st-warn {
+  border-color: var(--warning);
+}
+.card.st-down {
+  border-color: var(--danger);
+  background: var(--danger-subtle);
+}
+/* 漂移只在状态正常时单独提示；异常/离线本身已经是更强的信号 */
+.card.st-ok.drift {
   border-color: var(--warning);
 }
 .head {

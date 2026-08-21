@@ -53,6 +53,8 @@ const kpis = computed(() => {
     {
       key: 'all' as Filter,
       label: '节点在线',
+      // 只有 status=ok 才算在线。把 warn 也算进来的话，脚注「异常 N 个 · 离线 M 个」
+      // 与这个分子对不上账 —— 异常节点会同时被算成在线又被点名为异常。
       value: `${k.nodesOnline}/${k.nodesTotal}`,
       unit: '',
       foot: trouble || '全网正常',
@@ -214,8 +216,8 @@ const detail = computed(() => (selected.value ? nodes.byId.get(selected.value) :
 
       <template v-else>
         <header class="panel-head">
-          <div class="panel-title">事件时间线</div>
-          <div class="panel-sub">最近 {{ events.items.length }} 条</div>
+          <div class="panel-title">最近事件</div>
+          <div class="panel-sub">{{ events.items.length }} 条</div>
         </header>
         <EventTimeline :events="events.items" />
       </template>

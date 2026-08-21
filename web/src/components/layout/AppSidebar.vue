@@ -46,6 +46,11 @@ const isActive = (path: string) => route.path.startsWith(path)
         </span>
       </RouterLink>
     </template>
+
+    <div class="foot">
+      <div class="platform">REALTIME EDGE PLATFORM</div>
+      <div class="stack">Master · Agent · Caddy</div>
+    </div>
   </nav>
 </template>
 
@@ -146,5 +151,21 @@ const isActive = (path: string) => route.path.startsWith(path)
 }
 .item.active .count {
   color: var(--accent-text);
+}
+.foot {
+  margin-top: auto;
+  padding: var(--space-4) 10px 0;
+  border-top: 1px solid var(--border-subtle);
+}
+.platform {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: var(--tracking-caps);
+  color: var(--text-faint);
+}
+.stack {
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  margin-top: 2px;
 }
 </style>

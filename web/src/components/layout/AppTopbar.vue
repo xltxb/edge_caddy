@@ -24,7 +24,7 @@ const ui = useUiStore()
     <div class="stat">
       <span class="k">待下发</span>
       <b class="v" :class="{ hot: pendingCount > 0 }">
-        {{ pendingCount > 0 ? `${pendingCount} 项` : '无' }}
+        {{ pendingCount > 0 ? `${pendingCount} 处变更` : '无' }}
       </b>
     </div>
 
@@ -100,13 +100,14 @@ const ui = useUiStore()
   margin-right: auto;
 }
 .stat {
+  /* 标签在上、值在下 —— 与设计稿一致，也让值本身更容易被扫到 */
   display: flex;
-  align-items: baseline;
-  gap: var(--space-1-5);
+  flex-direction: column;
+  gap: 1px;
   white-space: nowrap;
 }
 .stat .k {
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-micro);
   color: var(--text-muted);
 }
 .stat .v {

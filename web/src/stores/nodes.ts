@@ -28,7 +28,13 @@ export const useNodesStore = defineStore('nodes', () => {
   const probes = ref<Record<string, ProbeWire>>({})
 
   const byId = computed(() => new Map(items.value.map((n) => [n.id, n])))
-  const online = computed(() => items.value.filter((n) => n.status !== 'down'))
+  /**
+   * 在线 = status 为 ok。
+   *
+   * 把 warn 也算进来的话，「N/M 在线」与脚注「异常 X 个 · 离线 Y 个」对不上账 ——
+   * 异常节点会同时被算成在线、又被点名为异常。一个算不平的账比少一个数字更糟。
+   */
+  const online = computed(() => items.value.filter((n) => n.status === 'ok'))
   const drifted = computed(() => items.value.filter((n) => n.drift))
 
   async function fetchAll(): Promise<void> {
