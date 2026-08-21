@@ -290,3 +290,48 @@ func TestNoConfigWhenValidationFails(t *testing.T) {
 		t.Fatal("校验失败时不该产出配置")
 	}
 }
+
+// 校验错误的字段路径必须指向**请求体里真实存在的**字段。
+//
+// 契约 §0.3 说前端按这个点号路径去索引表单字段。共享密钥在 PUT /rules/:id 的
+// **顶层** secret 上（放进 spec 就等于被 GET /rules 回显），所以路径是 secret
+// 而不是 spec.secret——后者匹配不到任何字段，这条错误就会掉在地上，
+// 只剩一个笼统的「未通过校验」。
+//
+// **一条指不到地方的错误信息，等于没有这条错误信息。**
+func TestValidationFieldPathsPointAtRealRequestFields(t *testing.T) {
+	issues := render.Validate(
+		[]model.Route{ok("api.example.com", "127.0.0.1:1")},
+		[]model.Rule{{
+			ID: "svc-1", Type: model.RuleServiceSecret, Enabled: true,
+			ApplyTo: []string{"api.example.com"},
+			Spec:    model.RuleSpec{Header: "X-Service-Key", TTLSeconds: 300},
+			// 没有 Secret
+		}})
+
+	if !hasField(issues, "secret") {
+		t.Fatalf("缺密钥的错误应当指向顶层 secret，实际 %v", issueFields(issues))
+	}
+	if hasField(issues, "spec.secret") {
+		t.Fatal("不该指向 spec.secret —— 密钥不在 spec 里，那个路径在请求体里不存在")
+	}
+}
+
+// TLS 策略的 email 没有默认值，而且不该有：替人编一个邮箱比留空更糟，
+// 因为 ACME 账户邮箱是真会被 CA 用来发到期通知的。
+func TestTLSPolicyHasNoDefaultEmail(t *testing.T) {
+	pol, err := render.ParsePolicies(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pol.TLS.Email != "" {
+		t.Fatalf("不该替人编一个 ACME 邮箱，实际 %q", pol.TLS.Email)
+	}
+	// 其余枚举字段则必须有默认 —— 界面显示空会让人无从知道什么在生效。
+	if pol.TLS.MinVersion == "" || pol.TLS.KeyType == "" || pol.TLS.CA == "" {
+		t.Fatalf("枚举字段应当有默认值: %+v", pol.TLS)
+	}
+	if pol.Log.RateLimit {
+		t.Fatal("限流默认必须是关的 —— 打开会让下发被拒")
+	}
+}

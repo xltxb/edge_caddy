@@ -556,15 +556,19 @@ null
 | `roll_size` | int | MB | `50` |
 | `roll_keep` | int | 保留文件数 | `5` |
 | `strip_headers` | bool | 移除 `Server` / `X-Powered-By` | `true` |
-| `rate_limit` | bool | 按来源 IP 限流 | `true` |
-| `rate_rps` | int | **条件字段**，见下 | `200` |
-| `rate_burst` | int | **条件字段**，见下 | `400` |
+| `rate_limit` | bool | 按来源 IP 限流 —— **做不到，见下** | `false` |
+| `rate_rps` | int | **条件字段**，见下 | 不适用 |
+| `rate_burst` | int | **条件字段**，见下 | 不适用 |
 
 > `rate_rps` / `rate_burst` 只在 `rate_limit = true` 时出现在表单里，因此
 > `rate_limit = false` 时这两个键**可能根本不存在**。渲染器不要假定它们一定在，
 > 也不要在关闭限流时给它们填默认值再渲染——那会让 diff 里凭空多出两行。
 >
 > ⚠️ **`rate_limit = true` 会让下发被拒绝（`code: 1002`）。**
+>
+> 这张表里这三行原先记的 seed 是 `true` / `200` / `400`——那抄自设计稿，
+> 而实现的默认是 `false`。**文档记录的默认值是一个下发必被拒的值**，
+> 比单纯的不一致更坏：照着文档配一遍，得到的是一个推不动的系统。已改。
 >
 > 用真二进制核实过：**官方 Caddy 2.11.4 的 132 个标准模块里一个限流模块都没有**
 > （`caddy-ratelimit` 是插件）。一个开着却没有效果的限流开关，比一个明说

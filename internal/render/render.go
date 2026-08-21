@@ -544,7 +544,13 @@ func validateRules(rules []model.Rule, domains map[string]bool) []Issue {
 			if rule.Secret == "" {
 				// 没有密钥的服务密钥规则会让校验端点无条件拒绝，
 				// 表现为「这个域名整体 403」——而配置看起来完全正常。
-				issues = append(issues, Issue{key, "spec.secret", "尚未设置共享密钥"})
+				// 字段路径是 **secret**（顶层）而不是 spec.secret：密钥不在 spec 里
+				// ——放进去就等于被 GET /rules 回显了。
+				//
+				// 契约 §0.3 说前端按这个点号路径去索引表单字段。指向一个请求体里
+				// 不存在的路径，这条错误就会掉在地上，只剩一个笼统的「未通过校验」
+				// ——**一条指不到地方的错误信息，等于没有这条错误信息。**
+				issues = append(issues, Issue{key, "secret", "尚未设置共享密钥"})
 			}
 
 		case model.RuleJWTBearer:
