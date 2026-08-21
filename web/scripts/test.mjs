@@ -76,6 +76,26 @@ for (const s of STEPS) {
    * 必须真的数出来。
    */
   if (s.ranRe) {
+    /*
+     * 先认「被整体跳过」这一种，再落到笼统的「认不出」。
+     *
+     * vitest 在**一条都没匹配上**时印「Tests 193 skipped (193)」并 **exit 0**
+     * ——「跑了但全过」和「一条都没跑」在退出码上一模一样（playwright 那边
+     * 是 exit 1，两个 runner 在这件事上不一致，都验过了）。
+     *
+     * 笼统的判词能拦住它，但会说「装置可能坏了」，把人指向工具而不是那个
+     * 打错的 -t 参数。**判词指错方向，跟不报一样费时间**——这正是这一整轮
+     * 在修的东西，没理由在这个脚本自己身上留一处。
+     */
+    if (/\bskipped\b/.test(out) && !/\d+ passed/.test(out)) {
+      bad += 1
+      console.error(
+        `\n✗ ${s.name}：全部被跳过，一条都没执行（而退出码是 0）\n` +
+          `      多半是 -t / --grep 的名字打错了，不是测试出问题\n`,
+      )
+      continue
+    }
+
     const m = s.ranRe.exec(out)
     if (!m) {
       bad += 1
