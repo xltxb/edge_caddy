@@ -3,8 +3,10 @@
  * 改坏探针 —— 每条改坏都要回答三个问题，不是一个。
  *
  * 1. 改动**真的落进文件了吗**（`str.replace` / `perl -pi` 不匹配也不报错）
- * 2. 测试**红了吗**
- * 3. **红的是不是我想验的那一条**
+ * 2. 目标测试**真的跑了吗**（改坏若造成语法错误，整个文件加载失败，
+ *    一条测试都没执行 —— 那时「一条都没红」和「测试拦不住」产生同一个观测）
+ * 3. 测试**红了吗**
+ * 4. **红的是不是我想验的那一条**
  *
  * 第三问是后端撞出来的：它把探针放早了一步，测试红了 —— 但红在另一条断言上。
  * 「我加的那条拦住了」和「旧的那条先炸了」在终端上**都是一片红**。
@@ -19,10 +21,16 @@
 import { readFileSync, writeFileSync, copyFileSync, unlinkSync } from 'node:fs'
 import { execSync } from 'node:child_process'
 
-/** 每条：改哪个文件、把什么换成什么、跑哪个测试、预期哪条红。 */
+/**
+ * 每条：改哪个文件、把什么换成什么、跑哪个测试、预期哪条红、**它守的是什么**。
+ *
+ * `invariant` 那个字段是后端加的，我照抄：探针失败的时候人要立刻知道这是在拦
+ * 什么，而不是去读那段被改坏的代码反推。
+ */
 const PROBES = [
   {
     name: '把下线揉进 status 那一格',
+    invariant: '下线（意图）与离线（观察）各占一格，永不合并',
     file: 'src/nodes/flags.ts',
     from: '  if (n.drainedAt) {',
     to: "  if (n.drainedAt && n.status === 'down') {",
@@ -31,6 +39,7 @@ const PROBES = [
   },
   {
     name: '去掉「没同步」的降级，退回撒谎版',
+    invariant: '解析安排没到服务商时，「已退出解析」是常驻的谎',
     file: 'src/nodes/flags.ts',
     from: "      text: dnsSyncOk === false ? '已标记退出（解析未变）' : '已退出解析',",
     to: "      text: '已退出解析',",
@@ -39,6 +48,7 @@ const PROBES = [
   },
   {
     name: '「还没问到」也降级 —— 因为自己没问到就说节点在撒谎',
+    invariant: '自己没问到不等于节点在撒谎 —— 宁可少说一句',
     file: 'src/nodes/flags.ts',
     from: 'dnsSyncOk === false ?',
     to: 'dnsSyncOk !== true ?',
@@ -47,6 +57,7 @@ const PROBES = [
   },
   {
     name: '解析闸门拦错方向，把「暂停解析」也拦掉',
+    invariant: '只拦「开」的方向；拦「关」会让人没法暂停解析',
     file: 'src/nodes/flags.ts',
     from: "  if (n.dnsEnabled) return { ok: true, reason: '' } // 这是「关」的方向\n",
     to: '',
@@ -64,6 +75,7 @@ const PROBES = [
    */
   {
     name: 'DNS 归因退回原来那个二选一（只凭 status 判自动/手动）',
+    invariant: '人做的事不能归给系统 —— 归错因的人会照着错方向查',
     file: 'src/dns/participation.ts',
     fromRe: /if \(dnsEnabled\) return \{ kind: 'active' \}/,
     to:
@@ -76,6 +88,7 @@ const PROBES = [
   },
   {
     name: '渲染器空转（装置失效）—— 否定断言该被正面对照挡住',
+    invariant: '否定断言必须有同一测试里的正面对照，装置失效要能被抓住',
     file: 'src/workbench/readable.ts',
     fromRe: /(export function routeReadable\([^)]*\)[^{]*\{)/,
     to: '$1\n  return {} as never',
@@ -84,6 +97,7 @@ const PROBES = [
   },
   {
     name: '删掉 !res.ok 的抛出 —— 404 会被静默吞成 null',
+    invariant: 'HTTP 不 ok 就得抛，哪怕包裹体里 code 是 0',
     file: 'src/api/http.ts',
     from:
       '  if (!res.ok) {\n    throw new ApiError(res.status, payload.msg || `请求失败（HTTP ${res.status}）`)\n  }\n',
@@ -121,7 +135,26 @@ for (const p of PROBES) {
       out = String(e.stdout ?? '') + String(e.stderr ?? '')
     }
     const reds = [...out.matchAll(/^\s+×\s+(.+?)(?:\s+\d+ms)?$/gm)].map((m) => m[1].trim())
-    if (reds.length === 0) throw new Error('改坏生效了，但一条都没红 —— 测试拦不住')
+    const greens = [...out.matchAll(/^\s+✓\s+(.+?)(?:\s+\d+ms)?$/gm)].map((m) => m[1].trim())
+
+    /*
+     * 先证明**目标测试真的跑了**。
+     *
+     * 改坏若造成语法错误，整个 spec 文件加载失败，一条测试都不会执行 —— 那时
+     * 「一条都没红」和「测试拦不住」产生**同一个观测**，而结论完全相反：前者是
+     * 探针坏了，后者是测试坏了。没有这一问，我会去改一条本来没问题的断言。
+     */
+    const ran = [...reds, ...greens]
+    if (ran.length === 0) {
+      throw new Error(
+        '一条测试都没执行 —— 多半是改坏造成了语法/加载错误，探针本身坏了，不是测试拦不住\n' +
+          `      ${out.split('\n').filter((l) => /Error|error:/.test(l)).slice(0, 2).join('\n      ')}`,
+      )
+    }
+    if (!ran.some((r) => r.includes(p.expect))) {
+      throw new Error(`目标测试没出现在这次运行里（改名了？被 skip 了？）：预期含「${p.expect}」`)
+    }
+    if (reds.length === 0) throw new Error('目标测试跑了，但一条都没红 —— 测试拦不住这个改坏')
     const hit = reds.some((r) => r.includes(p.expect))
     if (!hit) {
       throw new Error(
@@ -132,7 +165,7 @@ for (const p of PROBES) {
     console.log(`✓ ${p.name}\n    红 ${reds.length} 条，命中：${reds.find((r) => r.includes(p.expect))}`)
   } catch (e) {
     bad += 1
-    console.error(`✗ ${p.name}\n    ${e.message}`)
+    console.error(`✗ ${p.name}\n    守的是：${p.invariant}\n    ${e.message}`)
   } finally {
     copyFileSync(bak, p.file)
     try {
