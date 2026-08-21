@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -35,7 +36,15 @@ func main() {
 
 	cfg, err := config.LoadMaster()
 	if err != nil {
-		log.Error("配置无效", "err", err)
+		// **配置错误走 stderr，不走结构化日志。**
+		//
+		// JSON handler 会把换行压成 \n 的转义串，而这些错误信息是**写给人现场
+		// 照着改的**——它们有多行、有示例命令，被转义之后基本读不了。
+		//
+		// 更根本的是：这一刻还没有「运行中的服务」，没有别的日志跟它汇聚，
+		// 也没有采集器在读。结构化的唯一好处（能被机器捞出来）在这里不存在，
+		// 而代价（人读不了）全额付出。
+		fmt.Fprintf(os.Stderr, "配置无效：%v\n", err)
 		os.Exit(1)
 	}
 

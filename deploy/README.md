@@ -99,7 +99,7 @@ sudo ./edge-node.sh verify   # ← 控制台的 verify_cmd 字段，别跳过
 createdb edge_controller
 export EC_DATABASE_URL="postgres://localhost:5432/edge_controller?sslmode=disable"
 export EC_SECRET_KEY="…至少 32 字节…"      # DNS/Lark 凭据与两套 CA 的根私钥都用它加密
-export EC_ADVERTISE="ec.internal:9000"      # 进服务端证书 SAN，也拼进安装命令
+export EC_ADVERTISE="ec.internal:9000"      # ← 必须是域名，填 IP 主控不启动，见下
 export EC_HTTP_ADDR="127.0.0.1:8080"        # ← 见下
 
 ./master -migrate
@@ -107,6 +107,31 @@ export EC_HTTP_ADDR="127.0.0.1:8080"        # ← 见下
 ./master -ca-pin                            # 打印 CA 指纹，添加节点时要用
 ./master
 ```
+
+### `EC_ADVERTISE` 必须是域名，没有默认值
+
+**这是一个会让现有部署起不来的改动。** 原先它默认 `127.0.0.1:9000` 且不校验；
+现在没有默认值，填 IP 直接拒绝启动（#24）。升级前先把它设成域名。
+
+为什么值得付这个代价：代价出现在**主控换地址那一天**。
+
+| | 用 IP | 用域名 |
+|---|---|---|
+| 改主控 | 重签证书 + 重启 | 重签证书 + 重启 |
+| 改**每台节点** | `EnvironmentFile` 里的 `--master` 挨台改 | 不用动 |
+| 改完之前 | 节点全部连不上 | 无感 |
+
+贵的是「挨台改」，不是重签——内部 PKI 重签一次 `SignServer` 就行。
+而服务端证书 TTL 是**十年**，不会自动轮换：这笔账要么不付，要么那天一次性全付。
+
+> **这跟「证书能不能验过」无关。** 首次接入根本不看 SAN——Agent 走
+> `InsecureSkipVerify` + `--ca-pin` 指纹校验。这条限制纯粹是运维可达性。
+
+**没有默认值是刻意的。** 任何默认值在生产上都是错的（没人的主控真叫那个名字），
+而一个能启动的错误默认值比起不来更危险：它会让人以为配好了，
+直到第一台节点连不上。与 `EC_SECRET_KEY` 同一条。
+
+本地开发用 `localhost:9000`——它是主机名不是 IP，能过校验。
 
 ### `EC_HTTP_ADDR` 绑错地方不会有任何东西报警
 

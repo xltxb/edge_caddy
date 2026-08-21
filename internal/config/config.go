@@ -28,12 +28,10 @@ type Master struct {
 	WebRoot     string
 
 	// Advertise 是主控对节点公布的地址，进服务端证书的 SAN，也拼进安装命令。
-	// PRD 要求强制域名而非 IP，这里**不强制**——用 IP 也能跑。
 	//
-	// 原先这句话写着「属于 #20 的系统设置」，而 #20 已经关了，它没做。
-	// 一个挂在已关工单上的欠条不会有人来兑现：那张单子关了，
-	// 没有任何流程会再打开这一行。改挂 #24（待人工实现：硬校验还是只警告，
-	// 取决于愿不愿意让现有用 IP 跑着的部署在升级时起不来）。
+	// **必须是域名，不是 IP**，启动时硬校验（#24，见 ValidateAdvertise）。
+	// 这是一次明确的取舍：现有用 IP 跑着的部署升级时会起不来，人得先改配置。
+	// 换来的是主控换地址那天不用挨台改节点。
 	Advertise string
 	// EdgeHTTPListen 是渲染进节点配置的监听地址。生产是 ":80"。
 	EdgeHTTPListen string
@@ -66,13 +64,16 @@ func LoadMaster() (Master, error) {
 		DatabaseURL: env("EC_DATABASE_URL", "postgres://localhost:5432/edge_controller?sslmode=disable"),
 		// 默认绑回环而不是 0.0.0.0。ADR-0013 把「只绑内网」定为准入的一半，
 		// 而一个默认对全网监听的控制面，装错一次就永远错着。
-		HTTPAddr:        env("EC_HTTP_ADDR", "127.0.0.1:8080"),
-		GRPCAddr:        env("EC_GRPC_ADDR", "0.0.0.0:9000"),
-		MTLSEnabled:     envBool("EC_MTLS", false),
-		SessionTTL:      time.Duration(envInt("EC_SESSION_TTL_HOURS", 12)) * time.Hour,
-		OpsBotToken:     os.Getenv("EC_OPS_BOT_TOKEN"),
-		WebRoot:         env("EC_WEB_ROOT", "web/dist"),
-		Advertise:       env("EC_ADVERTISE", "127.0.0.1:9000"),
+		HTTPAddr:    env("EC_HTTP_ADDR", "127.0.0.1:8080"),
+		GRPCAddr:    env("EC_GRPC_ADDR", "0.0.0.0:9000"),
+		MTLSEnabled: envBool("EC_MTLS", false),
+		SessionTTL:  time.Duration(envInt("EC_SESSION_TTL_HOURS", 12)) * time.Hour,
+		OpsBotToken: os.Getenv("EC_OPS_BOT_TOKEN"),
+		WebRoot:     env("EC_WEB_ROOT", "web/dist"),
+		// **不给默认值。** 任何默认值在生产上都是错的——没人的主控真叫那个名字——
+		// 而一个能启动的错误默认值比起不来更危险：它会让人以为配好了，
+		// 直到第一台节点连不上。与 EC_SECRET_KEY 同一条。
+		Advertise:       os.Getenv("EC_ADVERTISE"),
 		EdgeHTTPListen:  env("EC_EDGE_HTTP_LISTEN", ":80"),
 		VerifyAddr:      env("EC_VERIFY_ADDR", "127.0.0.1:2020"),
 		EdgeHTTPSListen: env("EC_EDGE_HTTPS_LISTEN", ":443"),
@@ -90,6 +91,12 @@ func LoadMaster() (Master, error) {
 		return c, fmt.Errorf("EC_SECRET_KEY 太短（%d 字节），至少 32", len(key))
 	}
 	c.SecretKey = []byte(key)
+
+	// 放在最后：先把该报的凭据问题报完，再报这个。一次只让人改一样东西时，
+	// 顺序就是他修复的顺序。
+	if err := ValidateAdvertise(c.Advertise); err != nil {
+		return c, err
+	}
 	return c, nil
 }
 
