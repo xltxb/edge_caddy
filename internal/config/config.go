@@ -22,10 +22,16 @@ type Master struct {
 	// MTLS 默认关。见 docs/adr/0013-console-access-is-network-plus-session.md：
 	// 控制台准入首版靠「只绑内网 + 会话 Cookie + 全写审计」，mTLS 是留给
 	// 「控制台要挪出内网」那天的开关。
-	MTLSEnabled  bool
-	SessionTTL   time.Duration
-	OpsBotToken  string
-	WebRoot      string
+	MTLSEnabled bool
+	SessionTTL  time.Duration
+	OpsBotToken string
+	WebRoot     string
+
+	// Advertise 是主控对节点公布的地址，进服务端证书的 SAN，也拼进安装命令。
+	// PRD 要求强制域名而非 IP；本切片先不强制，属于 #20 的系统设置。
+	Advertise string
+	// EdgeHTTPListen 是渲染进节点配置的监听地址。生产是 ":80"。
+	EdgeHTTPListen string
 }
 
 type Agent struct {
@@ -41,12 +47,14 @@ func LoadMaster() (Master, error) {
 		DatabaseURL: env("EC_DATABASE_URL", "postgres://localhost:5432/edge_controller?sslmode=disable"),
 		// 默认绑回环而不是 0.0.0.0。ADR-0013 把「只绑内网」定为准入的一半，
 		// 而一个默认对全网监听的控制面，装错一次就永远错着。
-		HTTPAddr:    env("EC_HTTP_ADDR", "127.0.0.1:8080"),
-		GRPCAddr:    env("EC_GRPC_ADDR", "0.0.0.0:9000"),
-		MTLSEnabled: envBool("EC_MTLS", false),
-		SessionTTL:  time.Duration(envInt("EC_SESSION_TTL_HOURS", 12)) * time.Hour,
-		OpsBotToken: os.Getenv("EC_OPS_BOT_TOKEN"),
-		WebRoot:     env("EC_WEB_ROOT", "web/dist"),
+		HTTPAddr:       env("EC_HTTP_ADDR", "127.0.0.1:8080"),
+		GRPCAddr:       env("EC_GRPC_ADDR", "0.0.0.0:9000"),
+		MTLSEnabled:    envBool("EC_MTLS", false),
+		SessionTTL:     time.Duration(envInt("EC_SESSION_TTL_HOURS", 12)) * time.Hour,
+		OpsBotToken:    os.Getenv("EC_OPS_BOT_TOKEN"),
+		WebRoot:        env("EC_WEB_ROOT", "web/dist"),
+		Advertise:      env("EC_ADVERTISE", "127.0.0.1:9000"),
+		EdgeHTTPListen: env("EC_EDGE_HTTP_LISTEN", ":80"),
 	}
 
 	key := os.Getenv("EC_SECRET_KEY")

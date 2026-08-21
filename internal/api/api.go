@@ -6,21 +6,39 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/xltxb/edge_caddy/internal/deploy"
 	"github.com/xltxb/edge_caddy/internal/store"
 	"github.com/xltxb/edge_caddy/internal/ws"
 )
+
+// Tunneler 是隧道在 HTTP 面这一层的最小面貌。
+type Tunneler interface {
+	OnlineNodes() []string
+}
 
 type Server struct {
 	store        *store.Store
 	log          *slog.Logger
 	sessionTTL   time.Duration
 	secureCookie bool
+
+	tunnel     Tunneler
+	deployer   *deploy.Scheduler
+	masterAddr string
+	caPin      string
 }
 
 type Options struct {
-	Store       *store.Store
-	Hub         *ws.Hub
-	Log         *slog.Logger
+	Store    *store.Store
+	Hub      *ws.Hub
+	Tunnel   Tunneler
+	Deployer *deploy.Scheduler
+	Log      *slog.Logger
+
+	// MasterAddr 与 CAPin 只用来拼安装命令。CAPin 让 Agent 首连时能确认
+	// 对面就是主控，堵住 TOFU 那个洞（ADR-0009）。
+	MasterAddr  string
+	CAPin       string
 	SessionTTL  time.Duration
 	OpsBotToken string
 
@@ -48,6 +66,10 @@ func New(o Options) *gin.Engine {
 		log:          o.Log,
 		sessionTTL:   o.SessionTTL,
 		secureCookie: o.SecureCookie,
+		tunnel:       o.Tunnel,
+		deployer:     o.Deployer,
+		masterAddr:   o.MasterAddr,
+		caPin:        o.CAPin,
 	}
 
 	v1 := r.Group("/api/v1")
@@ -63,6 +85,20 @@ func New(o Options) *gin.Engine {
 	if o.Hub != nil {
 		authed.GET("/ws", gin.WrapF(ws.Handler(o.Hub, o.Log)))
 	}
+
+	authed.GET("/nodes", s.handleListNodes)
+	authed.POST("/nodes/token", audited("签发接入Token", s.handleIssueToken))
+
+	authed.GET("/routes", s.handleListRoutes)
+	authed.POST("/routes", audited("新建路由", s.handleCreateRoute))
+
+	authed.GET("/drafts", s.handleListDrafts)
+	authed.PUT("/drafts/:key", audited("修改草稿", s.handlePutDraft))
+	authed.DELETE("/drafts", audited("放弃草稿", s.handleDeleteDrafts))
+
+	authed.POST("/deploys", audited("下发配置", s.handleDeploy))
+	authed.GET("/deploys", s.handleListDeploys)
+	authed.GET("/deploys/:id", s.handleGetDeploy)
 
 	// 端点不存在用 HTTP 404，而不是 CodeNotFound——后者表示**资源**不存在。
 	// 混在一起前端就分不清「路由写错了」和「这条路由被别人删了」。
