@@ -128,6 +128,28 @@ const PROBES = [
     spec: 'src/stores/link.test.ts',
     expect: '降为轮询时文案里要有字说明',
   },
+  /*
+   * 从名字推的改坏：怎么让「没有同比数据时不暗示它会自己好起来」为假？
+   * —— 把「历史不足」那句话放回去。它是契约里的说法，而那个 null 是永久的。
+   */
+  {
+    name: '把「历史不足」放回同比脚注',
+    invariant: '一个永久的空态不能说自己是暂时的 —— 那会让人明天再来看一眼',
+    file: 'src/overview/kpis.ts',
+    from: "      foot: k.connsDeltaPct === null ? '暂无同比数据' :",
+    to: "      foot: k.connsDeltaPct === null ? '历史不足，暂无同比' :",
+    spec: 'src/overview/kpis.test.ts',
+    expect: '没有同比数据时不暗示它会自己好起来',
+  },
+  {
+    name: '把在线数改成含 warn',
+    invariant: '在线数与脚注「异常 N 个」必须对得上账，不能同一台机器算两次',
+    file: 'src/overview/kpis.ts',
+    from: '      value: `${k.nodesOnline}/${k.nodesTotal}`,',
+    to: '      value: `${k.nodesOnline + k.nodesWarn}/${k.nodesTotal}`,',
+    spec: 'src/overview/kpis.test.ts',
+    expect: '在线数 + 异常 + 离线 = 总数',
+  },
 ]
 
 /*

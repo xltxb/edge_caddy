@@ -7,6 +7,7 @@ import NodeCard from '@/components/console/NodeCard.vue'
 import { useEventsStore } from '@/stores/events'
 import { useNodesStore } from '@/stores/nodes'
 import { useOverviewStore } from '@/stores/overview'
+import { buildKpis } from '@/overview/kpis'
 
 type Filter = 'all' | 'ok' | 'warn' | 'down' | 'drift'
 
@@ -40,80 +41,21 @@ const shown = computed(() => {
   return nodes.items.filter((n) => n.status === f)
 })
 
-const kpis = computed(() => {
-  const k = overview.kpi
-  if (!k) return []
-  // 三档全部取自后端同一条语句（契约 §3）。**不自己从节点列表推导** ——
-  // 两边分别算迟早会对不上，而对不上的数字会在界面上冒出来两次。
-  const trouble = [k.nodesWarn ? `异常 ${k.nodesWarn} 个` : '', k.nodesDown ? `离线 ${k.nodesDown} 个` : '']
-    .filter(Boolean)
-    .join(' · ')
+/**
+ * 四格 KPI 的构建在 `@/overview/kpis` 里，不在这个文件里。
+ *
+ * 抽出去不是为了复用（只有这一处用），是为了**能被证伪**：这一屏是人打开控制台
+ * 看到的第一样东西，四格每一格都是一句关于全网的断言，而写在 computed 里的断言
+ * 只在有人盯着截图看的时候被检查过一次。
+ */
+const kpis = computed(() => (overview.kpi ? buildKpis(overview.kpi) : []))
 
-  return [
-    {
-      key: 'all' as Filter,
-      label: '节点在线',
-      // 只有 status=ok 才算在线。把 warn 也算进来的话，脚注「异常 N 个 · 离线 M 个」
-      // 与这个分子对不上账 —— 异常节点会同时被算成在线又被点名为异常。
-      value: `${k.nodesOnline}/${k.nodesTotal}`,
-      unit: '',
-      foot: trouble || '全网正常',
-      footColor: trouble ? 'var(--warning-text)' : 'var(--success-text)',
-      caveat: '',
-    },
-    {
-      key: 'all' as Filter,
-      label: '全网连接数',
-      value: (k.connsTotal / 1000).toFixed(1),
-      unit: 'k',
-      // null = 历史不足（冷启动第一天）。留白，不显示 0% —— 那会被读成「持平」。
-      foot:
-        k.connsDeltaPct === null
-          ? '历史不足，暂无同比'
-          : `较昨日同时段 ${k.connsDeltaPct >= 0 ? '+' : ''}${k.connsDeltaPct.toFixed(1)}%`,
-      footColor:
-        k.connsDeltaPct === null
-          ? 'var(--text-faint)'
-          : k.connsDeltaPct >= 0
-            ? 'var(--success-text)'
-            : 'var(--text-muted)',
-      caveat: '',
-    },
-    {
-      key: 'all' as Filter,
-      label: '回源率',
-      // null = 还没有流量样本。不要当成 0 —— 「0% 回源」是一个很强的说法，
-      // 意味着边缘挡下了全部请求，而真相是我们还不知道。
-      value: k.originRate === null ? '—' : k.originRate.toFixed(1),
-      unit: k.originRate === null ? '' : '%',
-      // 越低越好：没到达源站的那部分是被访问规则拦下的，**不是缓存命中**
-      // —— 官方 Caddy 没有 HTTP 缓存模块（ADR-0001 / ADR-0003 的前提）
-      foot:
-        k.originRate === null
-          ? '还没有流量样本'
-          : `边缘拦截 ${(100 - k.originRate).toFixed(1)}% 请求`,
-      footColor:
-        k.originRate !== null && k.originRate > 30
-          ? 'var(--warning-text)'
-          : 'var(--text-muted)',
-      caveat:
-        '到达源站的请求占比。剩下的是被访问规则拦下（静默断连 / 403 / 404）或由静态响应处理掉的，不是缓存命中——边缘跑的官方 Caddy 没有缓存模块。',
-    },
-    {
-      key: 'drift' as Filter,
-      label: '配置漂移',
-      value: String(k.driftNodes),
-      unit: '个节点',
-      // ADR-0002：这个 KPI 回答的是「这次下发到没到」，脚注就该直说
-      foot: k.driftNodes
-        ? `${k.driftNodes} 个节点未收到最近一次下发，点击筛选`
-        : '最近一次下发全部到达',
-      footColor: k.driftNodes ? 'var(--warning-text)' : 'var(--text-muted)',
-      caveat:
-        '只比对节点上报的版本号，不检查节点上的实际配置。有人 SSH 上去手改过的配置不会在这里显示。',
-    },
-  ]
-})
+const TONE: Record<string, string> = {
+  ok: 'var(--success-text)',
+  warn: 'var(--warning-text)',
+  muted: 'var(--text-muted)',
+  faint: 'var(--text-faint)',
+}
 
 const detail = computed(() => (selected.value ? nodes.byId.get(selected.value) : undefined))
 </script>
@@ -140,7 +82,7 @@ const detail = computed(() => (selected.value ? nodes.byId.get(selected.value) :
       :value="k.value"
       :unit="k.unit"
       :foot="k.foot"
-      :foot-color="k.footColor"
+      :foot-color="TONE[k.tone]"
       :caveat="k.caveat || undefined"
       :active="k.key !== 'all' && filter === k.key"
       @select="filter = k.key"

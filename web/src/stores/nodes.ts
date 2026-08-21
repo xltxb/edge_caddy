@@ -26,6 +26,8 @@ export const useNodesStore = defineStore('nodes', () => {
   const busy = ref<Record<string, string>>({})
   /** 行展开后加载的 Agent 日志，按节点缓存。 */
   const logs = ref<Record<string, { at: string; level: LogLevel; msg: string }[]>>({})
+  /** 取日志失败的原因，按节点。**与「取到了但是空的」是两回事。** */
+  const logsError = ref<Record<string, string>>({})
   /** 最近一次探活结果。Caddy Admin 与隧道分开报 —— 两种故障处置不同。 */
   const probes = ref<Record<string, ProbeWire>>({})
   /**
@@ -103,11 +105,30 @@ export const useNodesStore = defineStore('nodes', () => {
     }
   }
 
+  /**
+   * 取一台节点的 Agent 日志。
+   *
+   * **取失败要记下来，不能让它长得像「这台机器没有日志」。** 调用方原先写的是
+   * `.catch(() => {})`，于是端点 404 的时候面板显示「暂无日志。」—— 而那四个字
+   * 说的是「这台机器安静得很」，真相是「这个功能没接上」。两句话会把人引向
+   * 完全不同的地方：前者让人放心，后者让人去查。
+   *
+   * （`GET /nodes/:id/logs` 目前在主控上确实不存在 —— 契约里格式完整、从来没
+   * 注册过，是后端扫「写了但没人读」时抓出来的。这里不假装它存在，也不假装
+   * 它返回了空。）
+   */
   async function fetchLogs(id: string): Promise<void> {
-    const page = await http.get<Paged<{ at: string; level: LogLevel; msg: string }>>(
-      `/nodes/${encodeURIComponent(id)}/logs`,
-    )
-    logs.value = { ...logs.value, [id]: page.items }
+    try {
+      const page = await http.get<Paged<{ at: string; level: LogLevel; msg: string }>>(
+        `/nodes/${encodeURIComponent(id)}/logs`,
+      )
+      logs.value = { ...logs.value, [id]: page.items }
+      const e = { ...logsError.value }
+      delete e[id]
+      logsError.value = e
+    } catch (e) {
+      logsError.value = { ...logsError.value, [id]: errorText(e, '取日志失败') }
+    }
   }
 
   /** 把当前基线重推给单个节点。对已下线节点后端返回 2001。 */
@@ -175,6 +196,7 @@ export const useNodesStore = defineStore('nodes', () => {
     error,
     busy,
     logs,
+    logsError,
     probes,
     dnsSync,
     byId,

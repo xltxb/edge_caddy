@@ -59,7 +59,8 @@ function expand(id: string): void {
     next.delete(id)
   } else {
     next.add(id)
-    if (!nodes.logs[id]) void nodes.fetchLogs(id).catch(() => {})
+    // fetchLogs 内部已经把失败记进 logsError 了，不会抛 —— 这里不再需要吞
+    if (!nodes.logs[id]) void nodes.fetchLogs(id)
   }
   open.value = next
 }
@@ -76,7 +77,7 @@ async function onPush(id: string): Promise<void> {
   try {
     const r = await nodes.pushOne(id)
     ui.toast('ok', `已向 ${id} 重推基线`, r.cfg_version)
-    void nodes.fetchLogs(id).catch(() => {})
+    void nodes.fetchLogs(id)
   } catch (e) {
     ui.toast('warn', '重推失败', errorText(e, ''))
   }
@@ -289,7 +290,16 @@ const LEVEL_COLOR: Record<string, string> = {
                   <span :style="{ color: LEVEL_COLOR[l.level] }">{{ l.msg }}</span>
                 </li>
               </ol>
-              <p v-else class="muted small">暂无日志。</p>
+              <!--
+                三种状态各说各的：**取不到 ≠ 没有**。
+                原先失败也显示「暂无日志。」，那四个字说的是「这台机器安静得很」，
+                而真相可能是「这个功能没接上」—— 一句让人放心，一句让人去查。
+              -->
+              <p v-else-if="nodes.logsError[n.id]" class="small logs-err">
+                取不到日志：{{ nodes.logsError[n.id] }}
+              </p>
+              <p v-else-if="nodes.logs[n.id]" class="muted small">这台节点暂无日志。</p>
+              <p v-else class="muted small">正在取日志…</p>
             </div>
           </div>
 
@@ -496,6 +506,10 @@ dt {
 dd {
   margin: 0;
   color: var(--text-strong);
+}
+.logs-err {
+  color: var(--warning-text);
+  line-height: 1.6;
 }
 .loglist {
   list-style: none;
