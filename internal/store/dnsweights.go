@@ -143,9 +143,14 @@ const KeyDNSSync = "dns_sync"
 //
 // **常驻的说法需要常驻的真相来源。**
 type DNSSyncState struct {
-	OK     bool      `json:"ok"`
-	At     time.Time `json:"at"`
-	Detail string    `json:"detail"`
+	OK bool `json:"ok"`
+	// At 为 null 表示**从来没同步过**，不是零值时间（契约 §0.4）。
+	//
+	// Go 的零值时间序列化成 0001-01-01T00:00:00Z，界面上会渲染成 00:00:00
+	// ——读起来像「凌晨同步过一次」。**一个格式正确但意思是假的值，比缺失的值
+	// 危险**：空白会让人去查，一个像模像样的时间不会。
+	At     *time.Time `json:"at"`
+	Detail string     `json:"detail"`
 }
 
 func (s *Store) GetDNSSync(ctx context.Context) (DNSSyncState, error) {

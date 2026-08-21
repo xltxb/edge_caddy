@@ -266,8 +266,9 @@ func TestDNSSyncStateIsPersistedAndExposed(t *testing.T) {
 	nodes := r.mustDo("GET", "/nodes", nil)
 	var n struct {
 		DNSSync struct {
-			OK     bool   `json:"ok"`
-			Detail string `json:"detail"`
+			OK     bool    `json:"ok"`
+			At     *string `json:"at"`
+			Detail string  `json:"detail"`
 		} `json:"dns_sync"`
 	}
 	if err := json.Unmarshal(nodes.Data, &n); err != nil {
@@ -278,6 +279,13 @@ func TestDNSSyncStateIsPersistedAndExposed(t *testing.T) {
 	}
 	if !strings.Contains(n.DNSSync.Detail, "尚未") {
 		t.Errorf("detail 应当说清从没同步过: %q", n.DNSSync.Detail)
+	}
+	// **从来没同步过时 at 必须是 null，不是零值时间。**
+	// 0001-01-01T00:00:00Z 会被渲染成 00:00:00，读起来像「凌晨同步过一次」
+	// ——一个格式正确但意思是假的值，比缺失的值危险：空白会让人去查，
+	// 一个像模像样的时间不会。
+	if n.DNSSync.At != nil {
+		t.Fatalf("从没同步过时 at 应当是 null，实际 %q", *n.DNSSync.At)
 	}
 
 	// 点一次开关（没配服务商，同步会失败），状态要被记下来。
