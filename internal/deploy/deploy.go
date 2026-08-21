@@ -28,7 +28,7 @@ const PushDeadline = 5 * time.Second
 // Pusher 是隧道在这一层的最小面貌。抽出来只为让下发能被单独测。
 type Pusher interface {
 	OnlineNodes() []string
-	Push(ctx context.Context, nodeID, cfgVersion string, caddyJSON, verifyRules []byte, deadline time.Duration) tunnel.PushOutcome
+	Push(ctx context.Context, nodeID, cfgVersion string, caddyJSON, verifyRules []byte, counts tunnel.ResourceCounts, deadline time.Duration) tunnel.PushOutcome
 }
 
 type Scheduler struct {
@@ -99,6 +99,7 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 	if err != nil {
 		return Result{}, nil, fmt.Errorf("序列化校验规则: %w", err)
 	}
+	counts := tunnel.ResourceCounts{Routes: uint32(len(routes)), Rules: uint32(countEffectiveRules(rules))}
 
 	targets := s.Pusher.OnlineNodes()
 	if len(targets) == 0 {
@@ -137,7 +138,7 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 		go func(i int, node string) {
 			defer wg.Done()
 			s.progress(deployID, cfgVersion, node, "run", "", false)
-			out := s.Pusher.Push(ctx, node, cfgVersion, cfg, verifyRules, PushDeadline)
+			out := s.Pusher.Push(ctx, node, cfgVersion, cfg, verifyRules, counts, PushDeadline)
 			results[i] = outcome{node, out}
 
 			// **结果一到就落库**，不等其余节点。
@@ -214,7 +215,7 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 	// 而 PRD 要求单次全网推送 6 节点 ≤10s 完成反馈。进度继续经 WS 推。
 	s.Retries().enqueue(retryJob{
 		deployID: deployID, cfgVersion: cfgVersion,
-		caddyJSON: cfg, verifyRules: verifyRules, nodes: needRetry,
+		caddyJSON: cfg, verifyRules: verifyRules, counts: counts, nodes: needRetry,
 	})
 
 	msg := fmt.Sprintf("配置 %s 下发完成，%d/%d 节点", cfgVersion, okCount, len(targets))
@@ -326,6 +327,19 @@ func mergeInto[T any](base T, patch json.RawMessage) (T, error) {
 		return base, err
 	}
 	return out, nil
+}
+
+// countEffectiveRules 只数真正生效的规则：未绑定域名的、停用的都不算。
+// 心跳里那个数字要与节点上实际生效的一致，否则「这台机器上到底是哪一版」
+// 这个问题会得到一个自相矛盾的答案。
+func countEffectiveRules(rules []model.Rule) int {
+	n := 0
+	for _, r := range rules {
+		if r.Enabled && len(r.ApplyTo) > 0 {
+			n++
+		}
+	}
+	return n
 }
 
 func keysWithPrefix(resKeys []string, prefix string) []string {
@@ -442,6 +456,49 @@ func (s *Scheduler) Preview(ctx context.Context, resKeys []string) (Preview, err
 		p.Targets = []PreviewTarget{}
 	}
 	return p, nil
+}
+
+// RepushNode 把**当前基线那一版**重推给一个节点。
+//
+// 它不产生新版本，也不写下发记录：把一台掉队的机器带上来，不该在下发记录里
+// 多出一次谁也没发起过的下发。推完那台机器的 cfg_version 就等于基线，
+// 配置漂移随之消失。
+//
+// 这是 ADR-0005 的兜底：Caddy 拒绝的配置不自动重试，环境类临时故障
+// 由人在这里手动恢复。
+func (s *Scheduler) RepushNode(ctx context.Context, nodeID string) (string, string, []render.Issue, error) {
+	baseline, err := s.Store.Baseline(ctx)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("读取基线: %w", err)
+	}
+	if baseline == "" {
+		return "", "", nil, fmt.Errorf("还没有基线，先完成一次下发")
+	}
+
+	routes, rules, err := s.effective(ctx, nil) // 不带草稿：基线就是不含草稿的那一份
+	if err != nil {
+		return "", "", nil, err
+	}
+	cfg, issues := render.Render(routes, rules, s.Render)
+	if len(issues) > 0 {
+		return "", "", issues, nil
+	}
+	verifyRules, err := json.Marshal(render.VerifyRules(rules))
+	if err != nil {
+		return "", "", nil, fmt.Errorf("序列化校验规则: %w", err)
+	}
+	counts := tunnel.ResourceCounts{Routes: uint32(len(routes)), Rules: uint32(countEffectiveRules(rules))}
+
+	out := s.Pusher.Push(ctx, nodeID, baseline, cfg, verifyRules, counts, PushDeadline)
+	if !out.OK {
+		s.event(ctx, nodeID, "warn", "重推失败："+out.Detail)
+		return "", "", nil, fmt.Errorf("%s", out.Detail)
+	}
+	if err := s.Store.SetNodeCfgVersion(ctx, nodeID, baseline); err != nil {
+		s.logger().Error("更新节点配置版本失败", "node", nodeID, "err", err)
+	}
+	s.event(ctx, nodeID, "ok", "已重推基线 "+baseline+"，耗时 "+out.Detail)
+	return baseline, out.Detail, nil, nil
 }
 
 // commit 把本次勾选的资源的**合并结果**写回 live。

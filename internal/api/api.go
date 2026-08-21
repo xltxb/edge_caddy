@@ -1,9 +1,15 @@
 package api
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/xltxb/edge_caddy/internal/alert"
+	"github.com/xltxb/edge_caddy/internal/health"
+	"github.com/xltxb/edge_caddy/internal/secret"
+	"github.com/xltxb/edge_caddy/internal/tunnel"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xltxb/edge_caddy/internal/deploy"
@@ -14,6 +20,13 @@ import (
 // Tunneler 是隧道在 HTTP 面这一层的最小面貌。
 type Tunneler interface {
 	OnlineNodes() []string
+	Probe(ctx context.Context, nodeID string, timeout time.Duration) (tunnel.ProbeOutcome, error)
+}
+
+// Healther 是观测状态在 HTTP 面这一层的最小面貌。
+type Healther interface {
+	CPUSeries(nodeID string) []int
+	Latest(nodeID string) (health.Sample, bool)
 }
 
 type Server struct {
@@ -22,16 +35,23 @@ type Server struct {
 	sessionTTL   time.Duration
 	secureCookie bool
 
-	tunnel     Tunneler
-	deployer   *deploy.Scheduler
-	masterAddr string
-	caPin      string
+	tunnel           Tunneler
+	health           Healther
+	alerts           *alert.Notifier
+	sealer           *secret.Sealer
+	deployer         *deploy.Scheduler
+	masterAddr       string
+	caPin            string
+	opsBotConfigured bool
 }
 
 type Options struct {
 	Store    *store.Store
 	Hub      *ws.Hub
 	Tunnel   Tunneler
+	Health   Healther
+	Alerts   *alert.Notifier
+	Sealer   *secret.Sealer
 	Deployer *deploy.Scheduler
 	Log      *slog.Logger
 
@@ -62,14 +82,18 @@ func New(o Options) *gin.Engine {
 	r.Use(Recover(o.Log))
 
 	s := &Server{
-		store:        o.Store,
-		log:          o.Log,
-		sessionTTL:   o.SessionTTL,
-		secureCookie: o.SecureCookie,
-		tunnel:       o.Tunnel,
-		deployer:     o.Deployer,
-		masterAddr:   o.MasterAddr,
-		caPin:        o.CAPin,
+		store:            o.Store,
+		log:              o.Log,
+		sessionTTL:       o.SessionTTL,
+		secureCookie:     o.SecureCookie,
+		tunnel:           o.Tunnel,
+		health:           o.Health,
+		alerts:           o.Alerts,
+		sealer:           o.Sealer,
+		deployer:         o.Deployer,
+		masterAddr:       o.MasterAddr,
+		caPin:            o.CAPin,
+		opsBotConfigured: o.OpsBotToken != "",
 	}
 
 	v1 := r.Group("/api/v1")
@@ -86,7 +110,20 @@ func New(o Options) *gin.Engine {
 		authed.GET("/ws", gin.WrapF(ws.Handler(o.Hub, o.Log)))
 	}
 
+	authed.GET("/overview", s.handleOverview)
+	authed.GET("/audit", s.handleAudit)
+
 	authed.GET("/nodes", s.handleListNodes)
+	authed.POST("/nodes/:id/push", audited("重推配置", s.handleNodePush))
+	authed.POST("/nodes/:id/dns", s.handleNodeDNS)
+	authed.POST("/nodes/:id/probe", s.handleNodeProbe)
+	authed.POST("/nodes/:id/drain", audited("下线节点", s.handleNodeDrain))
+
+	authed.GET("/settings", s.handleGetSettings)
+	authed.PUT("/settings", audited("修改系统设置", s.handlePutSettings))
+	authed.GET("/alerts", s.handleGetAlerts)
+	authed.PUT("/alerts", audited("修改告警设置", s.handlePutAlerts))
+	authed.POST("/alerts/test", audited("发送告警测试", s.handleTestAlert))
 	authed.POST("/nodes/token", audited("签发接入Token", s.handleIssueToken))
 
 	authed.GET("/routes", s.handleListRoutes)

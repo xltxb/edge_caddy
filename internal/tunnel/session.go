@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -20,8 +21,10 @@ type session struct {
 	closed chan struct{}
 	once   sync.Once
 
-	mu      sync.Mutex
-	waiters map[string]chan *edgev1.PushResult // key 是 cfg_version
+	mu       sync.Mutex
+	waiters  map[string]chan *edgev1.PushResult // key 是 cfg_version
+	probes   map[string]chan *edgev1.ProbeResult
+	probeSeq int
 }
 
 func newSession(nodeID string, stream edgev1.EdgeTunnel_ChannelServer) *session {
@@ -31,6 +34,7 @@ func newSession(nodeID string, stream edgev1.EdgeTunnel_ChannelServer) *session 
 		out:     make(chan *edgev1.MasterMsg, 8),
 		closed:  make(chan struct{}),
 		waiters: map[string]chan *edgev1.PushResult{},
+		probes:  map[string]chan *edgev1.ProbeResult{},
 	}
 }
 
@@ -78,6 +82,9 @@ func (s *session) readLoop(ctx context.Context, srv *Server) error {
 		case *edgev1.AgentMsg_PushResult:
 			s.deliver(m.PushResult)
 
+		case *edgev1.AgentMsg_ProbeResult:
+			s.deliverProbe(m.ProbeResult)
+
 		case *edgev1.AgentMsg_Hello:
 			// 重复的 Hello。不是错误，忽略即可——Agent 重连时可能补发。
 
@@ -106,7 +113,7 @@ func (s *session) deliver(r *edgev1.PushResult) {
 }
 
 // push 下发一份配置并等回报。
-func (s *session) push(ctx context.Context, cfgVersion string, caddyJSON, verifyRules []byte, deadline time.Duration) PushOutcome {
+func (s *session) push(ctx context.Context, cfgVersion string, caddyJSON, verifyRules []byte, counts ResourceCounts, deadline time.Duration) PushOutcome {
 	ch := make(chan *edgev1.PushResult, 1)
 	s.mu.Lock()
 	s.waiters[cfgVersion] = ch
@@ -119,6 +126,7 @@ func (s *session) push(ctx context.Context, cfgVersion string, caddyJSON, verify
 
 	msg := &edgev1.MasterMsg{M: &edgev1.MasterMsg_Push{Push: &edgev1.PushConfig{
 		CfgVersion: cfgVersion, CaddyJson: caddyJSON, VerifyRules: verifyRules,
+		Routes: counts.Routes, Rules: counts.Rules,
 		DeadlineMs: uint32(deadline.Milliseconds()),
 	}}}
 
@@ -144,5 +152,59 @@ func (s *session) push(ctx context.Context, cfgVersion string, caddyJSON, verify
 		return PushOutcome{Detail: "隧道已断开", Responded: false}
 	case <-ctx.Done():
 		return PushOutcome{Detail: "已取消", Responded: false}
+	}
+}
+
+func (s *session) deliverProbe(r *edgev1.ProbeResult) {
+	s.mu.Lock()
+	ch := s.probes[r.GetId()]
+	delete(s.probes, r.GetId())
+	s.mu.Unlock()
+	if ch != nil {
+		ch <- r
+	}
+}
+
+// probe 在隧道上真往返一次，测的是**这条隧道**通不通，
+// 而不是「主控这边的会话表里还有这一行」。会话表里有而对端已经死掉，
+// 是网络里最常见的一种状态。
+func (s *session) probe(ctx context.Context, timeout time.Duration) (ProbeOutcome, error) {
+	s.mu.Lock()
+	s.probeSeq++
+	id := fmt.Sprintf("p%d", s.probeSeq)
+	ch := make(chan *edgev1.ProbeResult, 1)
+	s.probes[id] = ch
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.probes, id)
+		s.mu.Unlock()
+	}()
+
+	start := time.Now()
+	msg := &edgev1.MasterMsg{M: &edgev1.MasterMsg_Probe{Probe: &edgev1.Probe{Id: id}}}
+	select {
+	case s.out <- msg:
+	case <-s.closed:
+		return ProbeOutcome{}, errUnreachable
+	case <-ctx.Done():
+		return ProbeOutcome{}, ctx.Err()
+	}
+
+	t := time.NewTimer(timeout)
+	defer t.Stop()
+	select {
+	case r := <-ch:
+		return ProbeOutcome{
+			RTT:        time.Since(start),
+			CaddyAdmin: r.GetCaddyAdmin(),
+			CfgVersion: r.GetCfgVersion(),
+		}, nil
+	case <-t.C:
+		return ProbeOutcome{}, errUnreachable
+	case <-s.closed:
+		return ProbeOutcome{}, errUnreachable
+	case <-ctx.Done():
+		return ProbeOutcome{}, ctx.Err()
 	}
 }

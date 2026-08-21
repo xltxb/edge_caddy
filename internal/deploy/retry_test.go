@@ -44,7 +44,7 @@ func (f *fakePusher) plan(node string, outs ...tunnel.PushOutcome) {
 
 func (f *fakePusher) OnlineNodes() []string { return f.nodes }
 
-func (f *fakePusher) Push(_ context.Context, node, _ string, _, _ []byte, _ time.Duration) tunnel.PushOutcome {
+func (f *fakePusher) Push(_ context.Context, node, _ string, _, _ []byte, _ tunnel.ResourceCounts, _ time.Duration) tunnel.PushOutcome {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	n := f.attempts[node]

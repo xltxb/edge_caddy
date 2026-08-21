@@ -39,6 +39,36 @@ type Heartbeat struct {
 	OriginTotal uint64
 }
 
+// ErrUnreachable 表示节点在隧道上没有回应。
+var errUnreachable = errors.New("节点不可达")
+
+// ProbeOutcome 把**隧道可达性**与**节点本机 Caddy Admin 可达性**分开报。
+//
+// 隧道通而 Admin 不通，说明 Caddy 挂了而 Agent 还活着——这两种故障的处置
+// 完全不同（契约 §4），合成一个布尔就分不出来了。
+type ProbeOutcome struct {
+	RTT        time.Duration
+	CaddyAdmin bool
+	CfgVersion string
+}
+
+// Probe 在隧道上往返一次。
+func (s *Server) Probe(ctx context.Context, nodeID string, timeout time.Duration) (ProbeOutcome, error) {
+	s.mu.RLock()
+	sess := s.sessions[nodeID]
+	s.mu.RUnlock()
+	if sess == nil {
+		return ProbeOutcome{}, errUnreachable
+	}
+	return sess.probe(ctx, timeout)
+}
+
+// IsUnreachable 供调用方判断错误种类，不必知道内部的哨兵值。
+func IsUnreachable(err error) bool { return errors.Is(err, errUnreachable) }
+
+// ResourceCounts 随配置一起下去，Agent 记下并在心跳里报回来。
+type ResourceCounts struct{ Routes, Rules uint32 }
+
 // PushOutcome 是一次下发在单个节点上的结果。
 //
 // Responded 是分类重试的**唯一**依据（ADR-0005）：节点回应了但 Caddy 拒绝
@@ -138,14 +168,14 @@ func (s *Server) OnlineNodes() []string {
 }
 
 // Push 把一份配置推给一个节点并等它回报。
-func (s *Server) Push(ctx context.Context, nodeID, cfgVersion string, caddyJSON, verifyRules []byte, deadline time.Duration) PushOutcome {
+func (s *Server) Push(ctx context.Context, nodeID, cfgVersion string, caddyJSON, verifyRules []byte, counts ResourceCounts, deadline time.Duration) PushOutcome {
 	s.mu.RLock()
 	sess := s.sessions[nodeID]
 	s.mu.RUnlock()
 	if sess == nil {
 		return PushOutcome{OK: false, Detail: "节点不在线", Responded: false}
 	}
-	return sess.push(ctx, cfgVersion, caddyJSON, verifyRules, deadline)
+	return sess.push(ctx, cfgVersion, caddyJSON, verifyRules, counts, deadline)
 }
 
 // Channel 是隧道的全部。

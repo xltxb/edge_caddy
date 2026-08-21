@@ -8,10 +8,13 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/xltxb/edge_caddy/internal/alert"
 	"github.com/xltxb/edge_caddy/internal/api"
 	"github.com/xltxb/edge_caddy/internal/config"
 	"github.com/xltxb/edge_caddy/internal/deploy"
+	"github.com/xltxb/edge_caddy/internal/health"
 	"github.com/xltxb/edge_caddy/internal/pki"
 	"github.com/xltxb/edge_caddy/internal/render"
 	"github.com/xltxb/edge_caddy/internal/secret"
@@ -97,6 +100,19 @@ func main() {
 	}
 
 	hub := ws.NewHub(log)
+	notifier := alert.New(st, sealer, log)
+
+	sys, err := st.GetSystemSettings(ctx)
+	if err != nil {
+		log.Error("读取系统设置失败", "err", err)
+		os.Exit(1)
+	}
+	monitor := health.New(health.Config{
+		Store: st, Hub: hub, Log: log, Alert: notifier,
+		Interval:  time.Duration(sys.HeartbeatInterval) * time.Second,
+		Threshold: sys.OfflineThreshold,
+	})
+	go monitor.Run(ctx)
 
 	advertiseHost, _, err := net.SplitHostPort(cfg.Advertise)
 	if err != nil {
@@ -106,6 +122,7 @@ func main() {
 		Store: st, CA: ca, Log: log,
 		Advertise: []string{advertiseHost, "127.0.0.1", "localhost"},
 		OnHeartbeat: func(hb tunnel.Heartbeat) {
+			monitor.Observe(hb)
 			hub.Broadcast(ws.TypeHeartbeat, ws.Heartbeat{
 				ID: hb.NodeID, Status: "ok", CPU: hb.CPU, Mem: hb.Mem,
 				Conns: hb.Conns, HBAgeMS: 0, CfgVersion: hb.CfgVersion,
@@ -134,7 +151,8 @@ func main() {
 	}
 
 	srv := api.New(api.Options{
-		Store: st, Hub: hub, Tunnel: tun, Deployer: scheduler, Log: log,
+		Store: st, Hub: hub, Tunnel: tun, Health: monitor, Alerts: notifier,
+		Sealer: sealer, Deployer: scheduler, Log: log,
 		SessionTTL: cfg.SessionTTL, OpsBotToken: cfg.OpsBotToken,
 		SecureCookie: cfg.MTLSEnabled,
 		MasterAddr:   cfg.Advertise, CAPin: caPin,

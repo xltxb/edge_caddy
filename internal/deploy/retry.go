@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/xltxb/edge_caddy/internal/store"
+	"github.com/xltxb/edge_caddy/internal/tunnel"
 )
 
 // 重试只针对**传输层失败**（ADR-0005）。
@@ -45,6 +46,7 @@ type retryJob struct {
 	cfgVersion  string
 	caddyJSON   []byte
 	verifyRules []byte
+	counts      tunnel.ResourceCounts
 	nodes       []string
 }
 
@@ -117,7 +119,7 @@ func (r *Retrier) run(ctx context.Context, job retryJob) {
 		var still []string
 		for _, node := range pending {
 			r.sched.progress(job.deployID, job.cfgVersion, node, "run", "", true)
-			out := r.sched.Pusher.Push(ctx, node, job.cfgVersion, job.caddyJSON, job.verifyRules, PushDeadline)
+			out := r.sched.Pusher.Push(ctx, node, job.cfgVersion, job.caddyJSON, job.verifyRules, job.counts, PushDeadline)
 
 			switch {
 			case out.OK:

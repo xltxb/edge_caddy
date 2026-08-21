@@ -68,3 +68,19 @@ func (s *Store) SetNodeCfgVersion(ctx context.Context, nodeID, cfgVersion string
 		`UPDATE edge_nodes SET cfg_version = $2 WHERE id = $1`, nodeID, cfgVersion)
 	return err
 }
+
+// SetNodeDown 标记节点离线并停掉它的解析。
+//
+// 两件事一条语句：分开写会出现「已判定离线但还在解析里」的中间态，
+// 而流量恰恰在那个窗口里继续往一台死机器上打。
+func (s *Store) SetNodeDown(ctx context.Context, nodeID string) error {
+	_, err := s.Pool.Exec(ctx,
+		`UPDATE edge_nodes SET status = 'down', dns_enabled = FALSE WHERE id = $1`, nodeID)
+	return err
+}
+
+func (s *Store) SetNodeDNS(ctx context.Context, nodeID string, enabled bool) error {
+	_, err := s.Pool.Exec(ctx,
+		`UPDATE edge_nodes SET dns_enabled = $2 WHERE id = $1`, nodeID, enabled)
+	return err
+}

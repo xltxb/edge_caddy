@@ -12,6 +12,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	edgev1 "github.com/xltxb/edge_caddy/gen/edge/v1"
@@ -41,12 +44,16 @@ type Config struct {
 }
 
 type Agent struct {
-	cfg    Config
-	log    *slog.Logger
-	caddy  *CaddyClient
-	verify *VerifyServer
+	cfg     Config
+	log     *slog.Logger
+	caddy   *CaddyClient
+	verify  *VerifyServer
+	metrics *metricsCollector
 
+	mu         sync.Mutex
 	cfgVersion string
+	routes     uint32
+	rules      uint32
 }
 
 func New(cfg Config) *Agent {
@@ -56,10 +63,12 @@ func New(cfg Config) *Agent {
 	if cfg.Heartbeat == 0 {
 		cfg.Heartbeat = 3 * time.Second
 	}
+	caddy := NewCaddyClient(cfg.CaddyAdmin)
 	return &Agent{
 		cfg: cfg, log: cfg.Log,
-		caddy:  NewCaddyClient(cfg.CaddyAdmin),
-		verify: NewVerifyServer(cfg.Log),
+		caddy:   caddy,
+		verify:  NewVerifyServer(cfg.Log),
+		metrics: newMetricsCollector(caddy),
 	}
 }
 
@@ -106,7 +115,9 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 		a.log.Info("接入完成，已取得隧道证书", "node_id", a.cfg.NodeID)
 	}
+	a.mu.Lock()
 	a.cfgVersion = enrolled.GetCfgVersion()
+	a.mu.Unlock()
 
 	go a.heartbeatLoop(ctx, stream)
 
@@ -118,6 +129,8 @@ func (a *Agent) Run(ctx context.Context) error {
 		switch m := msg.M.(type) {
 		case *edgev1.MasterMsg_Push:
 			a.handlePush(ctx, stream, m.Push)
+		case *edgev1.MasterMsg_Probe:
+			a.handleProbe(ctx, stream, m.Probe)
 		default:
 			// 探活、下线、续期在后续工单落地。
 		}
@@ -157,7 +170,11 @@ func (a *Agent) handlePush(ctx context.Context, stream edgev1.EdgeTunnel_Channel
 	} else {
 		res.Ok = true
 		res.Detail = fmt.Sprintf("%dms", took.Milliseconds())
+		a.mu.Lock()
 		a.cfgVersion = p.GetCfgVersion()
+		a.routes, a.rules = p.GetRoutes(), p.GetRules()
+		a.mu.Unlock()
+		a.metrics.setEdgePorts(edgePorts(p.GetCaddyJson()))
 		a.log.Info("配置已应用", "cfg_version", p.GetCfgVersion(), "took", res.Detail)
 	}
 
@@ -166,14 +183,41 @@ func (a *Agent) handlePush(ctx context.Context, stream edgev1.EdgeTunnel_Channel
 	}
 }
 
+// handleProbe 回一次探活。caddy_admin 是**本机 Caddy** 的可达性，
+// 与隧道可达性分开报：隧道通而 Admin 不通说明 Caddy 挂了而 Agent 还活着，
+// 这两种故障的处置完全不同。
+func (a *Agent) handleProbe(ctx context.Context, stream edgev1.EdgeTunnel_ChannelClient, p *edgev1.Probe) {
+	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	a.mu.Lock()
+	ver := a.cfgVersion
+	a.mu.Unlock()
+
+	res := &edgev1.ProbeResult{
+		Id:         p.GetId(),
+		CaddyAdmin: a.caddy.Alive(pingCtx),
+		CfgVersion: ver,
+	}
+	if err := stream.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_ProbeResult{ProbeResult: res}}); err != nil {
+		a.log.Error("回报探活失败", "err", err)
+	}
+}
+
 func (a *Agent) heartbeatLoop(ctx context.Context, stream edgev1.EdgeTunnel_ChannelClient) {
 	t := time.NewTicker(a.cfg.Heartbeat)
 	defer t.Stop()
 	send := func() {
-		err := stream.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_Hb{Hb: &edgev1.Heartbeat{
+		m := a.metrics.collect(ctx)
+		a.mu.Lock()
+		hb := &edgev1.Heartbeat{
 			NodeId: a.cfg.NodeID, CfgVersion: a.cfgVersion,
-		}}})
-		if err != nil {
+			Cpu: m.CPU, Mem: m.Mem, Conns: m.Conns,
+			Routes: a.routes, Rules: a.rules,
+			ReqTotal: m.ReqTotal, OriginTotal: m.OriginTotal,
+		}
+		a.mu.Unlock()
+		if err := stream.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_Hb{Hb: hb}}); err != nil {
 			a.log.Debug("心跳发送失败（隧道多半已断）", "err", err)
 		}
 	}
@@ -291,4 +335,35 @@ func (a *Agent) saveIdentity(e *edgev1.Enrolled) error {
 func fileExists(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && !st.IsDir()
+}
+
+// edgePorts 从下发的配置里读出边缘 server 监听的端口，供连接数统计使用。
+// 不限定端口的话，SSH 与隧道自己的连接都会被算进「连接数」，那个数字就没有意义。
+// unix socket 上的监听没有端口，自然不计入。
+func edgePorts(caddyJSON []byte) []uint32 {
+	var cfg struct {
+		Apps struct {
+			HTTP struct {
+				Servers map[string]struct {
+					Listen []string `json:"listen"`
+				} `json:"servers"`
+			} `json:"http"`
+		} `json:"apps"`
+	}
+	if json.Unmarshal(caddyJSON, &cfg) != nil {
+		return nil
+	}
+	var out []uint32
+	for _, srv := range cfg.Apps.HTTP.Servers {
+		for _, l := range srv.Listen {
+			_, port, found := strings.Cut(l, ":")
+			if !found {
+				continue
+			}
+			if n, err := strconv.ParseUint(port, 10, 32); err == nil {
+				out = append(out, uint32(n))
+			}
+		}
+	}
+	return out
 }

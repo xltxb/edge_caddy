@@ -252,7 +252,11 @@ WS 断开时前端按指数退避重连；重连期间对进行中的下发降�
   数据来自 `traffic_samples` 表：每分钟一行全局聚合，保留 7 天，约 1440 行/天。
   这是唯一一处需要落库的时序数据；节点级的 `cpu_series` 仍然只在内存里（§4）。
 - `origin_rate` 是**回源率**百分比：**到达 upstream 的请求 ÷ 边缘收到的总请求**。
-  越低越好，前端按「高于阈值转 warning」着色。
+  越低越好，前端按「高于阈值转 warning」着色。**一个请求都还没有时是 `null`**——
+  0 会被读成「一个请求都没回源」，那是个很好的数字，而真相是「还没有数据」。
+
+  数据来自各节点 Caddy 的 `/metrics`：`caddy_http_requests_total{handler="reverse_proxy"}`
+  是到达 upstream 的，其余 handler 的是被访问规则拦下或由静态响应处理掉的。
 
   > **注意它不是缓存命中率。** 设计稿的脚注写着「静态缓存承载 91.3% 请求」——
   > 那个说法在本架构下不成立：**官方 Caddy 没有 HTTP 缓存模块**（`reverse_proxy`
@@ -330,8 +334,14 @@ Token **30 分钟 TTL、单次使用**，用后即失效。节点凭它完成首
 
 ### `POST /nodes/:id/push` —— 把当前基线重推给单个节点
 
-`data`：`{ "deploy_id": 82, "cfg_version": "cfg-2f9a1c" }`，进度走 WS。
-对已下线节点返回 `code: 2001`。
+```json
+// data
+{ "cfg_version": "cfg-2f9a1c", "detail": "31ms" }
+```
+
+**重推推的是当前基线那一版，不产生新版本，也不写下发记录。** 把一台掉队的机器
+带上来，不该在下发记录里多出一次谁也没发起过的下发。推完那台机器的
+`cfg_version` 就等于基线，配置漂移随之消失。对已下线节点返回 `code: 2001`。
 
 这个端点是 [ADR-0005](adr/0005-retry-only-transport-failures.md) 的兜底：Caddy 拒绝的
 配置不自动重试，环境类临时故障由人在这里手动恢复。
@@ -366,11 +376,14 @@ null
 { "confirm": true }
 // data —— 三步的执行结果
 { "steps": [
-  { "step": "dns_removed",   "ok": true },
-  { "step": "conns_drained", "ok": true, "detail": "等待 12400 连接结束，耗时 8.2s" },
-  { "step": "tunnel_closed", "ok": true }
+  { "step": "dns_removed",   "ok": true,  "detail": "已停止解析（真正调用 DNS 服务商属于 #21）" },
+  { "step": "conns_drained", "ok": false, "detail": "尚未实现，连接不会被主动排空" },
+  { "step": "tunnel_closed", "ok": false, "detail": "尚未实现，隧道仍然保持" }
 ] }
 ```
+
+**尚未实现的步骤报 `ok: false` 并说明原因，不报成功。** 回一个 `ok: true`
+会让人以为流量已经排干净了，然后关掉那台机器——而连接还在。
 
 ---
 

@@ -21,8 +21,14 @@ type nodeResp struct {
 	DNSEnabled bool    `json:"dns_enabled"`
 	LastHBAt   *string `json:"last_hb_at"`
 	HBAgeMS    *int64  `json:"hb_age_ms"`
-	// CPUSeries 在本切片恒为 null：Agent 还没有采集 CPU（属于 #20）。
-	// 给 null 而不是给一串 0 —— 0 会被读成「负载为零」，null 才说得出「没有数据」。
+	CPU        float64 `json:"cpu"`
+	Mem        float64 `json:"mem"`
+	Conns      uint32  `json:"conns"`
+	// Routes / Rules 是**该节点当前生效配置里**的数量，由心跳上报，
+	// 不是全局数量。漂移的节点会报旧数字，那正是它有用的地方。
+	Routes uint32 `json:"routes"`
+	Rules  uint32 `json:"rules"`
+	// CPUSeries 没有数据时是 null，不是一串 0 —— 0 会被读成「负载为零」。
 	CPUSeries []int     `json:"cpu_series"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -59,6 +65,13 @@ func (s *Server) handleListNodes(c *gin.Context) {
 			// 配置漂移 = 节点上报的版本 ≠ 基线。**只比对版本号，不检查内容**
 			// （ADR-0002）：有人 SSH 上去手改配置、或节点重启后回退，漂移不会亮。
 			Drift: baseline != "" && n.CfgVersion != baseline,
+		}
+		if s.health != nil {
+			item.CPUSeries = s.health.CPUSeries(n.ID)
+			if m, ok := s.health.Latest(n.ID); ok {
+				item.CPU, item.Mem, item.Conns = m.CPU, m.Mem, m.Conns
+				item.Routes, item.Rules = m.Routes, m.Rules
+			}
 		}
 		if n.LastHBAt != nil {
 			ts := n.LastHBAt.Format(time.RFC3339)

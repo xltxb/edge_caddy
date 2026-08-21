@@ -187,3 +187,18 @@ func sortedKeys(m map[string]json.RawMessage) []string {
 	sort.Strings(out)
 	return out
 }
+
+// Alive 探一下本机 Caddy Admin 是否可达。
+func (c *CaddyClient) Alive(ctx context.Context) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.Admin+"/config/", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	return resp.StatusCode >= 200 && resp.StatusCode < 500
+}

@@ -13,9 +13,11 @@ import (
 	"time"
 
 	"github.com/xltxb/edge_caddy/internal/agent"
+	"github.com/xltxb/edge_caddy/internal/alert"
 	"github.com/xltxb/edge_caddy/internal/api"
 	"github.com/xltxb/edge_caddy/internal/caddytest"
 	"github.com/xltxb/edge_caddy/internal/deploy"
+	"github.com/xltxb/edge_caddy/internal/health"
 	"github.com/xltxb/edge_caddy/internal/pki"
 	"github.com/xltxb/edge_caddy/internal/render"
 	"github.com/xltxb/edge_caddy/internal/secret"
@@ -72,7 +74,15 @@ func newRig(t *testing.T) *rig {
 		t.Fatal(err)
 	}
 	hub := ws.NewHub(nil)
-	tun, err := tunnel.New(tunnel.Options{Store: st, CA: ca, Advertise: []string{"127.0.0.1"}})
+	var monitorRef *health.Monitor
+	tun, err := tunnel.New(tunnel.Options{
+		Store: st, CA: ca, Advertise: []string{"127.0.0.1"},
+		OnHeartbeat: func(hb tunnel.Heartbeat) {
+			if monitorRef != nil {
+				monitorRef.Observe(hb)
+			}
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,8 +94,15 @@ func newRig(t *testing.T) *rig {
 		Render: render.Options{HTTPListen: cad.EdgeListen(), VerifyAddr: cad.VerifyDial()},
 	}
 
+	monitor := health.New(health.Config{
+		Store: st, Hub: hub, Interval: 200 * time.Millisecond, Threshold: 3,
+	})
+	monitorRef = monitor
+	notifier := alert.New(st, sealer, nil)
+
 	srv := httptest.NewServer(api.New(api.Options{
 		Store: st, Hub: hub, Tunnel: tun, Deployer: sched,
+		Health: monitor, Alerts: notifier, Sealer: sealer,
 		SessionTTL: time.Hour, MasterAddr: lis.Addr().String(), CAPin: caPin,
 	}))
 	t.Cleanup(srv.Close)

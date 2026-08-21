@@ -85,6 +85,13 @@ message PushConfig {
   //
   // Caddy 配置里只出现 /verify/<rule-id> 这个路径，不含任何密钥。
   bytes verify_rules = 4;
+
+  // 本次配置里的资源数量。Agent 记下并在心跳里报回来。
+  //
+  // 让节点报「它自己那份」而不是主控现算：一台没应用成功的节点会继续报**旧**数字，
+  // 那正是这两个字段有用的地方——它们和 cfg_version 一起说明「这台机器上到底是哪一版」。
+  uint32 routes = 5;
+  uint32 rules = 6;
 }
 
 // PushResult 的 ok=false 分两种，主控靠「有没有收到这条消息」区分，不靠 detail 的措辞：

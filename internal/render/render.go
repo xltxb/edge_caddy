@@ -88,6 +88,11 @@ func Render(routes []model.Route, rules []model.Rule, opt Options) ([]byte, []Is
 					"edge": map[string]any{
 						"listen": []string{opt.HTTPListen},
 						"routes": caddyRoutes,
+						// 打开 server 级 metrics：回源率靠它算。
+						// caddy_http_requests_total{handler="reverse_proxy"} 是到达
+						// upstream 的请求数，其余 handler 的是被边缘拦下的
+						// （api-contract §3）。不开这个就只能编一个数字。
+						"metrics": map[string]any{},
 						// 关掉自动 HTTPS：主控此刻还没有任何证书，开着会让 Caddy
 						// 自己去 ACME 申请，而证书由主控集中签发（ADR-0001）。
 						// 证书下发与 :443 属于 #22，届时这里要一并重来。
