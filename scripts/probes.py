@@ -4,8 +4,9 @@
 每条探针把源码改坏一处，然后回答三个问题：
 
   1. 改动真的落进文件了吗？   —— 不生效的改坏会产生「测试很健壮」的假结论
-  2. 目标测试红了吗？
-  3. **红的是不是我想验的那一条？**  —— 红了不等于验过了
+  2. **目标测试真的跑了吗？**   —— 编译失败时一条都不跑，而那也表现为「没红」
+  3. 它红了吗？
+  4. **红的是不是我想验的那一条？**  —— 红了不等于验过了
 
 第三问是这个脚本存在的主要理由。手工改坏时人只看得到「N failed」，
 而红有三种打偏的方式，每一种都长得像验过了：
@@ -158,22 +159,35 @@ PROBES = [
 
 
 def run_test(pkg, test):
-    """跑一个测试，返回 (红了的测试名集合, 全部输出)。"""
+    """跑一个测试，返回 (跑到的测试名, 红了的, 全部输出)。
+
+    `ran` 是第二问的依据：**编译失败时一条测试都不会跑**，而那时 `failed`
+    同样是空的。两个世界产生同一个观测，结论却完全相反——一个是探针坏了，
+    一个是测试拦不住。没有这一问，前者会被当成后者，
+    而人会去改一条本来没问题的断言。
+
+    它顺带挡住另外两件同样表现为「空」的事：目标测试被改名（`-run` 匹配不到，
+    go test 照样 exit 0），以及被 skip 掉。
+    """
     p = subprocess.run(
         ["go", "test", pkg, "-run", f"^{test}$", "-count=1", "-json"],
         cwd=ROOT, capture_output=True, text=True,
     )
-    failed, output = set(), []
+    ran, failed, output = set(), set(), []
     for line in p.stdout.splitlines():
         try:
             e = json.loads(line)
         except json.JSONDecodeError:
+            # 编译错误不是 JSON，它直接印在 stdout 上。留着进 output。
+            output.append(line + "\n")
             continue
+        if e.get("Test") and e.get("Action") in ("pass", "fail"):
+            ran.add(e["Test"])
         if e.get("Action") == "fail" and e.get("Test"):
             failed.add(e["Test"])
         if e.get("Action") == "output":
             output.append(e.get("Output", ""))
-    return failed, "".join(output) + p.stderr
+    return ran, failed, "".join(output) + p.stderr
 
 
 def main():
@@ -200,13 +214,26 @@ def main():
                 results.append((p, "改动没落进文件", "写回之后读不到新内容"))
                 continue
 
-            failed, out = run_test(p.pkg, p.test)
+            ran, failed, out = run_test(p.pkg, p.test)
 
-            # 第二问：红了吗。
-            if p.test not in failed:
-                results.append((p, "没红", f"{p.test} 在改坏之后仍然通过"))
+            # 第二问（正面自检）：那条测试真的跑了吗。
+            #
+            # 编译失败、名字被改、被 skip —— 三件事都让 failed 为空，
+            # 跟「拦不住」是同一个观测，而处置完全相反。
+            if p.test not in ran:
+                head = "\n     ".join(l for l in out.splitlines() if l.strip())
+                results.append((p, "一条测试都没跑", (
+                    f"{p.test} 没有出现在这次运行里（既没 pass 也没 fail）。\n"
+                    "     **这说明探针本身坏了，不是测试拦不住** —— "
+                    "多半是改坏造成了编译错误，也可能测试被改名或 skip 了。\n     "
+                    + head[:500])))
                 continue
-            # 第三问：红在点上吗。
+
+            # 第三问：红了吗。
+            if p.test not in failed:
+                results.append((p, "没红", f"{p.test} 跑了，但在改坏之后仍然通过"))
+                continue
+            # 第四问：红在点上吗。
             if p.expect_line and p.expect_line not in out:
                 results.append((p, "红在别处", (
                     f"{p.test} 确实红了，但失败信息里没有 {p.expect_line!r}。\n"
