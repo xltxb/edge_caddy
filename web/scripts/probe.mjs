@@ -143,14 +143,30 @@ const PROBES = [
     spec: 'src/nodes/flags.test.ts',
     expect: '还没问到',
   },
+  /*
+   * 验的是「已下线时『关』的方向也拦得住」—— 契约 §4 两个方向都拒。
+   *
+   * **探针要跟着不变量换**：不换的话它会守着一条已经不成立的规矩，而且照样绿。
+   * （这条早先验的是反面「别拦『关』的方向」，关这一下会把 dns_reason 改写成
+   * manual 而 drained_at 还在，那条约束因此换掉了。）
+   */
   {
-    name: '解析闸门拦错方向，把「暂停解析」也拦掉',
-    invariant: '只拦「开」的方向；拦「关」会让人没法暂停解析',
+    name: '放行「关」的方向',
+    invariant: '已下线的节点两个方向都不能按 —— 关这一下会把归因改写成「人手动关的」',
     file: 'src/nodes/flags.ts',
-    from: "  if (n.dnsEnabled) return { ok: true, reason: '' } // 这是「关」的方向\n",
-    to: '',
+    from: "  if (!n.drainedAt) return { ok: true, reason: '' }",
+    to: "  if (!n.drainedAt || n.dnsEnabled) return { ok: true, reason: '' }",
     spec: 'src/nodes/flags.test.ts',
-    expect: '关」的方向',
+    expect: '解析开着：也拦住',
+  },
+  {
+    name: '两个方向说同一句话',
+    invariant: '一句说「怎么用回来」，一句说「这件事没意义」—— 混成一句会让人去做无用功',
+    file: 'src/nodes/flags.ts',
+    from: "      ? '该节点已被下线，本来就不在解析里'",
+    to: "      ? '该节点已被下线，先「重新上线」再恢复解析'",
+    spec: 'src/nodes/flags.test.ts',
+    expect: '解析开着：也拦住',
   },
   /*
    * 这个改坏退回**原来那个二选一**：只凭 status 在「自动」和「手动」之间挑。

@@ -191,9 +191,24 @@ export async function handleNodes(
 
     if (act[2] === 'dns') {
       const b = await readBody(req)
-      // 已下线的节点开解析要拒；关不拒
-      if (b.enabled === true && node.drained_at) {
-        return failCode(res, 2001, '该节点已被下线，先「重新上线」再恢复解析'), true
+      /*
+       * 已下线的节点**两个方向都拒**（契约 §4）。
+       *
+       * 「关」原先是放行的 —— 而它会把 dns_reason 改写成 manual，drained_at 还在，
+       * 于是节点页说「已下线」、DNS 页说「人手动关的」。mock 放行一个真后端会拒的
+       * 动作，等于让开发时走得通、上线才撞墙。
+       */
+      if (node.drained_at) {
+        return (
+          failCode(
+            res,
+            2001,
+            b.enabled === true
+              ? '该节点已被下线，先「重新上线」再恢复解析'
+              : '该节点已被下线，本来就不在解析里',
+          ),
+          true
+        )
       }
       node.dns_enabled = b.enabled === true
       log(id, 'warn', `dns weight ${node.dns_enabled ? 'restored' : 'set to 0'}`)

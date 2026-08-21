@@ -12,7 +12,7 @@ import { useUiStore } from '@/stores/ui'
 import { hbAgeSec, type EdgeNode } from '@/model'
 import { fmtClock, fmtConns, fmtHbAge } from '@/utils/format'
 import type { DrainStep } from '@/api/types'
-import { canEnableDns, nodeFlags } from '@/nodes/flags'
+import { canToggleDns, nodeFlags } from '@/nodes/flags'
 
 const route = useRoute()
 const nodes = useNodesStore()
@@ -37,7 +37,7 @@ const now = ref(Date.now())
  */
 const dnsSyncOk = computed(() => nodes.dnsSync?.ok ?? null)
 const flagsOf = (n: EdgeNode) => nodeFlags(n, dnsSyncOk.value)
-const dnsGate = (n: EdgeNode) => canEnableDns(n)
+const dnsGate = (n: EdgeNode) => canToggleDns(n)
 let ticker: ReturnType<typeof setInterval> | null = null
 
 onMounted(() => {
@@ -308,9 +308,10 @@ const LEVEL_COLOR: Record<string, string> = {
               {{ nodes.busy[n.id] === '重推中' ? '重推中…' : '重推配置' }}
             </button>
             <!--
-              已下线的节点开解析会被拒（契约 §4：2001，先「重新上线」）。这里直接禁用并
-              说明，而不是让人点了再被拒 —— 「置灰只是把拒绝提前」。
-              关解析不拒，所以只在「要开」的方向禁用。
+              已下线的节点**两个方向都会被拒**（契约 §4：2001）。这里直接禁用并说明，
+              而不是让人点了再被拒 —— 「置灰只是把拒绝提前」。
+              「关」原先是放行的，那会把 dns_reason 改写成 manual 而 drained_at 还在，
+              于是这一页说「已下线」、DNS 页说「人手动关的」。
             -->
             <button
               class="mini"

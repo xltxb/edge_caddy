@@ -47,14 +47,26 @@ export function nodeFlags(n: EdgeNode, dnsSyncOk: boolean | null): NodeFlag[] {
 }
 
 /**
- * 「恢复解析」能不能按。
+ * 解析开关能不能按。
  *
- * 已下线的节点开解析会被拒（契约 §4：`2001`，msg 说明先「重新上线」）。
- * 置灰而不是让人点了再被拒 —— **一道人人都会
- * 撞到的拒绝，说明那个按钮不该能按**。关解析不拒，所以只在「要开」的方向拦。
+ * 已下线的节点**两个方向都会被拒**（契约 §4：`2001`）。置灰而不是让人点了
+ * 再被拒 —— **一道人人都会撞到的拒绝，说明那个按钮不该能按**。
+ *
+ * 「关」的方向原先是放行的，理由是「它不会把流量送到一台连不上的机器上」——
+ * **那个理由至今成立，它只是漏了一件事**：关这一下会把 `dns_reason` 改写成
+ * `manual`，而 `drained_at` 还在。于是节点页说「已下线」、DNS 页说「人手动
+ * 关的」，两页各说各的，而**每一句单独看都是对的**。
+ *
+ * 所以这不是「把约束改严了」。两者在 diff 里长得一样（一条断言反过来了），
+ * 但该写进提交的话不同：观测能力变了要写「它为什么**现在**可以更松」，
+ * 发现旧约束的代价要写「原来那条**漏了什么**」。这是后一种。
  */
-export function canEnableDns(n: EdgeNode): { ok: boolean; reason: string } {
-  if (n.dnsEnabled) return { ok: true, reason: '' } // 这是「关」的方向
-  if (n.drainedAt) return { ok: false, reason: '该节点已被下线，先「重新上线」再恢复解析' }
-  return { ok: true, reason: '' }
+export function canToggleDns(n: EdgeNode): { ok: boolean; reason: string } {
+  if (!n.drainedAt) return { ok: true, reason: '' }
+  return {
+    ok: false,
+    reason: n.dnsEnabled
+      ? '该节点已被下线，本来就不在解析里'
+      : '该节点已被下线，先「重新上线」再恢复解析',
+  }
 }

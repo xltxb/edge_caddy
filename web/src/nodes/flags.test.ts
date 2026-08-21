@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canEnableDns, nodeFlags } from './flags'
+import { canToggleDns, nodeFlags } from './flags'
 import type { EdgeNode } from '@/model'
 
 const node = (over: Partial<EdgeNode> = {}): EdgeNode => ({
@@ -26,6 +26,8 @@ const node = (over: Partial<EdgeNode> = {}): EdgeNode => ({
   rules: 1,
   ...over,
 })
+
+const AT = '2026-08-21T16:52:26+08:00'
 
 const texts = (n: EdgeNode, sync: boolean | null = true) => nodeFlags(n, sync).map((f) => f.text)
 
@@ -83,21 +85,35 @@ describe('「已退出解析」是关于服务商的断言', () => {
   })
 })
 
-describe('「恢复解析」在已下线时不该能按', () => {
-  it('已下线且解析关着：拦住，并说清怎么办', () => {
-    const r = canEnableDns(node({ dnsEnabled: false, drainedAt: '2026-08-21T16:52:26+08:00' }))
+describe('已下线的节点，解析开关两个方向都不该能按', () => {
+  /*
+   * 这一组的不变量**换过一次**，而那不是「改严了」。
+   *
+   * 原先只拦「开」的方向，理由是「关这一下不会把流量送到一台连不上的机器上」
+   * —— **那个理由至今成立**，它只是漏了一件事：关这一下会把 dns_reason 改写成
+   * manual，而 drained_at 还在。于是节点页说「已下线」、DNS 页说「人手动关的」，
+   * 两页各说各的，**而每一句单独看都是对的**。
+   *
+   * 跟「观测能力变了所以旧约束开始拦真话」那种在 diff 里长得一样（一条断言
+   * 反过来了），但性质不同：那种是旧约束现在多余了，这种是旧约束一直有个代价
+   * 而我们才看见。
+   */
+  it('解析关着：拦住，并说清怎么办', () => {
+    const r = canToggleDns(node({ dnsEnabled: false, drainedAt: AT }))
     expect(r.ok).toBe(false)
     expect(r.reason).toContain('重新上线')
   })
 
-  // 关解析后端不拒，所以只在「要开」的方向拦 —— 拦错方向会让人没法暂停解析
-  it('已下线但解析开着：那是「关」的方向，不拦', () => {
-    expect(canEnableDns(node({ dnsEnabled: true, drainedAt: '2026-08-21T16:52:26+08:00' })).ok).toBe(
-      true,
-    )
+  it('解析开着：也拦住 —— 关这一下会把归因改写成「人手动关的」', () => {
+    const r = canToggleDns(node({ dnsEnabled: true, drainedAt: AT }))
+    expect(r.ok).toBe(false)
+    expect(r.reason).toContain('本来就不在解析里')
+    // 两个方向的话不一样：一句说「怎么用回来」，一句说「这件事没意义」
+    expect(r.reason).not.toContain('重新上线')
   })
 
-  it('没下线：正常可按', () => {
-    expect(canEnableDns(node({ dnsEnabled: false })).ok).toBe(true)
+  it('没下线：两个方向都正常可按', () => {
+    expect(canToggleDns(node({ dnsEnabled: false })).ok).toBe(true)
+    expect(canToggleDns(node({ dnsEnabled: true })).ok).toBe(true)
   })
 })
