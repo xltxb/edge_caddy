@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -18,11 +20,25 @@ type CaddyClient struct {
 	HTTP  *http.Client
 }
 
+// NewCaddyClient 接受两种 Admin 地址：
+//
+//	http://127.0.0.1:2019       生产默认
+//	unix//path/to/admin.sock    Caddy 的 unix socket 写法（前缀 unix/ + 绝对路径）
+//
+// 支持后者不只是为了测试：Admin 走 unix socket 时它根本不占端口，
+// 也就不存在「谁都能连上回环 2019」这件事，姿态比 ADR-0010 里靠防火墙兜底更严。
 func NewCaddyClient(admin string) *CaddyClient {
-	return &CaddyClient{
-		Admin: admin,
-		HTTP:  &http.Client{Timeout: 10 * time.Second},
+	c := &CaddyClient{Admin: admin, HTTP: &http.Client{Timeout: 10 * time.Second}}
+
+	if path, ok := strings.CutPrefix(admin, "unix/"); ok {
+		c.Admin = "http://caddy-admin" // 主机名只是占位，实际连的是 socket
+		c.HTTP.Transport = &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", path)
+			},
+		}
 	}
+	return c
 }
 
 // Apply 把一个 app 的配置写进本机 Caddy，返回耗时。

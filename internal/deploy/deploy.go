@@ -15,6 +15,7 @@ import (
 
 	"github.com/xltxb/edge_caddy/internal/model"
 	"github.com/xltxb/edge_caddy/internal/render"
+	"github.com/xltxb/edge_caddy/internal/secret"
 	"github.com/xltxb/edge_caddy/internal/store"
 	"github.com/xltxb/edge_caddy/internal/tunnel"
 	"github.com/xltxb/edge_caddy/internal/ws"
@@ -26,7 +27,7 @@ const PushDeadline = 5 * time.Second
 // Pusher 是隧道在这一层的最小面貌。抽出来只为让下发能被单独测。
 type Pusher interface {
 	OnlineNodes() []string
-	Push(ctx context.Context, nodeID, cfgVersion string, caddyJSON []byte, deadline time.Duration) tunnel.PushOutcome
+	Push(ctx context.Context, nodeID, cfgVersion string, caddyJSON, verifyRules []byte, deadline time.Duration) tunnel.PushOutcome
 }
 
 type Scheduler struct {
@@ -35,6 +36,10 @@ type Scheduler struct {
 	Hub    *ws.Hub
 	Log    *slog.Logger
 	Render render.Options
+
+	// Sealer 用来解开服务密钥规则的共享密钥。渲染需要明文——
+	// 校验端点要拿它验签，而它只在下发的载荷里出现，不经任何读接口回显。
+	Sealer *secret.Sealer
 }
 
 // ErrNoOnlineNodes —— 没有在线节点时下发是个无操作。
@@ -57,15 +62,21 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 		log = slog.Default()
 	}
 
-	routes, err := s.effectiveRoutes(ctx, resKeys)
+	routes, rules, err := s.effective(ctx, resKeys)
 	if err != nil {
 		return Result{}, nil, err
 	}
 
-	cfg, issues := render.Render(routes, s.Render)
+	cfg, issues := render.Render(routes, rules, s.Render)
 	if len(issues) > 0 {
 		// 校验不过即整体拒绝，不触达节点。
 		return Result{}, issues, nil
+	}
+
+	// 验签材料走旁路，不进 Caddy 配置——Admin API 能读回整份运行配置。
+	verifyRules, err := json.Marshal(render.VerifyRules(rules))
+	if err != nil {
+		return Result{}, nil, fmt.Errorf("序列化校验规则: %w", err)
 	}
 
 	targets := s.Pusher.OnlineNodes()
@@ -94,7 +105,7 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 		go func(i int, node string) {
 			defer wg.Done()
 			s.progress(deployID, cfgVersion, node, "run", "", false)
-			out := s.Pusher.Push(ctx, node, cfgVersion, cfg, PushDeadline)
+			out := s.Pusher.Push(ctx, node, cfgVersion, cfg, verifyRules, PushDeadline)
 			results[i] = outcome{node, out}
 
 			// **结果一到就落库**，不等其余节点。
@@ -141,8 +152,11 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 		if err := s.Store.SetBaseline(ctx, cfgVersion, deployID); err != nil {
 			log.Error("确立基线失败", "err", err)
 		}
-		if err := s.Store.BumpRouteVersions(ctx, domainsOf(resKeys)); err != nil {
-			log.Error("推进资源版本失败", "err", err)
+		if err := s.Store.BumpRouteVersions(ctx, keysWithPrefix(resKeys, "route:")); err != nil {
+			log.Error("推进路由版本失败", "err", err)
+		}
+		if err := s.Store.BumpRuleVersions(ctx, keysWithPrefix(resKeys, "rule:")); err != nil {
+			log.Error("推进规则版本失败", "err", err)
 		}
 		if err := s.Store.DeleteDrafts(ctx, resKeys); err != nil {
 			log.Error("清空草稿失败", "err", err)
@@ -169,22 +183,27 @@ func eventKind(ok, fail int) string {
 	}
 }
 
-// effectiveRoutes = 基线 + **本次勾选**的草稿。未勾选的草稿不参与本次渲染。
-func (s *Scheduler) effectiveRoutes(ctx context.Context, resKeys []string) ([]model.Route, error) {
-	live, err := s.Store.ListRoutes(ctx)
+// effective = 基线 + **本次勾选**的草稿。未勾选的草稿不参与本次渲染。
+func (s *Scheduler) effective(ctx context.Context, resKeys []string) ([]model.Route, []model.Rule, error) {
+	liveRoutes, err := s.Store.ListRoutes(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("读取路由: %w", err)
+		return nil, nil, fmt.Errorf("读取路由: %w", err)
+	}
+	// 渲染需要共享密钥的明文：校验端点要拿它验签。它只出现在下发的载荷里，
+	// 不经任何读接口回显。
+	liveRules, err := s.Store.ListRules(ctx, s.Sealer)
+	if err != nil {
+		return nil, nil, fmt.Errorf("读取访问规则: %w", err)
 	}
 	drafts, err := s.Store.ListDrafts(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("读取草稿: %w", err)
+		return nil, nil, fmt.Errorf("读取草稿: %w", err)
 	}
 
 	selected := map[string]bool{}
 	for _, k := range resKeys {
 		selected[k] = true
 	}
-
 	patches := map[string]json.RawMessage{}
 	for _, d := range drafts {
 		if selected[d.ResKey] {
@@ -192,25 +211,39 @@ func (s *Scheduler) effectiveRoutes(ctx context.Context, resKeys []string) ([]mo
 		}
 	}
 
-	out := make([]model.Route, 0, len(live))
-	for _, r := range live {
+	routes := make([]model.Route, 0, len(liveRoutes))
+	for _, r := range liveRoutes {
 		if p, ok := patches["route:"+r.Domain]; ok {
-			merged, err := mergeRoute(r, p)
+			merged, err := mergeInto(r, p)
 			if err != nil {
-				return nil, fmt.Errorf("合并 %s 的草稿: %w", r.Domain, err)
+				return nil, nil, fmt.Errorf("合并 %s 的草稿: %w", r.Domain, err)
 			}
 			r = merged
 		}
-		out = append(out, r)
+		routes = append(routes, r)
 	}
-	return out, nil
+
+	rules := make([]model.Rule, 0, len(liveRules))
+	for _, r := range liveRules {
+		if p, ok := patches["rule:"+r.ID]; ok {
+			secretPlain := r.Secret // 草稿里不会有密钥，合并不能把它弄丢
+			merged, err := mergeInto(r, p)
+			if err != nil {
+				return nil, nil, fmt.Errorf("合并规则 %s 的草稿: %w", r.ID, err)
+			}
+			merged.Secret = secretPlain
+			r = merged
+		}
+		rules = append(rules, r)
+	}
+	return routes, rules, nil
 }
 
-// mergeRoute 把 Partial 叠加到一条路由上。
+// mergeInto 把 Partial 叠加到一个资源上。
 //
 // 走一次 JSON 往返而不是逐字段 if：字段会增加，逐字段合并的那个函数
 // 每次都要跟着改，而漏掉一个字段的症状是「改了没生效」——最难排查的一类。
-func mergeRoute(base model.Route, patch json.RawMessage) (model.Route, error) {
+func mergeInto[T any](base T, patch json.RawMessage) (T, error) {
 	b, err := json.Marshal(base)
 	if err != nil {
 		return base, err
@@ -230,18 +263,18 @@ func mergeRoute(base model.Route, patch json.RawMessage) (model.Route, error) {
 	if err != nil {
 		return base, err
 	}
-	var out model.Route
+	var out T
 	if err := json.Unmarshal(merged, &out); err != nil {
 		return base, err
 	}
 	return out, nil
 }
 
-func domainsOf(resKeys []string) []string {
+func keysWithPrefix(resKeys []string, prefix string) []string {
 	var out []string
 	for _, k := range resKeys {
-		if d, ok := strings.CutPrefix(k, "route:"); ok {
-			out = append(out, d)
+		if id, ok := strings.CutPrefix(k, prefix); ok {
+			out = append(out, id)
 		}
 	}
 	return out
@@ -308,11 +341,15 @@ func (s *Scheduler) Preview(ctx context.Context, resKeys []string) (Preview, err
 	var p Preview
 	p.Validation.Errors = []render.Issue{}
 
-	live, err := s.Store.ListRoutes(ctx)
+	liveRoutes, err := s.Store.ListRoutes(ctx)
 	if err != nil {
 		return p, fmt.Errorf("读取路由: %w", err)
 	}
-	after, err := s.effectiveRoutes(ctx, resKeys)
+	liveRules, err := s.Store.ListRules(ctx, s.Sealer)
+	if err != nil {
+		return p, fmt.Errorf("读取访问规则: %w", err)
+	}
+	afterRoutes, afterRules, err := s.effective(ctx, resKeys)
 	if err != nil {
 		return p, err
 	}
@@ -320,12 +357,12 @@ func (s *Scheduler) Preview(ctx context.Context, resKeys []string) (Preview, err
 	// before 是当前基线所代表的内容。它自己也可能渲染不出来（比如某条路由的
 	// mtls 还开着），那不该让整个预览失败——前端拿到 null 时把整份显示为
 	// 「全新增」即可，而 after 的校验结果仍然是有用的。
-	if b, issues := render.Render(live, s.Render); len(issues) == 0 {
+	if b, issues := render.Render(liveRoutes, liveRules, s.Render); len(issues) == 0 {
 		before := string(b)
 		p.Before = &before
 	}
 
-	if b, issues := render.Render(after, s.Render); len(issues) > 0 {
+	if b, issues := render.Render(afterRoutes, afterRules, s.Render); len(issues) > 0 {
 		p.Validation.OK = false
 		p.Validation.Errors = issues
 	} else {

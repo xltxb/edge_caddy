@@ -118,8 +118,11 @@ func main() {
 	defer tun.Stop()
 
 	scheduler := &deploy.Scheduler{
-		Store: st, Pusher: tun, Hub: hub, Log: log,
-		Render: render.Options{HTTPListen: cfg.EdgeHTTPListen},
+		Store: st, Pusher: tun, Hub: hub, Log: log, Sealer: sealer,
+		Render: render.Options{
+			HTTPListen: cfg.EdgeHTTPListen,
+			VerifyAddr: cfg.VerifyAddr,
+		},
 	}
 
 	srv := api.New(api.Options{

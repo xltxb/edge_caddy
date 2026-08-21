@@ -3,13 +3,11 @@ package agent_test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/xltxb/edge_caddy/internal/agent"
 	"github.com/xltxb/edge_caddy/internal/caddytest"
@@ -27,23 +25,6 @@ func upstream(t *testing.T, body string) string {
 	return strings.TrimPrefix(srv.URL, "http://")
 }
 
-func getVia(t *testing.T, port int, host string) (int, string) {
-	t.Helper()
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/", port), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Host = host
-	cli := &http.Client{Timeout: 3 * time.Second}
-	resp, err := cli.Do(req)
-	if err != nil {
-		return 0, err.Error()
-	}
-	defer resp.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	return resp.StatusCode, string(b)
-}
-
 // 这条是本切片验收标准的核心：渲染 → 应用到真 Caddy → 一个真请求被代理到上游。
 //
 // 它同时把 ADR-0004 承认的盲区兜住了——golden 快照只能证明「渲染出了我们想要的」，
@@ -55,7 +36,7 @@ func TestRenderedConfigIsAcceptedAndActuallyProxies(t *testing.T) {
 	cfg, issues := render.Render([]model.Route{{
 		Domain: "api.example.com", Upstream: up,
 		BlockMode: model.BlockAbort, Compress: true, BodyMax: "5MB",
-	}}, render.Options{HTTPListen: fmt.Sprintf(":%d", c.HTTPPort)})
+	}}, nil, render.Options{HTTPListen: c.EdgeListen()})
 	if len(issues) > 0 {
 		t.Fatalf("渲染报了校验问题: %v", issues)
 	}
@@ -68,7 +49,7 @@ func TestRenderedConfigIsAcceptedAndActuallyProxies(t *testing.T) {
 		t.Error("应用耗时应当为正——控制台上那个「31ms」来自这里")
 	}
 
-	code, body := getVia(t, c.HTTPPort, "api.example.com")
+	code, body := c.Get("api.example.com", "/", nil)
 	if code != 200 || body != "UPSTREAM OK" {
 		t.Fatalf("经 Caddy 回源得到 %d %q，想要 200 \"UPSTREAM OK\"", code, body)
 	}
@@ -99,12 +80,12 @@ func TestApplySucceedsOnFreshCaddyWithoutAppsKey(t *testing.T) {
 
 	cfg, _ := render.Render([]model.Route{{
 		Domain: "a.example.com", Upstream: up, BlockMode: model.BlockAbort,
-	}}, render.Options{HTTPListen: fmt.Sprintf(":%d", c.HTTPPort)})
+	}}, nil, render.Options{HTTPListen: c.EdgeListen()})
 
 	if _, err := agent.NewCaddyClient(c.AdminURL()).ApplyConfig(context.Background(), cfg); err != nil {
 		t.Fatalf("在没有 apps 键的机器上应用失败: %v", err)
 	}
-	if code, body := getVia(t, c.HTTPPort, "a.example.com"); code != 200 || body != "FRESH BOX" {
+	if code, body := c.Get("a.example.com", "/", nil); code != 200 || body != "FRESH BOX" {
 		t.Fatalf("得到 %d %q", code, body)
 	}
 }
@@ -119,7 +100,7 @@ func TestBadConfigIsRejectedAndRunningConfigSurvives(t *testing.T) {
 
 	good, _ := render.Render([]model.Route{{
 		Domain: "live.example.com", Upstream: up, BlockMode: model.BlockAbort,
-	}}, render.Options{HTTPListen: fmt.Sprintf(":%d", c.HTTPPort)})
+	}}, nil, render.Options{HTTPListen: c.EdgeListen()})
 	if _, err := cli.ApplyConfig(ctx, good); err != nil {
 		t.Fatalf("基线配置应当被接受: %v", err)
 	}
@@ -135,7 +116,7 @@ func TestBadConfigIsRejectedAndRunningConfigSurvives(t *testing.T) {
 		t.Fatalf("应当报成 RejectedError（节点回应了但 Caddy 拒绝），实际 %T: %v", err, err)
 	}
 
-	if code, body := getVia(t, c.HTTPPort, "live.example.com"); code != 200 || body != "STILL ALIVE" {
+	if code, body := c.Get("live.example.com", "/", nil); code != 200 || body != "STILL ALIVE" {
 		t.Fatalf("坏配置之后在跑的配置没存活：得到 %d %q", code, body)
 	}
 }
@@ -163,7 +144,7 @@ func TestWhitelistDeniesWithAbort(t *testing.T) {
 	cfg, issues := render.Render([]model.Route{{
 		Domain: "wl.example.com", Upstream: up, BlockMode: model.BlockAbort,
 		Whitelist: []string{"203.0.113.7"}, // 不含 127.0.0.1
-	}}, render.Options{HTTPListen: fmt.Sprintf(":%d", c.HTTPPort)})
+	}}, nil, render.Options{HTTPListen: c.EdgeListen()})
 	if len(issues) > 0 {
 		t.Fatalf("渲染报了问题: %v", issues)
 	}
@@ -171,7 +152,7 @@ func TestWhitelistDeniesWithAbort(t *testing.T) {
 		t.Fatalf("Caddy 拒绝了带白名单的配置: %v", err)
 	}
 
-	code, body := getVia(t, c.HTTPPort, "wl.example.com")
+	code, body := c.Get("wl.example.com", "/", nil)
 	if code == 200 {
 		t.Fatalf("白名单之外的来源不该拿到响应，却得到 200 %q", body)
 	}
@@ -188,11 +169,11 @@ func TestWhitelistDenyWith403IsDistinguishableFromAbort(t *testing.T) {
 	cfg, _ := render.Render([]model.Route{{
 		Domain: "wl403.example.com", Upstream: up, BlockMode: model.Block403,
 		Whitelist: []string{"203.0.113.7"},
-	}}, render.Options{HTTPListen: fmt.Sprintf(":%d", c.HTTPPort)})
+	}}, nil, render.Options{HTTPListen: c.EdgeListen()})
 	if _, err := agent.NewCaddyClient(c.AdminURL()).ApplyConfig(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	if code, _ := getVia(t, c.HTTPPort, "wl403.example.com"); code != 403 {
+	if code, _ := c.Get("wl403.example.com", "/", nil); code != 403 {
 		t.Fatalf("处置方式为 403 时应当得到 403，实际 %d", code)
 	}
 }

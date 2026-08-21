@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -82,7 +81,7 @@ func newRig(t *testing.T) *rig {
 
 	sched := &deploy.Scheduler{
 		Store: st, Pusher: tun, Hub: hub,
-		Render: render.Options{HTTPListen: fmt.Sprintf(":%d", cad.HTTPPort)},
+		Render: render.Options{HTTPListen: cad.EdgeListen(), VerifyAddr: cad.VerifyDial()},
 	}
 
 	srv := httptest.NewServer(api.New(api.Options{
@@ -229,15 +228,7 @@ func (r *rig) waitOnline(nodeID string) {
 // curlVia 是最终验收：一个真请求进 Caddy，按路由回源，拿到上游的响应。
 func (r *rig) curlVia(host string) (int, string) {
 	r.t.Helper()
-	req, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/", r.caddy.HTTPPort), nil)
-	req.Host = host
-	resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
-	if err != nil {
-		return 0, err.Error()
-	}
-	defer resp.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	return resp.StatusCode, string(b)
+	return r.caddy.Get(host, "/", nil)
 }
 
 func (r *rig) baseline() string {

@@ -32,14 +32,18 @@ type Master struct {
 	Advertise string
 	// EdgeHTTPListen 是渲染进节点配置的监听地址。生产是 ":80"。
 	EdgeHTTPListen string
+	// VerifyAddr 是 Agent 校验端点在**节点**回环上的地址，渲染进 forward_auth。
+	// 它是节点侧的事实，主控只是把它写进配置，所以两边要配一致。
+	VerifyAddr string
 }
 
 type Agent struct {
-	MasterAddr string
-	NodeID     string
-	Token      string
-	StateDir   string
-	CaddyAdmin string
+	MasterAddr   string
+	NodeID       string
+	Token        string
+	StateDir     string
+	CaddyAdmin   string
+	VerifyListen string
 }
 
 func LoadMaster() (Master, error) {
@@ -55,6 +59,7 @@ func LoadMaster() (Master, error) {
 		WebRoot:        env("EC_WEB_ROOT", "web/dist"),
 		Advertise:      env("EC_ADVERTISE", "127.0.0.1:9000"),
 		EdgeHTTPListen: env("EC_EDGE_HTTP_LISTEN", ":80"),
+		VerifyAddr:     env("EC_VERIFY_ADDR", "127.0.0.1:2020"),
 	}
 
 	key := os.Getenv("EC_SECRET_KEY")
@@ -70,11 +75,12 @@ func LoadMaster() (Master, error) {
 
 func LoadAgent() (Agent, error) {
 	c := Agent{
-		MasterAddr: os.Getenv("EC_MASTER_ADDR"),
-		NodeID:     os.Getenv("EC_NODE_ID"),
-		Token:      os.Getenv("EC_ENROLL_TOKEN"),
-		StateDir:   env("EC_STATE_DIR", "/var/lib/edge-agent"),
-		CaddyAdmin: env("EC_CADDY_ADMIN", "http://127.0.0.1:2019"),
+		MasterAddr:   os.Getenv("EC_MASTER_ADDR"),
+		NodeID:       os.Getenv("EC_NODE_ID"),
+		Token:        os.Getenv("EC_ENROLL_TOKEN"),
+		StateDir:     env("EC_STATE_DIR", "/var/lib/edge-agent"),
+		CaddyAdmin:   env("EC_CADDY_ADMIN", "http://127.0.0.1:2019"),
+		VerifyListen: env("EC_VERIFY_LISTEN", "127.0.0.1:2020"),
 	}
 	if c.MasterAddr == "" {
 		return c, fmt.Errorf("EC_MASTER_ADDR 未设置")

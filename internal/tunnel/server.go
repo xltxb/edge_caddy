@@ -138,14 +138,14 @@ func (s *Server) OnlineNodes() []string {
 }
 
 // Push 把一份配置推给一个节点并等它回报。
-func (s *Server) Push(ctx context.Context, nodeID, cfgVersion string, caddyJSON []byte, deadline time.Duration) PushOutcome {
+func (s *Server) Push(ctx context.Context, nodeID, cfgVersion string, caddyJSON, verifyRules []byte, deadline time.Duration) PushOutcome {
 	s.mu.RLock()
 	sess := s.sessions[nodeID]
 	s.mu.RUnlock()
 	if sess == nil {
 		return PushOutcome{OK: false, Detail: "节点不在线", Responded: false}
 	}
-	return sess.push(ctx, cfgVersion, caddyJSON, deadline)
+	return sess.push(ctx, cfgVersion, caddyJSON, verifyRules, deadline)
 }
 
 // Channel 是隧道的全部。

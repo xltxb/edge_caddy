@@ -106,7 +106,7 @@ func (s *session) deliver(r *edgev1.PushResult) {
 }
 
 // push 下发一份配置并等回报。
-func (s *session) push(ctx context.Context, cfgVersion string, caddyJSON []byte, deadline time.Duration) PushOutcome {
+func (s *session) push(ctx context.Context, cfgVersion string, caddyJSON, verifyRules []byte, deadline time.Duration) PushOutcome {
 	ch := make(chan *edgev1.PushResult, 1)
 	s.mu.Lock()
 	s.waiters[cfgVersion] = ch
@@ -118,7 +118,8 @@ func (s *session) push(ctx context.Context, cfgVersion string, caddyJSON []byte,
 	}()
 
 	msg := &edgev1.MasterMsg{M: &edgev1.MasterMsg_Push{Push: &edgev1.PushConfig{
-		CfgVersion: cfgVersion, CaddyJson: caddyJSON, DeadlineMs: uint32(deadline.Milliseconds()),
+		CfgVersion: cfgVersion, CaddyJson: caddyJSON, VerifyRules: verifyRules,
+		DeadlineMs: uint32(deadline.Milliseconds()),
 	}}}
 
 	select {

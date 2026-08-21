@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	edgev1 "github.com/xltxb/edge_caddy/gen/edge/v1"
+	"github.com/xltxb/edge_caddy/internal/model"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
@@ -31,15 +33,18 @@ type Config struct {
 	CAPin      string // 主控隧道 CA 的 SHA-256，十六进制
 	StateDir   string
 	CaddyAdmin string
-	Heartbeat  time.Duration
-	Log        *slog.Logger
-	Version    string
+	// VerifyListen 是校验端点的监听地址：host:port 或 unix/<绝对路径>。
+	VerifyListen string
+	Heartbeat    time.Duration
+	Log          *slog.Logger
+	Version      string
 }
 
 type Agent struct {
-	cfg   Config
-	log   *slog.Logger
-	caddy *CaddyClient
+	cfg    Config
+	log    *slog.Logger
+	caddy  *CaddyClient
+	verify *VerifyServer
 
 	cfgVersion string
 }
@@ -51,8 +56,15 @@ func New(cfg Config) *Agent {
 	if cfg.Heartbeat == 0 {
 		cfg.Heartbeat = 3 * time.Second
 	}
-	return &Agent{cfg: cfg, log: cfg.Log, caddy: NewCaddyClient(cfg.CaddyAdmin)}
+	return &Agent{
+		cfg: cfg, log: cfg.Log,
+		caddy:  NewCaddyClient(cfg.CaddyAdmin),
+		verify: NewVerifyServer(cfg.Log),
+	}
 }
+
+// Verify 暴露校验端点，供调用方挂到监听上。
+func (a *Agent) Verify() *VerifyServer { return a.verify }
 
 // Run 建立一条隧道并跑到它断开为止。重连由调用方负责。
 func (a *Agent) Run(ctx context.Context) error {
@@ -119,6 +131,20 @@ func (a *Agent) handlePush(ctx context.Context, stream edgev1.EdgeTunnel_Channel
 	}
 	applyCtx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
+
+	// 先装规则再应用配置。反过来的话，配置生效的那一瞬间校验端点还不认识
+	// 新规则，那几毫秒里受保护域名会整体 403 —— 一次成功的下发不该有
+	// 任何一刻是拒绝服务的。
+	if raw := p.GetVerifyRules(); len(raw) > 0 {
+		var rules []model.VerifyRule
+		if err := json.Unmarshal(raw, &rules); err != nil {
+			a.log.Error("解析校验规则失败", "err", err)
+		} else {
+			a.verify.SetRules(rules)
+		}
+	} else {
+		a.verify.SetRules(nil)
+	}
 
 	took, err := a.caddy.ApplyConfig(applyCtx, p.GetCaddyJson())
 

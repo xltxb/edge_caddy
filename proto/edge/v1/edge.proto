@@ -76,6 +76,15 @@ message PushConfig {
   string cfg_version = 1;
   bytes caddy_json = 2;      // 主控渲染的全量配置。证书以 load_pem 内联其中（ADR-0010）
   uint32 deadline_ms = 3;    // 默认 5000
+
+  // verify_rules 是 Agent 校验端点需要的验签材料（JSON 数组）。
+  //
+  // 它**不在 caddy_json 里**，而且是刻意的：Caddy 的 Admin API 能读回整份运行
+  // 配置，服务密钥的共享密钥放进去就等于把它摆在一个可读接口后面。证书私钥没得选
+  // （load_pem 要求内联，见 ADR-0010），这个有得选，所以走旁路。
+  //
+  // Caddy 配置里只出现 /verify/<rule-id> 这个路径，不含任何密钥。
+  bytes verify_rules = 4;
 }
 
 // PushResult 的 ok=false 分两种，主控靠「有没有收到这条消息」区分，不靠 detail 的措辞：

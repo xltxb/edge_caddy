@@ -32,7 +32,7 @@ func (s *Server) handleCreateRoute(c *gin.Context) {
 	}
 	setAuditTarget(c, r.Domain)
 
-	if issues := render.Validate([]model.Route{r}); len(issues) > 0 {
+	if issues := render.Validate([]model.Route{r}, nil); len(issues) > 0 {
 		FailValidation(c, "新建路由未通过校验", toFieldErrors(issues))
 		return
 	}

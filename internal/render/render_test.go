@@ -35,7 +35,7 @@ func ok(d, u string) model.Route {
 func TestBodyMaxIsConvertedToBytes(t *testing.T) {
 	r := ok("api.example.com", "127.0.0.1:8080")
 	r.BodyMax = "5MB"
-	b, issues := render.Render([]model.Route{r}, render.Options{})
+	b, issues := render.Render([]model.Route{r}, nil, render.Options{})
 	if len(issues) > 0 {
 		t.Fatalf("不该有校验问题: %v", issues)
 	}
@@ -62,7 +62,7 @@ func TestBodyMaxUnits(t *testing.T) {
 	for in, want := range cases {
 		r := ok("a.example.com", "127.0.0.1:1")
 		r.BodyMax = in
-		b, issues := render.Render([]model.Route{r}, render.Options{})
+		b, issues := render.Render([]model.Route{r}, nil, render.Options{})
 		if len(issues) > 0 {
 			t.Errorf("%s: %v", in, issues)
 			continue
@@ -79,7 +79,7 @@ func TestValidateReportsAllIssuesNotJustTheFirst(t *testing.T) {
 	issues := render.Validate([]model.Route{
 		{Domain: "not a domain", Upstream: "no-port", BlockMode: "毁灭", BodyMax: "五兆",
 			Whitelist: []string{"10.8.0.0/33"}},
-	})
+	}, nil)
 	for _, want := range []string{"domain", "upstream", "block_mode", "body_max", "whitelist[0]"} {
 		if !hasField(issues, want) {
 			t.Errorf("缺少字段 %s 的问题；实际报了 %v", want, issueFields(issues))
@@ -92,7 +92,7 @@ func TestIssueFieldPathUsesArrayIndex(t *testing.T) {
 	issues := render.Validate([]model.Route{{
 		Domain: "a.example.com", Upstream: "127.0.0.1:1", BlockMode: model.BlockAbort,
 		Whitelist: []string{"10.0.0.0/8", "不是IP", "192.168.1.1"},
-	}})
+	}}, nil)
 	if !hasField(issues, "whitelist[1]") {
 		t.Fatalf("应当把问题定位到 whitelist[1]，实际 %v", issueFields(issues))
 	}
@@ -103,13 +103,13 @@ func TestIssueFieldPathUsesArrayIndex(t *testing.T) {
 
 func TestUpstreamMustBeHostPort(t *testing.T) {
 	for _, bad := range []string{"", "example.com", "example.com:", "example.com:0", "example.com:99999", "example.com:abc"} {
-		issues := render.Validate([]model.Route{{Domain: "a.example.com", Upstream: bad, BlockMode: model.BlockAbort}})
+		issues := render.Validate([]model.Route{{Domain: "a.example.com", Upstream: bad, BlockMode: model.BlockAbort}}, nil)
 		if !hasField(issues, "upstream") {
 			t.Errorf("回源地址 %q 应当被拒绝", bad)
 		}
 	}
 	for _, good := range []string{"127.0.0.1:8080", "origin.internal:443", "10.8.0.12:80"} {
-		issues := render.Validate([]model.Route{{Domain: "a.example.com", Upstream: good, BlockMode: model.BlockAbort}})
+		issues := render.Validate([]model.Route{{Domain: "a.example.com", Upstream: good, BlockMode: model.BlockAbort}}, nil)
 		if hasField(issues, "upstream") {
 			t.Errorf("回源地址 %q 是合法的，却被拒绝: %v", good, issues)
 		}
@@ -120,7 +120,7 @@ func TestDuplicateDomainIsRejected(t *testing.T) {
 	issues := render.Validate([]model.Route{
 		ok("dup.example.com", "127.0.0.1:1"),
 		ok("dup.example.com", "127.0.0.1:2"),
-	})
+	}, nil)
 	if !hasField(issues, "domain") {
 		t.Fatal("重复域名应当被拒绝")
 	}
@@ -130,7 +130,7 @@ func TestDuplicateDomainIsRejected(t *testing.T) {
 func TestMTLSIsRejectedRatherThanSilentlyIgnored(t *testing.T) {
 	r := ok("m.example.com", "127.0.0.1:1")
 	r.MTLS = true
-	issues := render.Validate([]model.Route{r})
+	issues := render.Validate([]model.Route{r}, nil)
 	if !hasField(issues, "mtls") {
 		t.Fatal("回源 mTLS 尚未实现时应当拒绝下发，而不是静默忽略这个开关")
 	}
@@ -138,7 +138,7 @@ func TestMTLSIsRejectedRatherThanSilentlyIgnored(t *testing.T) {
 
 // 白名单为空 = 不限制，不应产生 deny 路由。
 func TestEmptyWhitelistProducesNoDenyRoute(t *testing.T) {
-	b, _ := render.Render([]model.Route{ok("open.example.com", "127.0.0.1:1")}, render.Options{})
+	b, _ := render.Render([]model.Route{ok("open.example.com", "127.0.0.1:1")}, nil, render.Options{})
 	if strings.Contains(string(b), `"not"`) {
 		t.Fatalf("白名单为空却渲染出了 deny 匹配器:\n%s", b)
 	}
@@ -148,7 +148,7 @@ func TestEmptyWhitelistProducesNoDenyRoute(t *testing.T) {
 func TestBareIPIsNormalizedToCIDR(t *testing.T) {
 	r := ok("w.example.com", "127.0.0.1:1")
 	r.Whitelist = []string{"203.0.113.7", "10.8.0.0/24"}
-	b, _ := render.Render([]model.Route{r}, render.Options{})
+	b, _ := render.Render([]model.Route{r}, nil, render.Options{})
 	if !strings.Contains(string(b), `"203.0.113.7/32"`) {
 		t.Errorf("裸 IP 应当补成 /32:\n%s", b)
 	}
@@ -161,8 +161,8 @@ func TestBareIPIsNormalizedToCIDR(t *testing.T) {
 func TestRenderIsOrderIndependent(t *testing.T) {
 	a := []model.Route{ok("b.example.com", "127.0.0.1:1"), ok("a.example.com", "127.0.0.1:2")}
 	b := []model.Route{ok("a.example.com", "127.0.0.1:2"), ok("b.example.com", "127.0.0.1:1")}
-	ra, _ := render.Render(a, render.Options{})
-	rb, _ := render.Render(b, render.Options{})
+	ra, _ := render.Render(a, nil, render.Options{})
+	rb, _ := render.Render(b, nil, render.Options{})
 	if string(ra) != string(rb) {
 		t.Fatal("同一组路由换个顺序渲染出了不同的字节——diff 会虚报变更")
 	}
@@ -171,7 +171,7 @@ func TestRenderIsOrderIndependent(t *testing.T) {
 // 不渲染 apps/tls：一张证书都没有时渲染它会把节点上外部证书平台写入的内容抹掉，
 // 那是上一版真出过的事故（ADR-0010）。
 func TestDoesNotRenderTLSApp(t *testing.T) {
-	b, _ := render.Render([]model.Route{ok("t.example.com", "127.0.0.1:1")}, render.Options{})
+	b, _ := render.Render([]model.Route{ok("t.example.com", "127.0.0.1:1")}, nil, render.Options{})
 	var cfg struct {
 		Apps map[string]json.RawMessage `json:"apps"`
 	}
@@ -185,7 +185,7 @@ func TestDoesNotRenderTLSApp(t *testing.T) {
 
 // 校验不过时不产出配置——一份没通过校验的配置绝不该有机会被下发。
 func TestNoConfigWhenValidationFails(t *testing.T) {
-	b, issues := render.Render([]model.Route{{Domain: "bad", Upstream: "x"}}, render.Options{})
+	b, issues := render.Render([]model.Route{{Domain: "bad", Upstream: "x"}}, nil, render.Options{})
 	if len(issues) == 0 {
 		t.Fatal("这组输入应当校验失败")
 	}
