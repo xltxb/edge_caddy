@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -221,3 +222,81 @@ func (c *replayCache) admit(key string, ttl time.Duration) bool {
 	c.seen[key] = now
 	return true
 }
+
+// CheckVerifyAddr 确认主控渲染进配置的校验端点地址，与本机实际监听的一致。
+//
+// 这是**两处知识**：主控把 render.Options.VerifyAddr 渲染进 forward_auth 的
+// dial，Agent 按自己的 EC_VERIFY_LISTEN 监听。两者必须一致，而没有任何东西
+// 强制它。回源证书那处能靠「路径随内容一起下发」变成一份知识，这处不行——
+// Agent 必须在配置到达**之前**就已经在监听。
+//
+// 配错的后果很难查：每个受保护域名整体 502，而配置本身看起来完全正常。
+// 所以在应用之前查一遍，把一个静默的 502 变成一条说得出原因的拒绝。
+func CheckVerifyAddr(caddyJSON []byte, listening string) error {
+	dials := forwardAuthDials(caddyJSON)
+	if len(dials) == 0 {
+		return nil // 这份配置里没有受保护的域名
+	}
+	want := normalizeAddr(listening)
+	for _, d := range dials {
+		if normalizeAddr(d) != want {
+			return fmt.Errorf(
+				"配置里的校验端点是 %s，而本机监听在 %s —— 照这份配置生效，"+
+					"每个受保护的域名都会 502。请让主控的 EC_VERIFY_ADDR 与本机的 "+
+					"EC_VERIFY_LISTEN 一致", d, listening)
+		}
+	}
+	return nil
+}
+
+// forwardAuthDials 挑出配置里所有委托给校验端点的 upstream 地址。
+func forwardAuthDials(caddyJSON []byte) []string {
+	var cfg struct {
+		Apps struct {
+			HTTP struct {
+				Servers map[string]struct {
+					Routes []struct {
+						Handle []struct {
+							Handler string `json:"handler"`
+							Rewrite *struct {
+								URI string `json:"uri"`
+							} `json:"rewrite"`
+							Upstreams []struct {
+								Dial string `json:"dial"`
+							} `json:"upstreams"`
+						} `json:"handle"`
+					} `json:"routes"`
+				} `json:"servers"`
+			} `json:"http"`
+		} `json:"apps"`
+	}
+	if json.Unmarshal(caddyJSON, &cfg) != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, srv := range cfg.Apps.HTTP.Servers {
+		for _, r := range srv.Routes {
+			for _, h := range r.Handle {
+				// 只认「重写到 /verify/ 的 reverse_proxy」——普通的回源
+				// 也是 reverse_proxy，不能一并算进来。
+				if h.Handler != "reverse_proxy" || h.Rewrite == nil {
+					continue
+				}
+				if !strings.HasPrefix(h.Rewrite.URI, "/verify/") {
+					continue
+				}
+				for _, u := range h.Upstreams {
+					if !seen[u.Dial] {
+						seen[u.Dial] = true
+						out = append(out, u.Dial)
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// normalizeAddr 让 unix/ 前缀与 host:port 两种写法可比。
+func normalizeAddr(a string) string { return strings.TrimSpace(a) }

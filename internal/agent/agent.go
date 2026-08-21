@@ -161,6 +161,17 @@ func (a *Agent) handlePush(ctx context.Context, stream edgev1.EdgeTunnel_Channel
 		a.verify.SetRules(nil)
 	}
 
+	// 主控渲染的校验端点地址与本机监听的必须一致。不一致就拒绝这份配置——
+	// 应用下去的话每个受保护域名都会 502，而配置本身看起来完全正常。
+	if err := CheckVerifyAddr(p.GetCaddyJson(), a.cfg.VerifyListen); err != nil {
+		a.log.Error("校验端点地址不一致", "err", err)
+		res := &edgev1.PushResult{CfgVersion: p.GetCfgVersion(), Ok: false, Detail: err.Error()}
+		if sendErr := stream.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_PushResult{PushResult: res}}); sendErr != nil {
+			a.log.Error("回报下发结果失败", "err", sendErr)
+		}
+		return
+	}
+
 	// **回源证书要先落盘再应用配置。** 反过来的话，配置里引用的文件那一刻
 	// 还不存在，Caddy 会整份拒绝——而报错是「文件不存在」，跟证书轮换
 	// 看起来毫无关系。

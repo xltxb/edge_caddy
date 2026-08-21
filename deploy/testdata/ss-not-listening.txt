@@ -1,0 +1,2 @@
+State    Recv-Q   Send-Q     Local Address:Port      Peer Address:Port  Process
+LISTEN   0        4096                    *:443                  *:*      users:(("caddy",pid=812,fd=9))

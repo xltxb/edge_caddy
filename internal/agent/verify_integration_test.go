@@ -402,3 +402,56 @@ func b64u(n *big.Int) string {
 	}
 	return base64.RawURLEncoding.EncodeToString(b)
 }
+
+// **主控渲染的校验端点地址与本机监听的必须一致。**
+//
+// 这是两处知识：主控渲染 forward_auth 的 dial，Agent 按自己的配置监听，
+// 而没有任何东西强制它们一致。配错的后果很难查——每个受保护域名整体 502，
+// 而配置本身看起来完全正常。所以在应用之前查一遍。
+func TestVerifyAddrMismatchIsRefusedNotApplied(t *testing.T) {
+	up := echoUpstream(t)
+	c := caddytest.New(t)
+
+	rule := model.Rule{
+		ID: "svc-1", Type: model.RuleServiceSecret, Enabled: true,
+		ApplyTo: []string{"api.example.com"}, Secret: "k",
+		Spec: model.RuleSpec{Header: "X-Service-Key", TTLSeconds: 300},
+	}
+	cfg, issues := render.Render(
+		[]model.Route{{Domain: "api.example.com", Upstream: up, BlockMode: model.BlockAbort}},
+		[]model.Rule{rule}, nil, render.Policies{},
+		render.Options{HTTPListen: c.EdgeListen(), VerifyAddr: "127.0.0.1:2020"})
+	if len(issues) > 0 {
+		t.Fatal(issues)
+	}
+
+	// 本机监听在别的地方。
+	err := agent.CheckVerifyAddr(cfg, "127.0.0.1:2021")
+	if err == nil {
+		t.Fatal("地址不一致时应当拒绝 —— 应用下去每个受保护域名都会 502")
+	}
+	if !strings.Contains(err.Error(), "502") {
+		t.Errorf("报错应当说清后果: %v", err)
+	}
+
+	// 一致时放行。
+	if err := agent.CheckVerifyAddr(cfg, "127.0.0.1:2020"); err != nil {
+		t.Fatalf("地址一致时不该拒绝: %v", err)
+	}
+
+	// 没有受保护域名的配置不受影响 —— 那份配置里根本没有 forward_auth。
+	plain, _ := render.Render(
+		[]model.Route{{Domain: "open.example.com", Upstream: up, BlockMode: model.BlockAbort}},
+		nil, nil, render.Policies{},
+		render.Options{HTTPListen: c.EdgeListen(), VerifyAddr: "127.0.0.1:2020"})
+	if err := agent.CheckVerifyAddr(plain, "127.0.0.1:9999"); err != nil {
+		t.Errorf("没有受保护域名时不该管校验端点在哪: %v", err)
+	}
+
+	// 普通回源也是 reverse_proxy，不能被误判成校验端点。
+	if len(plain) > 0 && strings.Contains(string(plain), up) {
+		if err := agent.CheckVerifyAddr(plain, "127.0.0.1:2020"); err != nil {
+			t.Errorf("普通回源被误认成了校验端点: %v", err)
+		}
+	}
+}
