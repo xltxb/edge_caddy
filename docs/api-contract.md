@@ -352,7 +352,12 @@ WS 断开时前端按指数退避重连；重连期间对进行中的下发降�
   "token": "ec_1f9a…（仅此一次可见）",
   "expires_at": "2026-08-21T11:12:07+08:00",
   "ca_pin": "9e8f22a3430a2f859aee5b47…（隧道 CA 证书的 SHA-256）",
-  "install_cmd": "sudo ./edge-node.sh install --master ec.internal:9000 --node-id node-sg-01 --token ec_1f9a… --ca-pin 9e8f22a3… --agent-bin ./edge-agent"
+  "install_cmd": "sudo ./edge-node.sh install --master ec.internal:9000 --node-id node-sg-01 --token ec_1f9a… --ca-pin 9e8f22a3… --agent-bin ./edge-agent",
+  "verify_cmd": "sudo ./edge-node.sh verify",
+  "prerequisites": [
+    "当前目录下有 edge-node.sh（本仓库 deploy/ 目录）",
+    "当前目录下有 edge-agent 二进制（脚本不负责下载）"
+  ]
 }
 ```
 
@@ -373,7 +378,17 @@ Token **30 分钟 TTL、单次使用**，用后即失效。节点凭它完成首
 > 省掉部署脚本存在的理由。这与「`--ca-pin` 必填、不给默认值」是同一条判据。
 
 **`--agent-bin` 留在命令里并给占位**，而不是省掉走默认值：脚本**不负责下载**
-二进制，那是唯一一个「你必须自己先办好」的事，写在命令里比藏在文档里更难被跳过。
+二进制，写在命令里比藏在文档里更难被跳过。
+
+**`prerequisites` 点名了两个文件，不是一个。** `./edge-node.sh` 也是相对路径，
+它和 `edge-agent` 是同一类东西：命令里指着它，而谁也不负责送它上去。
+先前只说了二进制那一半——因为写文档的人手上就有脚本，于是「它怎么上去的」
+这个问题从没出现过。**这是欠条的一个变体：不是「承诺了将来」，是「假定了当下」。**
+
+**`verify_cmd` 与 `install_cmd` 一起给，界面必须一并呈现。** 照「复制命令」
+按钮做的人不会自己想到还要跑一次 verify，而 verify 查的正是 Caddy Admin
+有没有暴露在回环之外——私钥以 `load_pem` 内联在运行配置里（ADR-0010），
+能读 Admin 就能读到它们。**一道没有人会执行的检查，等于不存在。**
 到期时间以响应里的 `expires_at` 为准，不要在界面上写死「30 分钟」——
 写死的数字变错了不会有任何报错，只会有人照着它算。
 

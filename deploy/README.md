@@ -4,6 +4,24 @@
 
 ## 边缘节点
 
+### 先把两个文件送上去
+
+命令里的 `./edge-node.sh` 和 `--agent-bin ./edge-agent` **都是相对路径**，
+它们都假定文件已经在当前目录。**谁也不负责把它们送上去。**
+
+```bash
+# 从开发机推过去，或者用你惯用的任何方式
+scp deploy/edge-node.sh edge-agent root@node-hk-01:/root/
+```
+
+> 这一段先前只写了二进制那一半。脚本自己那一半没人写——**因为写文档的人
+> 手上就有它**，于是「它怎么上去的」这个问题从来没出现过。
+>
+> 这是欠条的一个变体：不是「承诺了将来」，是**「假定了当下」**。
+> 假定的东西对写的人成立，所以他不会想到要说。
+
+### 装
+
 **控制台「添加节点」直接给出这条命令**（`install_cmd` 字段），复制粘贴即可：
 
 ```bash
@@ -13,11 +31,17 @@ sudo ./edge-node.sh install \
   --token ec_1f9a… \
   --ca-pin 9e8f22a3430a2f859aee5b47… \
   --agent-bin ./edge-agent
-sudo ./edge-node.sh verify
+sudo ./edge-node.sh verify   # ← 控制台的 verify_cmd 字段，别跳过
 ```
 
 `install_cmd` 是**一条要执行的命令**，不是「两个值的来源」——Token 与 CA 指纹
 在响应里另有 `token` 与 `ca_pin` 两个字段，要单独取值就取那两个。
+
+**`verify` 不是可选的收尾。** 它查的正是 Caddy Admin 有没有暴露在回环之外，
+而证书私钥以 `load_pem` 内联在运行配置里（[ADR-0010](../docs/adr/0010-cert-distribution.md)）
+——能读 Admin 就能读到它们。脚本为「没在监听」和「监听错地方」专门分了两个
+返回值（前者是 Caddy 没起来，后者是私钥暴露），**而没人跑它的话，那个区分
+一次也用不上**。控制台因此把它作为 `verify_cmd` 一并给出。
 
 > 控制台发的是**这条脚本命令**，不是裸的 `edge-agent …`。
 > 裸命令跑得起来，但跑起来是前台进程、没有 systemd 单元、**没有 `Restart=always`**

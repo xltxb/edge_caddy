@@ -28,7 +28,9 @@ func TestInstallCommandFlagsAreAcceptedByDeployScript(t *testing.T) {
 	}, func(req *http.Request) { req.AddCookie(ck) })
 
 	var d struct {
-		InstallCmd string `json:"install_cmd"`
+		InstallCmd    string   `json:"install_cmd"`
+		VerifyCmd     string   `json:"verify_cmd"`
+		Prerequisites []string `json:"prerequisites"`
 	}
 	if err := json.Unmarshal(env.Data, &d); err != nil {
 		t.Fatal(err)
@@ -61,10 +63,34 @@ func TestInstallCommandFlagsAreAcceptedByDeployScript(t *testing.T) {
 			t.Errorf("install_cmd 少了必填参数 %s", must)
 		}
 	}
-	// --agent-bin 留在命令里并给占位：它是唯一一个「你必须自己先办好」的
-	// 参数，写在命令里比藏在文档里更难被跳过。
+	// --agent-bin 留在命令里并给占位：写在命令里比藏在文档里更难被跳过。
 	if !strings.Contains(cmd, "--agent-bin ") {
 		t.Error("install_cmd 应当带上 --agent-bin 占位，提醒人二进制要自己准备")
+	}
+
+	// **verify 也要给出来。**
+	//
+	// 照「复制命令」按钮做的人不会自己想到还要跑一次 verify，而 verify 查的
+	// 正是 Caddy Admin 有没有暴露在回环之外（私钥内联在运行配置里）。
+	// 一道没有人会执行的检查，等于不存在——部署脚本为「没在监听」和
+	// 「监听错地方」分了两个返回值，没人跑它那个区分就一次也用不上。
+	if !strings.Contains(d.VerifyCmd, "edge-node.sh verify") {
+		t.Errorf("应当一并给出 verify 命令，实际 %q", d.VerifyCmd)
+	}
+	if !strings.Contains(script, "verify)") {
+		t.Error("部署脚本不认 verify 子命令")
+	}
+
+	// **两个文件都得先在当前目录里。**
+	//
+	// 脚本自己也是相对路径（./edge-node.sh），和 edge-agent 是同一类东西：
+	// 命令里指着它，谁也不负责送它上去。先前只说了二进制那一半——
+	// 因为写文档的人手上就有脚本，于是「它怎么上去的」这个问题从没出现过。
+	joined := strings.Join(d.Prerequisites, "\n")
+	for _, want := range []string{"edge-node.sh", "edge-agent"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("前置条件里应当点名 %s —— 命令里指着它，而没人负责送它上去", want)
+		}
 	}
 }
 

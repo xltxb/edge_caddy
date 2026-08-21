@@ -144,5 +144,22 @@ func (s *Server) handleIssueToken(c *gin.Context) {
 		"install_cmd": fmt.Sprintf(
 			"sudo ./edge-node.sh install --master %s --node-id %s --token %s --ca-pin %s --agent-bin ./edge-agent",
 			s.masterAddr, req.NodeID, plain, s.caPin),
+
+		// verify_cmd 与 install_cmd 一起给，不是可选的补充。
+		//
+		// 照「复制命令」按钮做的人不会自己想到还要跑一次 verify，而 verify 查的
+		// 正是 Caddy Admin 有没有暴露在回环之外——私钥以 load_pem 内联在运行
+		// 配置里（ADR-0010），能读 Admin 就能读到它们。
+		//
+		// **一道没有人会执行的检查，等于不存在。** 部署脚本里为「没在监听」和
+		// 「监听错地方」专门分了两个返回值，而如果没人跑它，那个区分一次也用不上。
+		"verify_cmd": "sudo ./edge-node.sh verify",
+
+		// 这两个文件都得先在当前目录里。脚本自己也是相对路径——
+		// 它和 edge-agent 是同一类东西：命令里指着它，谁也不负责送它上去。
+		"prerequisites": []string{
+			"当前目录下有 edge-node.sh（本仓库 deploy/ 目录）",
+			"当前目录下有 edge-agent 二进制（脚本不负责下载）",
+		},
 	})
 }
