@@ -42,6 +42,9 @@ describe('为什么这个节点没在扛流量', () => {
     // 「离线」是可观察的事实，进正文
     expect(p.kind === 'paused' && p.text).toContain('离线')
     const hint = p.kind === 'paused' ? p.hint : ''
+    // 正面对照先行：hint 要是变成空串，下面三条否定断言会全部**因为没东西可查
+    // 而变绿**，而那时提示语已经整个消失了
+    expect(hint).toContain('权重保留')
     expect(hint).not.toContain('自动')
     expect(hint).not.toContain('设置')
     expect(hint).not.toContain('若')

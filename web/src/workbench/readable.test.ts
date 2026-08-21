@@ -33,7 +33,11 @@ describe('routeReadable', () => {
   })
 
   it('白名单为空时同样不渲染拦截段', () => {
-    expect(json(routeReadable(route({ whitelist: [] })))).not.toContain('remote_ip')
+    const empty = json(routeReadable(route({ whitelist: [] })))
+    expect(empty).not.toContain('remote_ip')
+    // 正面对照：渲染器确实产出了东西。没有这一句的话，routeReadable 返回
+    // 空对象、抛了被吞掉、或者签名改了，上面那条都会**因为什么都没渲染而变绿**
+    expect(empty).toContain('reverse_proxy')
   })
 
   it('处置方式 abort 与 403 渲染成不同的 static_response', () => {
@@ -44,7 +48,12 @@ describe('routeReadable', () => {
   })
 
   it('关闭压缩时不出现 encode handler', () => {
-    expect(json(routeReadable(route({ compress: false })))).not.toContain('encode')
+    const off = json(routeReadable(route({ compress: false })))
+    expect(off).not.toContain('encode')
+    expect(off).toContain('reverse_proxy')
+    // 开关的两侧一起断言：这条测试要说的是「这个开关控制这一段」，
+    // 只测一侧的话，一个恒不渲染 encode 的渲染器也能让它绿
+    expect(json(routeReadable(route({ compress: true })))).toContain('encode')
   })
 
   it('body_max 原样显示人类可读字符串，前端不做单位换算', () => {
@@ -53,7 +62,12 @@ describe('routeReadable', () => {
 
   describe('回源 mTLS', () => {
     it('关闭时 transport 下没有 tls', () => {
-      expect(json(routeReadable(route({ mtls: false })))).not.toContain('"tls"')
+      const off = json(routeReadable(route({ mtls: false })))
+      expect(off).not.toContain('"tls"')
+      // 同一条测试里的正面对照 —— 兜底不在同一个文本里就不算兜底：
+      // 隔壁那条 it 断言了 mtls:true 有 edge-mtls，但谁把它删了或改窄了，
+      // 都不会觉得跟这里有关系
+      expect(off).toContain('reverse_proxy')
     })
 
     it('开启时出现回源客户端证书', () => {
@@ -63,9 +77,10 @@ describe('routeReadable', () => {
     it('不使用 client_certificate_automate —— ADR-0008 否掉了它', () => {
       // 那个字段意味着由节点本机的 Caddy pki app 签发客户端证书，
       // 要求每台节点持有 CA 私钥，且 6 台节点会各自成为独立的 CA
-      expect(json(routeReadable(route({ mtls: true })))).not.toContain(
-        'client_certificate_automate',
-      )
+      const on = json(routeReadable(route({ mtls: true })))
+      expect(on).not.toContain('client_certificate_automate')
+      // 正面对照：mTLS 那一段确实渲染了，只是用的不是那个字段
+      expect(on).toContain('edge-mtls')
     })
   })
 })
@@ -161,7 +176,9 @@ describe('policyReadable', () => {
   })
 
   it('关闭 HSTS 时不下发该响应头', () => {
-    expect(json(policyReadable(tls({ hsts: false })))).not.toContain('Strict-Transport-Security')
+    const off = json(policyReadable(tls({ hsts: false })))
+    expect(off).not.toContain('Strict-Transport-Security')
+    expect(json(policyReadable(tls({ hsts: true })))).toContain('Strict-Transport-Security')
   })
 
   it('关闭限流时不渲染 rate_limit —— 填默认值会让 diff 凭空多两行', () => {
