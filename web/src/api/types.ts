@@ -464,11 +464,23 @@ export interface DnsLineWire {
  * 这跟「回源率靠缓存」是同一类：**假设了一个服务商没有的能力**。
  * 选了 Load Balancing 不会让这个限制消失，所以它必须出现在界面上。
  */
+/**
+ * 服务商能表达的一条线路，以及它覆盖了契约里的哪几条。
+ *
+ * `covers` 由后端给，**前端不再持有任何服务商的地理模型** —— 加第三家服务商
+ * 时前端不用改：它可能是 `apac` 覆盖若干条，前端只需照着渲染。
+ */
+export interface DnsCapabilityLineWire {
+  code: string
+  name: string
+  covers: string[]
+}
+
 export interface DnsCapabilitiesWire {
   /** 空串 = 尚未配置服务商。此时权重仍可保存（那是本地意图），但推不出去。 */
   kind: string
-  /** 服务商能表达的线路码。不在这里面的线路，界面不能让人分别配。 */
-  lines: string[]
+  /** 服务商能表达的线路。null / 空 = 未配置服务商，按契约五条原样渲染。 */
+  lines: DnsCapabilityLineWire[] | null
   weights: boolean
   /** 可直接呈给用户的中文说明。 */
   notes: string

@@ -226,7 +226,12 @@ export async function handleDns(req: IncomingMessage, res: ServerResponse): Prom
         lines: buildLines(),
         capabilities: {
           kind: 'cloudflare',
-          lines: ['cn', 'tw', 'ov'],
+          // covers 由服务商给：前端不持有任何服务商的地理模型
+          lines: [
+            { code: 'cn', name: '中国（电信 / 联通 / 移动合并）', covers: ['ct', 'cu', 'cm'] },
+            { code: 'tw', name: '台湾', covers: ['tw'] },
+            { code: 'ov', name: '境外 / 默认', covers: ['ov'] },
+          ],
           weights: true,
           notes:
             'Cloudflare 的 DNS 记录没有权重与线路概念，加权调度走 Load Balancing，' +

@@ -7,7 +7,12 @@
  * 界面据此**把表达不了的几条合并成一个输入框**，而不是分别列出再在保存时
  * 拒绝。合并让非法状态无法被表达 —— 比让人配完三个不同的数字、点保存、
  * 然后拿到一个拒绝要好：那是最差的告知时机。
+ *
+ * 覆盖关系（`covers`）由**后端**给。前端不持有任何服务商的地理模型，
+ * 所以加第三家服务商时这里不用改。
  */
+
+import type { DnsCapabilityLineWire } from '@/api/types'
 
 export interface LineInput {
   code: string
@@ -18,25 +23,6 @@ export interface LineInput {
   supported: boolean
 }
 
-/** 服务商能力码 → 契约线路码。契约的五个码是固定的，所以这张表是封闭的。 */
-const COVERS: Record<string, string[]> = {
-  cn: ['ct', 'cu', 'cm'],
-  ct: ['ct'],
-  cu: ['cu'],
-  cm: ['cm'],
-  tw: ['tw'],
-  ov: ['ov'],
-}
-
-const NAMES: Record<string, string> = {
-  cn: '中国（电信 / 联通 / 移动合并）',
-  ct: '电信',
-  cu: '联通',
-  cm: '移动',
-  tw: '台湾',
-  ov: '境外 / 默认',
-}
-
 /**
  * 按服务商能力算出该渲染成几组输入。
  *
@@ -45,7 +31,7 @@ const NAMES: Record<string, string> = {
  */
 export function lineInputs(
   contractLines: { code: string; name: string }[],
-  capabilityLines: string[] | undefined,
+  capabilityLines: DnsCapabilityLineWire[] | null | undefined,
 ): LineInput[] {
   if (!capabilityLines || capabilityLines.length === 0) {
     return contractLines.map((l) => ({
@@ -60,12 +46,11 @@ export function lineInputs(
   const covered = new Set<string>()
 
   for (const cap of capabilityLines) {
-    const covers = (COVERS[cap] ?? [cap]).filter((c) =>
-      contractLines.some((l) => l.code === c),
-    )
+    // 只保留契约里真的存在的线路码：服务商报了别的，我们也画不出来
+    const covers = (cap.covers ?? []).filter((c) => contractLines.some((l) => l.code === c))
     if (covers.length === 0) continue
     for (const c of covers) covered.add(c)
-    groups.push({ code: cap, name: NAMES[cap] ?? cap, covers, supported: true })
+    groups.push({ code: cap.code, name: cap.name, covers, supported: true })
   }
 
   // 契约里有、但服务商一条都覆盖不到的线路：仍然列出来，但禁用。
@@ -94,7 +79,7 @@ export function mergedWeight(
 /**
  * 合并组里各线路的权重是否已经分叉。
  *
- * 分叉说明这份配置是在能力更强的服务商下配的，换到 Cloudflare 之后表达不了 ——
+ * 分叉说明这份配置是在能力更强的服务商下配的，换过来之后表达不了 ——
  * 要让人知道保存会把它们拉平，而不是默默取第一条的值。
  */
 export function isDivergent(

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 import { http } from '@/api/http'
 import type { CertRenewWire, CertWire, Paged } from '@/api/types'
 import { useUiStore } from '@/stores/ui'
@@ -107,6 +108,15 @@ const mismatched = computed(() => items.value.filter((c) => c.loaded_nodes < c.e
     <div v-else-if="error" class="hint error">
       {{ error }}
       <button class="mini" type="button" @click="load">重试</button>
+    </div>
+    <!--
+      空不等于坏。证书跟着路由走 —— 第一次下发之前这里本来就是空的，
+      而一个只有表头的空表格什么也没说，看起来像加载失败。
+    -->
+    <div v-else-if="!items.length" class="hint">
+      还没有证书。证书由主控在下发时自动为路由域名签发（DNS-01），
+      所以第一次下发之前这里是空的。
+      <RouterLink class="mini" to="/routes">去看反代路由</RouterLink>
     </div>
 
     <table v-else class="table">
