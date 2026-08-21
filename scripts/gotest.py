@@ -51,6 +51,19 @@ def main():
     print(f"\n通过={passed} 失败={len(failed)}")
     if p.stderr.strip():
         print("stderr:", p.stderr.strip()[:500])
+
+    # **一条都没跑也要非零退出。**
+    #
+    # 前端 agent 那句：「0 失败」在一条都没跑的时候同样成立，
+    # 而那两种情况的处置完全相反。
+    #
+    # 最常撞上的是手工跑单条时把名字打错：go test 印一行 no tests to run
+    # 然后 exit 0，这里会打印「通过=0 失败=0」—— 而一个 && 链会带着
+    # 这个「没问题」一路跑到 git commit。
+    if passed == 0 and not failed:
+        print("✗ 一条测试都没跑 —— 名字打错了？包路径不对？"
+              "这不是「没问题」，是一次没有发生过的运行。")
+        return 1
     return 1 if (failed or nonjson or p.returncode != 0) else 0
 
 
