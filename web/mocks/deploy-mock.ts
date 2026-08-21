@@ -242,7 +242,16 @@ export async function handleDeploy(
       state.drafts[key] = { body_max: '8MB' }
       state.draftMeta[key] = { by: 'abiu', at: new Date().toISOString() }
     }
-    ok(res, { res_keys: hist.res_keys })
+    // skipped：回滚覆盖不到的资源。mock 里造一条「之后才新建的」来走通这条分支。
+    ok(res, {
+      res_keys: hist.res_keys,
+      skipped: [
+        {
+          res_key: 'route:push.example.com',
+          reason: '这条路由是那次下发之后才新建的，回滚不会删除它',
+        },
+      ],
+    })
     return true
   }
 

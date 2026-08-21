@@ -140,6 +140,16 @@ export const useDeployStore = defineStore('deploy', () => {
     }
     phase.value = 'running'
     rememberRunning(created.deploy_id)
+
+    /*
+     * 立刻同步一次，不要指望「每一帧都接得住」。
+     *
+     * 后端的 POST /deploys 在**首轮结束时**才返回，也就是说逐节点的
+     * deploy_progress 帧很可能在 HTTP 响应回来之前就推完了 —— 那时 current
+     * 还不存在，applyProgress 会把它们全丢掉，进度永远停在 0/N。
+     * mock 里因为进度是响应之后才开始推的，这条路径一直没被走到。
+     */
+    void pollOnce()
     return created
   }
 

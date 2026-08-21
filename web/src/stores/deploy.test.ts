@@ -135,6 +135,33 @@ describe('useDeployStore', () => {
     })
   })
 
+  describe('confirm 之后立刻同步一次', () => {
+    it('首轮进度在 HTTP 响应之前就推完时，仍然能拿到结果', async () => {
+      // 真后端的 POST /deploys 在首轮结束时才返回，帧可能早于响应到达 ——
+      // 那时 current 还不存在，帧会被丢掉。所以建立 current 之后要主动同步。
+      const s = useDeployStore()
+      const { http } = await import('@/api/http')
+      vi.mocked(http.post).mockResolvedValue({
+        deploy_id: 7,
+        cfg_version: 'cfg-x',
+        targets: ['a', 'b'],
+      } as never)
+      getMock.mockResolvedValue({
+        targets: ['a', 'b'],
+        target_count: 2,
+        phase: 'done',
+        results: [
+          { node: 'a', state: 'ok', detail: '31ms', retrying: false },
+          { node: 'b', state: 'ok', detail: '28ms', retrying: false },
+        ],
+      })
+
+      await s.confirm(['route:a'])
+      await vi.waitFor(() => expect(s.phase).toBe('done'))
+      expect(s.okCount).toBe(2)
+    })
+  })
+
   describe('mergeRows', () => {
     it('targets 铺骨架，未回报的留成「待下发」', () => {
       const s = useDeployStore()

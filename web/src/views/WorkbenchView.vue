@@ -132,6 +132,11 @@ watch(selected, () => {
         </button>
       </header>
 
+      <!-- 部分资源没取到时，能用的先用起来，但要说清缺了什么 -->
+      <p v-if="config.failedParts.length && config.failedParts.length < 5" class="partial">
+        {{ config.failedParts.join('、') }} 没有加载成功，这几类资源暂时不可编辑。
+      </p>
+
       <div v-if="config.loading && !effective" class="hint">正在加载配置…</div>
       <div v-else-if="config.error" class="hint error">
         {{ config.error }}
@@ -289,6 +294,15 @@ watch(selected, () => {
 .form {
   padding: var(--space-4);
   overflow-y: auto;
+}
+.partial {
+  margin: var(--space-3) var(--space-4) 0;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--warning-subtle);
+  color: var(--warning-text);
+  font-size: var(--fs-2xs);
+  line-height: 1.6;
 }
 .who {
   margin: 0 0 var(--space-3);

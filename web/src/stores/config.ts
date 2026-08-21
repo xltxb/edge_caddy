@@ -115,28 +115,56 @@ export const useConfigStore = defineStore('config', () => {
 
   /* ── 读 ── */
 
+  /** 哪几类资源这次没取到。空数组 = 全都拿到了。 */
+  const failedParts = ref<string[]>([])
+
+  /**
+   * 拉取全部配置资源。
+   *
+   * 用 `allSettled` 而不是 `all`：这几类资源**互相独立**，一个失败不该把
+   * 已经成功的那几个也丢掉。用 `all` 时，`/policies/tls` 偶发 500 会让工作台
+   * 整个空掉 —— 连好端端返回了 200 的路由和草稿一起没了，而界面只会说
+   * 「加载配置失败」，看不出是哪一块出的问题。
+   */
   async function fetchAll(): Promise<void> {
     loading.value = true
     error.value = null
-    try {
-      const [rt, rl, tls, log, dr] = await Promise.all([
-        http.get<Paged<RouteWire>>('/routes'),
-        http.get<Paged<RuleWire>>('/rules'),
-        http.get<PolicyWire>('/policies/tls'),
-        http.get<PolicyWire>('/policies/log'),
-        http.get<DraftsWire>('/drafts'),
-      ])
-      routes.value = rt.items
-      rules.value = rl.items
-      policies.value = [tls, log]
-      patches.value = dr.items
-      updated.value = dr.updated
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : '加载配置失败'
-      throw e
-    } finally {
-      loading.value = false
+    const failed: string[] = []
+
+    const [rt, rl, tls, log, dr] = await Promise.allSettled([
+      http.get<Paged<RouteWire>>('/routes'),
+      http.get<Paged<RuleWire>>('/rules'),
+      http.get<PolicyWire>('/policies/tls'),
+      http.get<PolicyWire>('/policies/log'),
+      http.get<DraftsWire>('/drafts'),
+    ])
+
+    if (rt.status === 'fulfilled') routes.value = rt.value.items
+    else failed.push('反代路由')
+
+    if (rl.status === 'fulfilled') rules.value = rl.value.items
+    else failed.push('访问规则')
+
+    const pols: PolicyWire[] = []
+    if (tls.status === 'fulfilled') pols.push(tls.value)
+    else failed.push('TLS 策略')
+    if (log.status === 'fulfilled') pols.push(log.value)
+    else failed.push('日志策略')
+    policies.value = pols
+
+    if (dr.status === 'fulfilled') {
+      patches.value = dr.value.items
+      updated.value = dr.value.updated
+    } else {
+      failed.push('草稿')
     }
+
+    failedParts.value = failed
+    // 全军覆没才算「加载失败」；部分失败让能用的先用起来，并说清缺了什么
+    if (failed.length === 5) {
+      error.value = '加载配置失败'
+    }
+    loading.value = false
   }
 
   /* ── 写 ── */
@@ -209,6 +237,7 @@ export const useConfigStore = defineStore('config', () => {
     updated,
     loading,
     error,
+    failedParts,
     tree,
     totalChanges,
     dirtyKeys,

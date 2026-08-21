@@ -3,7 +3,13 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import DeployProgress from '@/components/workbench/DeployProgress.vue'
 import { http } from '@/api/http'
-import type { DeployDetailWire, DeployWire, Paged, RollbackWire } from '@/api/types'
+import type {
+  DeployDetailWire,
+  DeployWire,
+  Paged,
+  RollbackSkipped,
+  RollbackWire,
+} from '@/api/types'
 import { useConfigStore } from '@/stores/config'
 import { useNodesStore } from '@/stores/nodes'
 import { useUiStore } from '@/stores/ui'
@@ -27,6 +33,8 @@ const error = ref<string | null>(null)
 const open = ref<string | null>(null)
 const details = ref<Record<number, DeployDetailWire>>({})
 const rollingBack = ref<string | null>(null)
+/** 回滚覆盖不到的资源。有值时**不自动跳转** —— 跳走会把这条警告一起扫掉。 */
+const skipped = ref<{ cfg: string; items: RollbackSkipped[]; done: string[] } | null>(null)
 
 async function load(): Promise<void> {
   loading.value = true
@@ -64,6 +72,19 @@ async function rollback(d: DeployWire): Promise<void> {
       `/deploys/${encodeURIComponent(d.cfg_version)}/rollback`,
     )
     await config.fetchAll().catch(() => {})
+
+    /*
+     * 有覆盖不到的资源时**不自动跳转**。
+     *
+     * 自动跳工作台是个便利，但它会把这条警告一起扫掉 —— toast 4.2 秒就没了，
+     * 而「某条路由其实没回去」这件事要等到下次出问题才会被发现。
+     * 停下来把它列清楚，让人自己决定下一步。
+     */
+    if (r.skipped.length > 0) {
+      skipped.value = { cfg: d.cfg_version, items: r.skipped, done: r.res_keys }
+      return
+    }
+
     ui.toast(
       'info',
       `已把 ${d.cfg_version} 的差异写回草稿`,
@@ -77,6 +98,12 @@ async function rollback(d: DeployWire): Promise<void> {
   } finally {
     rollingBack.value = null
   }
+}
+
+async function goWorkbench(): Promise<void> {
+  const first = skipped.value?.done[0]
+  skipped.value = null
+  await router.push({ name: 'workbench', params: first ? { key: first } : {} })
 }
 
 const nodeCity = (id: string) => nodes.byId.get(id)?.city ?? ''
@@ -95,6 +122,25 @@ const detailOf = computed(() => (id: number) => details.value[id])
       <div class="title">下发记录</div>
       <div class="sub">每次下发的快照 · 回滚会把差异写回草稿，不直接下发</div>
     </header>
+
+    <div v-if="skipped" class="skipped">
+      <div class="sk-title">
+        回滚到 {{ skipped.cfg }} —— {{ skipped.done.length }} 个资源已写回草稿，
+        <b>{{ skipped.items.length }} 个覆盖不到</b>
+      </div>
+      <ul class="sk-list">
+        <li v-for="s in skipped.items" :key="s.res_key">
+          <code>{{ s.res_key }}</code> —— {{ s.reason }}
+        </li>
+      </ul>
+      <p class="sk-note">
+        覆盖不到的这些不会自动处理。如果确实要让它们回到那一版，需要在工作台手工改。
+      </p>
+      <div class="sk-actions">
+        <button class="mini" type="button" @click="skipped = null">留在本页</button>
+        <button class="primary" type="button" @click="goWorkbench">去工作台确认已写回的</button>
+      </div>
+    </div>
 
     <div v-if="loading && !items.length" class="hint">正在加载…</div>
     <div v-else-if="error" class="hint error">
@@ -184,5 +230,45 @@ const detailOf = computed(() => (id: number) => details.value[id])
 }
 .right .mini + .mini {
   margin-left: var(--space-1-5);
+}
+.skipped {
+  padding: var(--space-3) var(--space-4);
+  background: var(--warning-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.sk-title {
+  font-size: var(--fs-xs);
+  color: var(--warning-text);
+  margin-bottom: var(--space-2);
+}
+.sk-list {
+  margin: 0 0 var(--space-2);
+  padding-left: 18px;
+  font-size: var(--fs-2xs);
+  color: var(--text-body);
+  line-height: 1.8;
+}
+.sk-list code {
+  font-family: var(--font-mono);
+  color: var(--text-strong);
+}
+.sk-note {
+  margin: 0 0 var(--space-3);
+  font-size: var(--fs-micro);
+  color: var(--text-muted);
+}
+.sk-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+.sk-actions .primary {
+  padding: 4px 12px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font-size: var(--fs-micro);
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
 }
 </style>

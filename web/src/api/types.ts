@@ -329,9 +329,23 @@ export interface DeployDetailWire extends DeployWire {
   results: DeployResultWire[]
 }
 
+export interface RollbackSkipped {
+  res_key: string
+  /** 后端给的中文原因，可直接呈给用户。 */
+  reason: string
+}
+
 export interface RollbackWire {
   /** 被写回草稿的资源。回滚**不直接下发** —— 人要在工作台确认 diff 后走同一条流水线。 */
   res_keys: string[]
+  /**
+   * 回滚**覆盖不到**的资源：那次下发之后被删的（不会建回来）、之后才新建的
+   * （不会删掉）。草稿是叠加在 live 行上的 Partial，那一行不存在就无处可叠。
+   *
+   * **必须显示出来。** 人点了「回滚到某版本」、界面说成功了，而某条路由其实
+   * 没回去 —— 那是一次静默的失败，而且要等到下次出问题才会被发现。
+   */
+  skipped: RollbackSkipped[]
 }
 
 /* ── 10. 审计 ── */
