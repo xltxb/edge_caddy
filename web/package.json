@@ -11,7 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "e2e": "playwright test",
-    "dev:real": "vite --mode real"
+    "dev:real": "vite --mode real",
+    "check:premises": "node scripts/check-premises.mjs"
   },
   "dependencies": {
     "pinia": "^2.2.6",
