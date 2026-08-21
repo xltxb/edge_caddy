@@ -79,3 +79,25 @@ func (s *Store) CountUndrainedNodes(ctx context.Context) (int, error) {
 		`SELECT count(*) FROM edge_nodes WHERE drained_at IS NULL`).Scan(&n)
 	return n, err
 }
+
+// EarliestTrafficSample 返回最早那条样本的时刻，一条都没有时返回 false。
+//
+// 用来分辨「历史还不够长」与「昨天那一分钟正好没采到」——两者都表现为
+// 「查不到昨天那一分钟」，而对人的意思完全不同：前者再等等就有了，
+// 后者说明主控那时停着或者那一分钟被跳过了。
+func (s *Store) EarliestTrafficSample(ctx context.Context) (time.Time, bool, error) {
+	var at time.Time
+	err := s.Pool.QueryRow(ctx, `SELECT min(at) FROM traffic_samples`).Scan(&at)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return at, false, nil
+		}
+		// min() 在空表上回 NULL，Scan 进 time.Time 会报错而不是 ErrNoRows。
+		var nullable *time.Time
+		if e2 := s.Pool.QueryRow(ctx, `SELECT min(at) FROM traffic_samples`).Scan(&nullable); e2 == nil {
+			return at, nullable != nil, nil
+		}
+		return at, false, err
+	}
+	return at, true, nil
+}

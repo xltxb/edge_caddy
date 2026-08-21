@@ -144,12 +144,44 @@ func TestDeltaIsNilWhenYesterdayHasNoSample(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	d, err := traffic.DeltaPct(ctx, st, now, 200)
+	d, reason, err := traffic.DeltaPct(ctx, st, now, 200)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if d != nil {
 		t.Fatalf("昨天那一分钟没样本，应当是 nil，实际 %v —— 前天的数不是「同时段」", *d)
+	}
+	// **原因要说得准。** 前天有样本，说明历史够长了 —— 这一次是那一分钟
+	// 正好没采到（主控停着、或者报数节点不齐被跳过），不是「再等等就有」。
+	// 说成「历史不足」会让人白等一天。
+	if reason != traffic.ReasonNoSampleAtThatTime {
+		t.Errorf("原因 = %q，想要 %q", reason, traffic.ReasonNoSampleAtThatTime)
+	}
+}
+
+// 库里一条样本都没有、或者最早的还不到 24 小时前 —— 那才是「再等等就有」。
+func TestReasonIsInsufficientHistoryWhenTooYoung(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Minute)
+
+	// 一条都没有。
+	if _, reason, err := traffic.DeltaPct(ctx, st, now, 100); err != nil {
+		t.Fatal(err)
+	} else if reason != traffic.ReasonInsufficientHistory {
+		t.Errorf("空库时原因 = %q，想要 %q", reason, traffic.ReasonInsufficientHistory)
+	}
+
+	// 只有一小时前的样本，历史仍然不够 24 小时。
+	if err := st.InsertTrafficSample(ctx, store.TrafficSample{
+		At: now.Add(-time.Hour), ConnsTotal: 50,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, reason, err := traffic.DeltaPct(ctx, st, now, 100); err != nil {
+		t.Fatal(err)
+	} else if reason != traffic.ReasonInsufficientHistory {
+		t.Errorf("历史不足时原因 = %q，想要 %q", reason, traffic.ReasonInsufficientHistory)
 	}
 }
 
@@ -163,16 +195,21 @@ func TestDeltaPct(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	d, err := traffic.DeltaPct(ctx, st, now, 250)
+	d, reason, err := traffic.DeltaPct(ctx, st, now, 250)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if d == nil || *d < 24.9 || *d > 25.1 {
 		t.Fatalf("200 → 250 应当是 +25%%，实际 %v", d)
 	}
+	// **有数字时原因必须为空。** 一个同时给出数字和「为什么没有数字」的
+	// 响应，会让人怀疑那个数字。
+	if reason != "" {
+		t.Errorf("有数字时不该带原因，实际 %q", reason)
+	}
 
 	// 可以为负。
-	d2, _ := traffic.DeltaPct(ctx, st, now, 150)
+	d2, _, _ := traffic.DeltaPct(ctx, st, now, 150)
 	if d2 == nil || *d2 > -24.9 {
 		t.Fatalf("200 → 150 应当是 -25%%，实际 %v", d2)
 	}
@@ -193,12 +230,16 @@ func TestDeltaIsNilWhenYesterdayWasZero(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	d, err := traffic.DeltaPct(ctx, st, now, 100)
+	d, reason, err := traffic.DeltaPct(ctx, st, now, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if d != nil {
 		t.Fatalf("昨天是 0，百分比没有定义，应当返回 nil，实际 %v", *d)
+	}
+	if reason != traffic.ReasonZeroBaseline {
+		t.Errorf("原因 = %q，想要 %q —— 这一种跟「没有样本」不同："+
+			"样本是有的，只是它当不了分母", reason, traffic.ReasonZeroBaseline)
 	}
 }
 

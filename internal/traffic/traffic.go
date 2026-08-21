@@ -158,14 +158,40 @@ func (s *Sampler) prune(ctx context.Context, now time.Time) {
 	}
 }
 
+// 没有同比数字时的原因。**空字符串表示「有数字」。**
+//
+// 前端 agent 指出的：一个不带原因的 null 逼着界面在三种情况里挑一句话说，
+// **而挑错的那两次会让人白等**——「历史不足」说的是「再等等」，
+// 而真相可能是「主控昨天那会儿停着」，等到明天也不会变。
+//
+// 后端当场就知道是哪一种，那就说出来。
+const (
+	ReasonInsufficientHistory = "insufficient_history" // 库里最早的样本还不到 24 小时前
+	ReasonNoSampleAtThatTime  = "no_sample"            // 有更早的样本，但昨天那一分钟没有
+	ReasonZeroBaseline        = "zero_baseline"        // 昨天那一分钟是 0，百分比没有定义
+)
+
 // DeltaPct 算「较昨日同时段」的连接数变化百分比。
 //
 // 返回 nil 表示**没有可比的数**，那与「持平」是两回事——0 会被读成持平，
-// 而前端要按空态处理（api-contract §3）。
-func DeltaPct(ctx context.Context, st *store.Store, now time.Time, current uint64) (*float64, error) {
+// 而前端要按空态处理（api-contract §3）。第二个返回值说明是哪一种没有。
+func DeltaPct(ctx context.Context, st *store.Store, now time.Time, current uint64) (*float64, string, error) {
 	prev, ok, err := st.TrafficAt(ctx, now.Add(-24*time.Hour))
-	if err != nil || !ok {
-		return nil, err
+	if err != nil {
+		return nil, "", err
+	}
+	if !ok {
+		// 分辨「历史还不够长」与「那一分钟正好没采到」：两者都表现为查不到，
+		// 而对人的意思完全不同——前者再等等就有了，后者说明主控那时停着
+		// 或者那一分钟因为报数节点不齐被跳过了。
+		earliest, has, err := st.EarliestTrafficSample(ctx)
+		if err != nil {
+			return nil, "", err
+		}
+		if !has || earliest.After(now.Add(-24*time.Hour)) {
+			return nil, ReasonInsufficientHistory, nil
+		}
+		return nil, ReasonNoSampleAtThatTime, nil
 	}
 	if prev.ConnsTotal == 0 {
 		// **分母为 0 时百分比没有定义。**
@@ -173,8 +199,8 @@ func DeltaPct(ctx context.Context, st *store.Store, now time.Time, current uint6
 		// 昨天 0 连接、今天 100，那确实是「从无到有」，但它不是一个百分比。
 		// 硬算会得到 +Inf 或者一个靠加 1 平滑出来的假数字，
 		// 而两者都比「暂无同比」更难被质疑。
-		return nil, nil
+		return nil, ReasonZeroBaseline, nil
 	}
 	d := (float64(current) - float64(prev.ConnsTotal)) / float64(prev.ConnsTotal) * 100
-	return &d, nil
+	return &d, "", nil
 }

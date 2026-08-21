@@ -70,10 +70,16 @@ func (s *Server) handleOverview(c *gin.Context) {
 
 	// 昨天这一分钟没采到（主控停机、或者报数节点不齐被跳过）时是 nil。
 	// 查不出来也给 nil：一个同比算不出来不该让整个总览失败。
-	deltaPct, err := traffic.DeltaPct(ctx, s.store, time.Now(), connsTotal)
+	deltaPct, deltaReason, err := traffic.DeltaPct(ctx, s.store, time.Now(), connsTotal)
 	if err != nil {
 		s.log.Error("读取同比样本失败", "err", err)
-		deltaPct = nil
+		deltaPct, deltaReason = nil, ""
+	}
+	// 有数字时原因是 null：一个同时给出数字和「为什么没有数字」的响应，
+	// 会让人怀疑那个数字。
+	var reason any
+	if deltaReason != "" {
+		reason = deltaReason
 	}
 
 	kpi := gin.H{
@@ -90,8 +96,9 @@ func (s *Server) handleOverview(c *gin.Context) {
 		"conns_total":  connsTotal,
 		// 「较昨日同时段」需要昨天那一分钟真的采到过；没有就给 null 而不是 0 ——
 		// 0 会被读成「持平」（api-contract §3）。
-		"conns_delta_pct": deltaPct,
-		"origin_rate":     originRate(reqTotal, originTotal),
+		"conns_delta_pct":    deltaPct,
+		"conns_delta_reason": reason,
+		"origin_rate":        originRate(reqTotal, originTotal),
 		// 配置漂移**只比对版本号**，不检查节点上的配置内容（ADR-0002）。
 		// 「全部一致」的含义只是「最近一次下发都到达了」，不是「没人 SSH 上去改过」。
 		"drift_nodes": driftCount,
