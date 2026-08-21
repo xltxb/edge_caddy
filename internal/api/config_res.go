@@ -256,6 +256,21 @@ func (s *Server) handleGetPolicy(c *gin.Context) {
 		Fail(c, CodeDownstream, "读取全局策略失败")
 		return
 	}
+	// **用渲染器的默认值补齐缺的字段。**
+	//
+	// 返回字面意义的空 spec 会让界面无从说出真相：三个枚举一个都没选中、
+	// 开关全 off，而人无从知道此刻节点上究竟什么在生效。补齐之后，
+	// 界面显示的就是实际会被渲染下去的那一份。
+	//
+	// 默认值只有一份，在 render 包里；契约 §6.3 的 seed 必须与它一致，
+	// 不一致就是文档和实现各说各话。
+	filled, err := fillPolicyDefaults(id, p.Spec)
+	if err != nil {
+		s.log.Error("补齐策略默认值失败", "err", err)
+		Fail(c, CodeDownstream, "读取全局策略失败")
+		return
+	}
+	p.Spec = filled
 	OK(c, p)
 }
 
@@ -283,4 +298,29 @@ func (s *Server) handlePutPolicy(c *gin.Context) {
 		return
 	}
 	OK(c, gin.H{"id": id})
+}
+
+// fillPolicyDefaults 把 spec 里缺的字段补成渲染器的默认值。
+func fillPolicyDefaults(id string, spec json.RawMessage) (json.RawMessage, error) {
+	pol, err := render.ParsePolicies(nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	switch id {
+	case model.PolicyTLS:
+		if len(spec) > 0 {
+			if err := json.Unmarshal(spec, &pol.TLS); err != nil {
+				return nil, err
+			}
+		}
+		return json.Marshal(pol.TLS)
+	case model.PolicyLog:
+		if len(spec) > 0 {
+			if err := json.Unmarshal(spec, &pol.Log); err != nil {
+				return nil, err
+			}
+		}
+		return json.Marshal(pol.Log)
+	}
+	return spec, nil
 }

@@ -35,7 +35,7 @@ func ok(d, u string) model.Route {
 func TestBodyMaxIsConvertedToBytes(t *testing.T) {
 	r := ok("api.example.com", "127.0.0.1:8080")
 	r.BodyMax = "5MB"
-	b, issues := render.Render([]model.Route{r}, nil, nil, render.Options{})
+	b, issues := render.Render([]model.Route{r}, nil, nil, render.Policies{}, render.Options{})
 	if len(issues) > 0 {
 		t.Fatalf("不该有校验问题: %v", issues)
 	}
@@ -62,7 +62,7 @@ func TestBodyMaxUnits(t *testing.T) {
 	for in, want := range cases {
 		r := ok("a.example.com", "127.0.0.1:1")
 		r.BodyMax = in
-		b, issues := render.Render([]model.Route{r}, nil, nil, render.Options{})
+		b, issues := render.Render([]model.Route{r}, nil, nil, render.Policies{}, render.Options{})
 		if len(issues) > 0 {
 			t.Errorf("%s: %v", in, issues)
 			continue
@@ -135,7 +135,7 @@ func TestMTLSRendersAsUpstreamClientCertNotConnectionPolicy(t *testing.T) {
 	r := ok("m.example.com", "127.0.0.1:1")
 	r.MTLS = true
 
-	b, issues := render.Render([]model.Route{r}, nil, nil, render.Options{
+	b, issues := render.Render([]model.Route{r}, nil, nil, render.Policies{}, render.Options{
 		UpstreamClientCert: "/var/lib/edge-agent/edge-mtls.crt",
 		UpstreamClientKey:  "/var/lib/edge-agent/edge-mtls.key",
 	})
@@ -164,7 +164,7 @@ func TestMTLSRendersAsUpstreamClientCertNotConnectionPolicy(t *testing.T) {
 // 渲染空的 tls app 会把节点上外部证书平台写入的内容抹掉——那是上一版真出过
 // 的事故。而一个没有证书的 :443 监听会让每一次握手都失败，比不监听更糟。
 func TestNoCertsMeansNoTLSAppAndNoHTTPSServer(t *testing.T) {
-	b, _ := render.Render([]model.Route{ok("t.example.com", "127.0.0.1:1")}, nil, nil, render.Options{})
+	b, _ := render.Render([]model.Route{ok("t.example.com", "127.0.0.1:1")}, nil, nil, render.Policies{}, render.Options{})
 	var cfg struct {
 		Apps struct {
 			TLS  json.RawMessage `json:"tls"`
@@ -191,7 +191,7 @@ func TestCertsAreInlinedAndTLSServerAppears(t *testing.T) {
 		CertPEM: []byte("-----BEGIN CERTIFICATE-----\nAAA\n-----END CERTIFICATE-----\n"),
 		KeyPEM:  []byte("-----BEGIN EC PRIVATE KEY-----\nBBB\n-----END EC PRIVATE KEY-----\n"),
 	}}
-	b, _ := render.Render([]model.Route{ok("t.example.com", "127.0.0.1:1")}, nil, certs,
+	b, _ := render.Render([]model.Route{ok("t.example.com", "127.0.0.1:1")}, nil, certs, render.Policies{},
 		render.Options{HTTPSListen: ":8443"})
 	out := string(b)
 
@@ -235,7 +235,7 @@ func TestCertsAreInlinedAndTLSServerAppears(t *testing.T) {
 
 // 白名单为空 = 不限制，不应产生 deny 路由。
 func TestEmptyWhitelistProducesNoDenyRoute(t *testing.T) {
-	b, _ := render.Render([]model.Route{ok("open.example.com", "127.0.0.1:1")}, nil, nil, render.Options{})
+	b, _ := render.Render([]model.Route{ok("open.example.com", "127.0.0.1:1")}, nil, nil, render.Policies{}, render.Options{})
 	if strings.Contains(string(b), `"not"`) {
 		t.Fatalf("白名单为空却渲染出了 deny 匹配器:\n%s", b)
 	}
@@ -245,7 +245,7 @@ func TestEmptyWhitelistProducesNoDenyRoute(t *testing.T) {
 func TestBareIPIsNormalizedToCIDR(t *testing.T) {
 	r := ok("w.example.com", "127.0.0.1:1")
 	r.Whitelist = []string{"203.0.113.7", "10.8.0.0/24"}
-	b, _ := render.Render([]model.Route{r}, nil, nil, render.Options{})
+	b, _ := render.Render([]model.Route{r}, nil, nil, render.Policies{}, render.Options{})
 	if !strings.Contains(string(b), `"203.0.113.7/32"`) {
 		t.Errorf("裸 IP 应当补成 /32:\n%s", b)
 	}
@@ -258,8 +258,8 @@ func TestBareIPIsNormalizedToCIDR(t *testing.T) {
 func TestRenderIsOrderIndependent(t *testing.T) {
 	a := []model.Route{ok("b.example.com", "127.0.0.1:1"), ok("a.example.com", "127.0.0.1:2")}
 	b := []model.Route{ok("a.example.com", "127.0.0.1:2"), ok("b.example.com", "127.0.0.1:1")}
-	ra, _ := render.Render(a, nil, nil, render.Options{})
-	rb, _ := render.Render(b, nil, nil, render.Options{})
+	ra, _ := render.Render(a, nil, nil, render.Policies{}, render.Options{})
+	rb, _ := render.Render(b, nil, nil, render.Policies{}, render.Options{})
 	if string(ra) != string(rb) {
 		t.Fatal("同一组路由换个顺序渲染出了不同的字节——diff 会虚报变更")
 	}
@@ -268,7 +268,7 @@ func TestRenderIsOrderIndependent(t *testing.T) {
 // 不渲染 apps/tls：一张证书都没有时渲染它会把节点上外部证书平台写入的内容抹掉，
 // 那是上一版真出过的事故（ADR-0010）。
 func TestDoesNotRenderTLSApp(t *testing.T) {
-	b, _ := render.Render([]model.Route{ok("t.example.com", "127.0.0.1:1")}, nil, nil, render.Options{})
+	b, _ := render.Render([]model.Route{ok("t.example.com", "127.0.0.1:1")}, nil, nil, render.Policies{}, render.Options{})
 	var cfg struct {
 		Apps map[string]json.RawMessage `json:"apps"`
 	}
@@ -282,7 +282,7 @@ func TestDoesNotRenderTLSApp(t *testing.T) {
 
 // 校验不过时不产出配置——一份没通过校验的配置绝不该有机会被下发。
 func TestNoConfigWhenValidationFails(t *testing.T) {
-	b, issues := render.Render([]model.Route{{Domain: "bad", Upstream: "x"}}, nil, nil, render.Options{})
+	b, issues := render.Render([]model.Route{{Domain: "bad", Upstream: "x"}}, nil, nil, render.Policies{}, render.Options{})
 	if len(issues) == 0 {
 		t.Fatal("这组输入应当校验失败")
 	}

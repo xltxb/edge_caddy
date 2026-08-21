@@ -95,7 +95,7 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 		log = slog.Default()
 	}
 
-	routes, rules, err := s.effective(ctx, resKeys)
+	routes, rules, pol, err := s.effective(ctx, resKeys)
 	if err != nil {
 		return Result{}, nil, err
 	}
@@ -105,7 +105,7 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 		return Result{}, nil, err
 	}
 
-	cfg, issues := render.Render(routes, rules, certs, s.Render)
+	cfg, issues := render.Render(routes, rules, certs, pol, s.Render)
 	if len(issues) > 0 {
 		// 校验不过即整体拒绝，不触达节点。
 		return Result{}, issues, nil
@@ -224,6 +224,9 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 		if err := s.Store.BumpRuleVersions(ctx, keysWithPrefix(resKeys, "rule:")); err != nil {
 			log.Error("推进规则版本失败", "err", err)
 		}
+		if err := s.Store.BumpPolicyVersions(ctx, keysWithPrefix(resKeys, "global:")); err != nil {
+			log.Error("推进策略版本失败", "err", err)
+		}
 		if err := s.Store.DeleteDrafts(ctx, resKeys); err != nil {
 			log.Error("清空草稿失败", "err", err)
 		}
@@ -270,20 +273,25 @@ func eventKind(ok, fail int) string {
 }
 
 // effective = 基线 + **本次勾选**的草稿。未勾选的草稿不参与本次渲染。
-func (s *Scheduler) effective(ctx context.Context, resKeys []string) ([]model.Route, []model.Rule, error) {
+func (s *Scheduler) effective(ctx context.Context, resKeys []string) ([]model.Route, []model.Rule, render.Policies, error) {
+	var pol render.Policies
 	liveRoutes, err := s.Store.ListRoutes(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("读取路由: %w", err)
+		return nil, nil, pol, fmt.Errorf("读取路由: %w", err)
 	}
 	// 渲染需要共享密钥的明文：校验端点要拿它验签。它只出现在下发的载荷里，
 	// 不经任何读接口回显。
 	liveRules, err := s.Store.ListRules(ctx, s.Sealer)
 	if err != nil {
-		return nil, nil, fmt.Errorf("读取访问规则: %w", err)
+		return nil, nil, pol, fmt.Errorf("读取访问规则: %w", err)
+	}
+	livePolicies, err := s.Store.ListPolicies(ctx)
+	if err != nil {
+		return nil, nil, pol, fmt.Errorf("读取全局策略: %w", err)
 	}
 	drafts, err := s.Store.ListDrafts(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("读取草稿: %w", err)
+		return nil, nil, pol, fmt.Errorf("读取草稿: %w", err)
 	}
 
 	selected := map[string]bool{}
@@ -302,7 +310,7 @@ func (s *Scheduler) effective(ctx context.Context, resKeys []string) ([]model.Ro
 		if p, ok := patches["route:"+r.Domain]; ok {
 			merged, err := mergeInto(r, p)
 			if err != nil {
-				return nil, nil, fmt.Errorf("合并 %s 的草稿: %w", r.Domain, err)
+				return nil, nil, pol, fmt.Errorf("合并 %s 的草稿: %w", r.Domain, err)
 			}
 			r = merged
 		}
@@ -315,14 +323,32 @@ func (s *Scheduler) effective(ctx context.Context, resKeys []string) ([]model.Ro
 			secretPlain := r.Secret // 草稿里不会有密钥，合并不能把它弄丢
 			merged, err := mergeInto(r, p)
 			if err != nil {
-				return nil, nil, fmt.Errorf("合并规则 %s 的草稿: %w", r.ID, err)
+				return nil, nil, pol, fmt.Errorf("合并规则 %s 的草稿: %w", r.ID, err)
 			}
 			merged.Secret = secretPlain
 			r = merged
 		}
 		rules = append(rules, r)
 	}
-	return routes, rules, nil
+	// 全局策略也吃草稿：工作台里它们与路由、规则共用同一套草稿机制。
+	specs := map[string]json.RawMessage{}
+	for _, p := range livePolicies {
+		spec := p.Spec
+		if patch, ok := patches["global:"+p.ID]; ok {
+			merged, err := mergeInto(p, patch)
+			if err != nil {
+				return nil, nil, pol, fmt.Errorf("合并策略 %s 的草稿: %w", p.ID, err)
+			}
+			spec = merged.Spec
+		}
+		specs[p.ID] = spec
+	}
+	pol, err = render.ParsePolicies(specs[model.PolicyTLS], specs[model.PolicyLog])
+	if err != nil {
+		return nil, nil, pol, err
+	}
+
+	return routes, rules, pol, nil
 }
 
 // mergeInto 把 Partial 叠加到一个资源上。
@@ -448,7 +474,24 @@ func (s *Scheduler) Preview(ctx context.Context, resKeys []string) (Preview, err
 	if err != nil {
 		return p, fmt.Errorf("读取访问规则: %w", err)
 	}
-	afterRoutes, afterRules, err := s.effective(ctx, resKeys)
+	afterRoutes, afterRules, afterPol, err := s.effective(ctx, resKeys)
+	if err != nil {
+		return p, err
+	}
+	livePolicies, err := s.Store.ListPolicies(ctx)
+	if err != nil {
+		return p, fmt.Errorf("读取全局策略: %w", err)
+	}
+	var liveTLS, liveLog json.RawMessage
+	for _, lp := range livePolicies {
+		switch lp.ID {
+		case model.PolicyTLS:
+			liveTLS = lp.Spec
+		case model.PolicyLog:
+			liveLog = lp.Spec
+		}
+	}
+	livePol, err := render.ParsePolicies(liveTLS, liveLog)
 	if err != nil {
 		return p, err
 	}
@@ -459,12 +502,12 @@ func (s *Scheduler) Preview(ctx context.Context, resKeys []string) (Preview, err
 	//
 	// before 自己也可能渲染不出来，那不该让整个预览失败——前端拿到 null 时
 	// 把整份显示为「全新增」即可，而 after 的校验结果仍然是有用的。
-	if b, issues := render.Render(liveRoutes, liveRules, nil, s.Render); len(issues) == 0 {
+	if b, issues := render.Render(liveRoutes, liveRules, nil, livePol, s.Render); len(issues) == 0 {
 		before := string(b)
 		p.Before = &before
 	}
 
-	if b, issues := render.Render(afterRoutes, afterRules, nil, s.Render); len(issues) > 0 {
+	if b, issues := render.Render(afterRoutes, afterRules, nil, afterPol, s.Render); len(issues) > 0 {
 		p.Validation.OK = false
 		p.Validation.Errors = issues
 	} else {
@@ -505,7 +548,7 @@ func (s *Scheduler) RepushNode(ctx context.Context, nodeID string) (string, stri
 		return "", "", nil, fmt.Errorf("还没有基线，先完成一次下发")
 	}
 
-	routes, rules, err := s.effective(ctx, nil) // 不带草稿：基线就是不含草稿的那一份
+	routes, rules, pol, err := s.effective(ctx, nil) // 不带草稿：基线就是不含草稿的那一份
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -513,7 +556,7 @@ func (s *Scheduler) RepushNode(ctx context.Context, nodeID string) (string, stri
 	if err != nil {
 		return "", "", nil, err
 	}
-	cfg, issues := render.Render(routes, rules, certs, s.Render)
+	cfg, issues := render.Render(routes, rules, certs, pol, s.Render)
 	if len(issues) > 0 {
 		return "", "", issues, nil
 	}

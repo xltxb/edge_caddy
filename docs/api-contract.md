@@ -483,10 +483,26 @@ null
 ```json
 "ip_whitelist"   → { "ips": ["203.0.113.7", "10.8.0.0/24"] }
 "service_secret" → { "header": "X-Service-Key", "algo": "hmac-sha256",
-                     "ttl_s": 300, "replay_protection": true }
+                     "ttl_s": 300, "replay_protection": true,
+                     "secret_configured": true }
 "jwt_bearer"     → { "iss": "https://idp.internal/", "aud": "edge",
                      "jwks_url": "https://idp.internal/.well-known/jwks.json", "skew_s": 60 }
 ```
+
+> **共享密钥不在 `spec` 里。** `PUT /rules/:id` 的请求体上有一个**顶层** `secret`
+> 字段，只写入不回显——`spec` 会被 `GET /rules` 原样返回，密钥放进去就等于回显了
+> （PRD §7）。读接口只给 `spec.secret_configured` 布尔。
+>
+> **空串表示保持不变**，与 DNS 凭据、Lark webhook 一致：前端不回显它，
+> 提交时也带不出原值来。界面按「已配置 / 更换」处理。
+>
+> ```json
+> // PUT /rules/svc-key-1
+> { "name": "…", "type": "service_secret", "enabled": true,
+>   "apply_to": ["api.example.com"],
+>   "spec": { "header": "X-Service-Key", "algo": "hmac-sha256", "ttl_s": 300 },
+>   "secret": "只在设置时出现，留空即不改" }
+> ```
 
 **`apply_to` 为空数组的规则不生效**——那是半成品状态，不是「对所有域名生效」。
 前端应把它显示为未绑定，不要显示为全局生效。
@@ -519,10 +535,17 @@ null
 | `hsts_max_age` | int | 秒，仅在 `hsts` 开启时有意义 | `63072000` |
 | `ocsp` | bool | OCSP Must-Staple | `false` |
 
-> `ca` / `email` / `key_type` 是**主控**签发证书时用的参数（certmagic 跑 DNS-01），
+> `ca` / `email` / `key_type` 是**主控**签发证书时用的参数（DNS-01），
 > **不下发给节点**——节点跑官方 Caddy，不自己申请证书（ADR-0001）。设计稿里那句
 > 「Caddy 全生命周期自动申请与续期」是旧说法，前端已改文案。
-> `min_version` / `http3` / `hsts` / `ocsp` 才是真正渲染进节点配置的。
+>
+> 真正渲染进节点配置的是：`min_version` → `tls_connection_policies.protocol_min`；
+> `http3` → server 的 `protocols`（开它还需要部署脚本放行 443/udp）；
+> `hsts` → 响应头，**只在 TLS 那台 server 上发**（明文响应里发 HSTS 浏览器会忽略，
+> 而它会让人以为已经生效了）。
+>
+> `ocsp`（Must-Staple）是**签发时**写进 CSR 的属性，不是服务端设置——它属于
+> 主控的签发参数，节点侧无从体现。
 
 **`global:log`**
 
@@ -540,6 +563,19 @@ null
 > `rate_rps` / `rate_burst` 只在 `rate_limit = true` 时出现在表单里，因此
 > `rate_limit = false` 时这两个键**可能根本不存在**。渲染器不要假定它们一定在，
 > 也不要在关闭限流时给它们填默认值再渲染——那会让 diff 里凭空多出两行。
+>
+> ⚠️ **`rate_limit = true` 会让下发被拒绝（`code: 1002`）。**
+>
+> 用真二进制核实过：**官方 Caddy 2.11.4 的 132 个标准模块里一个限流模块都没有**
+> （`caddy-ratelimit` 是插件）。一个开着却没有效果的限流开关，比一个明说
+> 「做不到」的报错危险得多——与回源 mTLS 当初的处理一致。
+>
+> 这是同一个模式的第三次：设计稿假设了一个服务商/组件没有的能力。
+> 前两次是「回源率靠缓存」（官方 Caddy 没有缓存模块）与「Cloudflare 分线路权重」
+> （DNS 记录没有线路与权重概念）。要真做限流就得自建 Caddy 二进制，
+> 而那会推翻 ADR-0001 与 ADR-0003 共同的前提。
+>
+> 界面应当把这个开关置灰并说明原因，而不是让人打开再被拒。
 
 ### 6.4 草稿
 

@@ -46,7 +46,7 @@ func TestInlinedCertIsActuallyServedOverTLS(t *testing.T) {
 
 	cfg, issues := render.Render(
 		[]model.Route{{Domain: "secure.example.com", Upstream: up, BlockMode: model.BlockAbort}},
-		nil, []render.Cert{cert},
+		nil, []render.Cert{cert}, render.Policies{},
 		render.Options{HTTPListen: c.EdgeListen(), HTTPSListen: c.TLSListen()})
 	if len(issues) > 0 {
 		t.Fatalf("渲染报了问题: %v", issues)
@@ -73,7 +73,7 @@ func TestHTTPSRequestReachesUpstream(t *testing.T) {
 
 	cfg, _ := render.Render(
 		[]model.Route{{Domain: "secure.example.com", Upstream: up, BlockMode: model.BlockAbort}},
-		nil, []render.Cert{cert},
+		nil, []render.Cert{cert}, render.Policies{},
 		render.Options{HTTPListen: c.EdgeListen(), HTTPSListen: c.TLSListen()})
 	if _, err := agent.NewCaddyClient(c.AdminURL()).ApplyConfig(context.Background(), cfg); err != nil {
 		t.Fatal(err)
@@ -118,7 +118,7 @@ func TestPlainHTTPServerStillWorksWhenCertsPresent(t *testing.T) {
 	cfg, _ := render.Render([]model.Route{
 		{Domain: "secure.example.com", Upstream: up, BlockMode: model.BlockAbort},
 		{Domain: "plain.example.com", Upstream: up, BlockMode: model.BlockAbort},
-	}, nil, []render.Cert{selfSigned(t, "secure.example.com")},
+	}, nil, []render.Cert{selfSigned(t, "secure.example.com")}, render.Policies{},
 		render.Options{HTTPListen: c.EdgeListen(), HTTPSListen: c.TLSListen()})
 	if _, err := agent.NewCaddyClient(c.AdminURL()).ApplyConfig(context.Background(), cfg); err != nil {
 		t.Fatal(err)
@@ -141,7 +141,7 @@ func TestNoCertsLeavesExistingTLSAppUntouched(t *testing.T) {
 
 	// 先模拟「节点上已经有别人写的 tls 配置」。
 	first, _ := render.Render([]model.Route{{Domain: "a.example.com", Upstream: up, BlockMode: model.BlockAbort}},
-		nil, []render.Cert{selfSigned(t, "a.example.com")},
+		nil, []render.Cert{selfSigned(t, "a.example.com")}, render.Policies{},
 		render.Options{HTTPListen: c.EdgeListen(), HTTPSListen: c.TLSListen()})
 	if _, err := cli.ApplyConfig(ctx, first); err != nil {
 		t.Fatal(err)
@@ -152,7 +152,7 @@ func TestNoCertsLeavesExistingTLSAppUntouched(t *testing.T) {
 
 	// 再下发一份没有证书的配置。
 	second, _ := render.Render([]model.Route{{Domain: "a.example.com", Upstream: up, BlockMode: model.BlockAbort}},
-		nil, nil, render.Options{HTTPListen: c.EdgeListen(), HTTPSListen: c.TLSListen()})
+		nil, nil, render.Policies{}, render.Options{HTTPListen: c.EdgeListen(), HTTPSListen: c.TLSListen()})
 	if strings.Contains(string(second), `"tls"`) {
 		t.Fatal("没有证书时不该渲染 apps/tls")
 	}
@@ -180,4 +180,67 @@ func handshakeVia(t *testing.T, sock, sni string) tls.ConnectionState {
 		t.Fatalf("TLS 握手失败: %v", err)
 	}
 	return conn.ConnectionState()
+}
+
+// **全局策略真的作用到节点上。**
+//
+// 在此之前，两条全局策略能存、能改、能进资源树、有版本号——却从来没有被渲染，
+// 对节点毫无影响。一条什么也不做的设置比没有这个设置更糟：它让人以为配过了。
+func TestGlobalPoliciesActuallyTakeEffect(t *testing.T) {
+	up := upstream(t, "POLICY")
+	c := caddytest.New(t)
+	cert := selfSigned(t, "p.example.com")
+
+	pol := render.Policies{
+		TLS: render.TLSPolicy{MinVersion: "1.3", HTTP3: false, HSTS: true, HSTSMaxAge: 31536000},
+		Log: render.LogPolicy{Format: "json", Level: "ERROR", StripHeaders: true},
+	}
+	cfg, issues := render.Render(
+		[]model.Route{{Domain: "p.example.com", Upstream: up, BlockMode: model.BlockAbort}},
+		nil, []render.Cert{cert}, pol,
+		render.Options{HTTPListen: c.EdgeListen(), HTTPSListen: c.TLSListen()})
+	if len(issues) > 0 {
+		t.Fatalf("渲染报了问题: %v", issues)
+	}
+	if _, err := agent.NewCaddyClient(c.AdminURL()).ApplyConfig(context.Background(), cfg); err != nil {
+		t.Fatalf("Caddy 拒绝了带全局策略的配置: %v", err)
+	}
+
+	// strip_headers：Caddy 自己的 Server 头必须被删掉。
+	// 这个 handler 要 deferred 才有效——Server 头是写响应时才加的。
+	code, _ := c.Get("p.example.com", "/", nil)
+	if code != 200 {
+		t.Fatalf("明文请求得到 %d", code)
+	}
+	resp := c.GetFull(t, "p.example.com", "/")
+	if got := resp.Header.Get("Server"); got != "" {
+		t.Errorf("strip_headers 开着时不该有 Server 头，实际 %q", got)
+	}
+	// HSTS **只在 TLS 上发**：明文响应里发它浏览器会忽略，
+	// 而它会让人以为已经生效了。
+	if got := resp.Header.Get("Strict-Transport-Security"); got != "" {
+		t.Errorf("明文响应不该带 HSTS，实际 %q", got)
+	}
+
+	// TLS 侧：min_version=1.3 时，TLS 1.2 的客户端应当握不上。
+	if err := tryHandshake(c.TLSSocketPath(), "p.example.com", tls.VersionTLS12, tls.VersionTLS12); err == nil {
+		t.Error("min_version=1.3 时 TLS 1.2 不该握得上")
+	}
+	if err := tryHandshake(c.TLSSocketPath(), "p.example.com", tls.VersionTLS13, tls.VersionTLS13); err != nil {
+		t.Errorf("TLS 1.3 应当握得上: %v", err)
+	}
+}
+
+func tryHandshake(sock, sni string, min, max uint16) error {
+	raw, err := net.DialTimeout("unix", sock, 3*time.Second)
+	if err != nil {
+		return err
+	}
+	defer raw.Close()
+	conn := tls.Client(raw, &tls.Config{
+		ServerName: sni, InsecureSkipVerify: true,
+		MinVersion: min, MaxVersion: max,
+	})
+	defer conn.Close()
+	return conn.Handshake()
 }

@@ -218,3 +218,20 @@ func (c *Caddy) waitReady() {
 	}
 	c.t.Fatal("caddy admin 在 10 秒内没有就绪")
 }
+
+// GetFull 与 Get 一样发请求，但把整个响应交回来——测试需要看响应头。
+func (c *Caddy) GetFull(t *testing.T, host, path string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, "http://"+host+path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli := c.Client()
+	cli.Timeout = 3 * time.Second
+	resp, err := cli.Do(req)
+	if err != nil {
+		t.Fatalf("请求 %s%s: %v", host, path, err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}

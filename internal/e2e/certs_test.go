@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/xltxb/edge_caddy/internal/api"
 )
 
 type certItem struct {
@@ -334,5 +336,99 @@ func TestDeleteRouteUnbindsRules(t *testing.T) {
 	list := r.mustDo("GET", "/rules", nil)
 	if contains(string(list.Data), "gone.example.com") {
 		t.Fatalf("规则里还留着已删域名的绑定: %s", list.Data)
+	}
+}
+
+// **全局策略返回的是渲染器的默认值，不是字面意义的空。**
+//
+// 空 spec 会让界面无从说出真相：三个枚举一个都没选中、开关全 off，
+// 而人无从知道此刻节点上究竟什么在生效。补齐之后，界面显示的就是
+// 实际会被渲染下去的那一份。
+func TestPolicyDefaultsReflectWhatIsActuallyRendered(t *testing.T) {
+	r := newRig(t)
+
+	e := r.mustDo("GET", "/policies/tls", nil)
+	var p struct {
+		Spec struct {
+			MinVersion string `json:"min_version"`
+			KeyType    string `json:"key_type"`
+			CA         string `json:"ca"`
+			HTTP3      *bool  `json:"http3"`
+			HSTS       *bool  `json:"hsts"`
+			HSTSMaxAge int    `json:"hsts_max_age"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(e.Data, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Spec.MinVersion == "" || p.Spec.KeyType == "" || p.Spec.CA == "" {
+		t.Fatalf("枚举字段不该是空的 —— 界面会显示成「一个都没选」而无从说明真相: %+v", p.Spec)
+	}
+	if p.Spec.HTTP3 == nil || p.Spec.HSTS == nil {
+		t.Fatalf("开关字段应当有明确取值: %+v", p.Spec)
+	}
+	if p.Spec.HSTSMaxAge == 0 {
+		t.Errorf("hsts_max_age 应当有默认值")
+	}
+
+	logE := r.mustDo("GET", "/policies/log", nil)
+	var lp struct {
+		Spec struct {
+			Format   string `json:"format"`
+			Level    string `json:"level"`
+			RollSize int    `json:"roll_size"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(logE.Data, &lp); err != nil {
+		t.Fatal(err)
+	}
+	if lp.Spec.Format == "" || lp.Spec.Level == "" || lp.Spec.RollSize == 0 {
+		t.Fatalf("日志策略也该补齐: %+v", lp.Spec)
+	}
+}
+
+// **限流做不到就明确拒绝。**
+//
+// 官方 Caddy 2.11.4 的 132 个标准模块里一个限流模块都没有
+// （caddy-ratelimit 是插件）。一个开着却没有效果的限流开关，
+// 比一个明说「做不到」的报错危险得多——这与回源 mTLS 当初的处理一致。
+func TestRateLimitIsRejectedNotSilentlyIgnored(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "rl.example.com", "upstream": r.upstream, "block_mode": "abort",
+	})
+	r.mustDo("PUT", "/drafts/global:log", map[string]any{
+		"spec": map[string]any{"rate_limit": true, "rate_rps": 200, "rate_burst": 400},
+	})
+
+	_, e := r.do("POST", "/deploys", map[string]any{
+		"res_keys": []string{"route:rl.example.com", "global:log"},
+	})
+	if e.Code != api.CodeValidation {
+		t.Fatalf("code = %d，想要 %d（校验失败）；msg=%s", e.Code, api.CodeValidation, e.Msg)
+	}
+	var d struct {
+		Errors []struct {
+			ResKey string `json:"res_key"`
+			Field  string `json:"field"`
+			Reason string `json:"reason"`
+		} `json:"errors"`
+	}
+	_ = json.Unmarshal(e.Data, &d)
+	var found bool
+	for _, i := range d.Errors {
+		if i.ResKey == "global:log" && i.Field == "spec.rate_limit" {
+			found = true
+			if !contains(i.Reason, "插件") {
+				t.Errorf("原因应当说清是官方包没有这个模块: %q", i.Reason)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("应当定位到 global:log 的 spec.rate_limit，实际 %+v", d.Errors)
 	}
 }

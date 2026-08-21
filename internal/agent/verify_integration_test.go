@@ -66,7 +66,7 @@ func serveVerify(t *testing.T, c *caddytest.Caddy, rules []model.VerifyRule) fun
 
 func applyWithRules(t *testing.T, c *caddytest.Caddy, routes []model.Route, rules []model.Rule) {
 	t.Helper()
-	cfg, issues := render.Render(routes, rules, nil, render.Options{
+	cfg, issues := render.Render(routes, rules, nil, render.Policies{}, render.Options{
 		HTTPListen: c.EdgeListen(), VerifyAddr: c.VerifyDial(),
 	})
 	if len(issues) > 0 {
@@ -375,7 +375,7 @@ func TestSecretNeverEntersCaddyConfig(t *testing.T) {
 	}
 	cfg, issues := render.Render(
 		[]model.Route{{Domain: "api.example.com", Upstream: up, BlockMode: model.BlockAbort}},
-		[]model.Rule{rule}, nil,
+		[]model.Rule{rule}, nil, render.Policies{},
 		render.Options{HTTPListen: c.EdgeListen(), VerifyAddr: c.VerifyDial()})
 	if len(issues) > 0 {
 		t.Fatal(issues)

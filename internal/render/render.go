@@ -72,10 +72,12 @@ func (i Issue) String() string { return i.ResKey + "." + i.Field + ": " + i.Reas
 
 // Render 校验并渲染。校验不过时返回全部问题且不产出配置——
 // 只报第一个错会让人改一处推一次，来回好几轮。
-func Render(routes []model.Route, rules []model.Rule, certs []Cert, opt Options) ([]byte, []Issue) {
+func Render(routes []model.Route, rules []model.Rule, certs []Cert, pol Policies, opt Options) ([]byte, []Issue) {
 	opt = opt.withDefaults()
 
-	if issues := Validate(routes, rules); len(issues) > 0 {
+	issues := Validate(routes, rules)
+	issues = append(issues, validatePolicies(pol)...)
+	if len(issues) > 0 {
 		return nil, issues
 	}
 
@@ -95,7 +97,7 @@ func Render(routes []model.Route, rules []model.Rule, certs []Cert, opt Options)
 		if deny := denyRoute(r); deny != nil {
 			caddyRoutes = append(caddyRoutes, deny)
 		}
-		caddyRoutes = append(caddyRoutes, proxyRoute(r, applied, opt))
+		caddyRoutes = append(caddyRoutes, proxyRoute(r, applied, pol, opt))
 	}
 	if caddyRoutes == nil {
 		caddyRoutes = []any{}
@@ -103,8 +105,9 @@ func Render(routes []model.Route, rules []model.Rule, certs []Cert, opt Options)
 
 	servers := map[string]any{
 		"edge": map[string]any{
-			"listen": []string{opt.HTTPListen},
-			"routes": caddyRoutes,
+			"listen":    []string{opt.HTTPListen},
+			"protocols": serverProtocols(pol, false),
+			"routes":    plainRoutes(caddyRoutes, pol),
 			// 打开 server 级 metrics：回源率靠它算。
 			// caddy_http_requests_total{handler="reverse_proxy"} 是到达
 			// upstream 的请求数，其余 handler 的是被边缘拦下的
@@ -121,6 +124,9 @@ func Render(routes []model.Route, rules []model.Rule, certs []Cert, opt Options)
 		"apps": map[string]any{
 			"http": map[string]any{"servers": servers},
 		},
+		// 日志与响应头由全局策略决定。**渲染它是必需的**——一条能改、能进
+		// 资源树、有版本号却对节点毫无影响的设置，比没有这个设置更糟。
+		"logging": loggingApp(pol),
 	}
 
 	// **只在主控持有证书时才渲染 apps/tls 与 :443**（ADR-0010）。
@@ -137,7 +143,11 @@ func Render(routes []model.Route, rules []model.Rule, certs []Cert, opt Options)
 			"automatic_https": map[string]any{"disable": true},
 			// 空的连接策略让**这台 server** 转 TLS。它只加在 :443 那台上——
 			// 加到 :80 那台会让所有没有服务端证书的域名立即失联（ADR-0010 实测）。
-			"tls_connection_policies": []any{map[string]any{}},
+			// 空的连接策略让**这台 server** 转 TLS。它只加在 :443 那台上——
+			// 加到 :80 那台会让所有没有服务端证书的域名立即失联（ADR-0010 实测）。
+			"tls_connection_policies": []any{map[string]any{
+				"protocol_min": tlsProtocolMin(pol.TLS.MinVersion),
+			}},
 		}
 		cfg["apps"].(map[string]any)["tls"] = tlsApp(certs)
 	}
@@ -177,6 +187,24 @@ func VerifyRules(rules []model.Rule) []model.VerifyRule {
 		}
 	}
 	return out
+}
+
+// plainRoutes / tlsRoutes 在路由前面挂上响应头处理。
+//
+// 分成两个是因为 HSTS 只在 TLS 上有意义：在明文响应里发它，浏览器会忽略，
+// 而它会让人以为已经生效了。
+func plainRoutes(routes []any, pol Policies) []any { return withHeaders(routes, pol, false) }
+func tlsRoutes(routes []any, pol Policies) []any   { return withHeaders(routes, pol, true) }
+
+func withHeaders(routes []any, pol Policies, tls bool) []any {
+	h := responseHeaderHandler(pol, tls)
+	if h == nil {
+		return routes
+	}
+	// 不带 match，也不 terminal：它对所有请求生效，然后让请求继续往下走。
+	out := make([]any, 0, len(routes)+1)
+	out = append(out, map[string]any{"handle": []any{h}})
+	return append(out, routes...)
 }
 
 // tlsApp 用 load_pem 把证书**内联**进配置（ADR-0010）。
@@ -319,7 +347,7 @@ func blockHandler(mode string) map[string]any {
 	}
 }
 
-func proxyRoute(r model.Route, rules []model.Rule, opt Options) map[string]any {
+func proxyRoute(r model.Route, rules []model.Rule, pol Policies, opt Options) map[string]any {
 	var handlers []any
 
 	// 先准入后转发。JWT 与服务密钥走校验端点；IP 白名单已经在前面的 deny 路由

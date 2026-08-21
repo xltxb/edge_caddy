@@ -36,7 +36,7 @@ func TestRenderedConfigIsAcceptedAndActuallyProxies(t *testing.T) {
 	cfg, issues := render.Render([]model.Route{{
 		Domain: "api.example.com", Upstream: up,
 		BlockMode: model.BlockAbort, Compress: true, BodyMax: "5MB",
-	}}, nil, nil, render.Options{HTTPListen: c.EdgeListen()})
+	}}, nil, nil, render.Policies{}, render.Options{HTTPListen: c.EdgeListen()})
 	if len(issues) > 0 {
 		t.Fatalf("渲染报了校验问题: %v", issues)
 	}
@@ -80,7 +80,7 @@ func TestApplySucceedsOnFreshCaddyWithoutAppsKey(t *testing.T) {
 
 	cfg, _ := render.Render([]model.Route{{
 		Domain: "a.example.com", Upstream: up, BlockMode: model.BlockAbort,
-	}}, nil, nil, render.Options{HTTPListen: c.EdgeListen()})
+	}}, nil, nil, render.Policies{}, render.Options{HTTPListen: c.EdgeListen()})
 
 	if _, err := agent.NewCaddyClient(c.AdminURL()).ApplyConfig(context.Background(), cfg); err != nil {
 		t.Fatalf("在没有 apps 键的机器上应用失败: %v", err)
@@ -100,7 +100,7 @@ func TestBadConfigIsRejectedAndRunningConfigSurvives(t *testing.T) {
 
 	good, _ := render.Render([]model.Route{{
 		Domain: "live.example.com", Upstream: up, BlockMode: model.BlockAbort,
-	}}, nil, nil, render.Options{HTTPListen: c.EdgeListen()})
+	}}, nil, nil, render.Policies{}, render.Options{HTTPListen: c.EdgeListen()})
 	if _, err := cli.ApplyConfig(ctx, good); err != nil {
 		t.Fatalf("基线配置应当被接受: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestWhitelistDeniesWithAbort(t *testing.T) {
 	cfg, issues := render.Render([]model.Route{{
 		Domain: "wl.example.com", Upstream: up, BlockMode: model.BlockAbort,
 		Whitelist: []string{"203.0.113.7"}, // 不含 127.0.0.1
-	}}, nil, nil, render.Options{HTTPListen: c.EdgeListen()})
+	}}, nil, nil, render.Policies{}, render.Options{HTTPListen: c.EdgeListen()})
 	if len(issues) > 0 {
 		t.Fatalf("渲染报了问题: %v", issues)
 	}
@@ -169,7 +169,7 @@ func TestWhitelistDenyWith403IsDistinguishableFromAbort(t *testing.T) {
 	cfg, _ := render.Render([]model.Route{{
 		Domain: "wl403.example.com", Upstream: up, BlockMode: model.Block403,
 		Whitelist: []string{"203.0.113.7"},
-	}}, nil, nil, render.Options{HTTPListen: c.EdgeListen()})
+	}}, nil, nil, render.Policies{}, render.Options{HTTPListen: c.EdgeListen()})
 	if _, err := agent.NewCaddyClient(c.AdminURL()).ApplyConfig(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
