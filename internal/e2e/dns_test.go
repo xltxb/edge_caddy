@@ -414,3 +414,44 @@ func TestAutoDetachHasNoActor(t *testing.T) {
 		t.Error("自动摘除应当同时关掉解析")
 	}
 }
+
+// **一台已下线的机器，不该出现「已下线」而 dns_reason 说「人手动关的」。**
+//
+// 前端 agent 的 seed 里出现过这个矛盾（节点页说「已下线（人为）」，
+// DNS 页说「已暂停（abiu）」），他那是夹具推错了。这条查的是**后端有没有
+// 一条真实路径能产生同一个状态**——关解析此前不挡已下线的节点，
+// 而那一下会把 dns_reason 从 drained 改写成 manual。
+//
+// **两句单独看都对，只有并排才看得出对不上账。**
+func TestDrainedNodeStaysDrainedInDNSReason(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	r.mustDo("POST", "/nodes/node-hk-01/drain", map[string]any{"confirm": true})
+
+	// 对一台已下线的机器点「暂停解析」——它已经不在解析里了。
+	_, e := r.do("POST", "/nodes/node-hk-01/dns", map[string]any{"enabled": false})
+
+	nodes := r.mustDo("GET", "/nodes", nil)
+	var d struct {
+		Items []struct {
+			DrainedAt *string `json:"drained_at"`
+			DNSReason string  `json:"dns_reason"`
+			DNSActor  *string `json:"dns_actor"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(nodes.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	n := d.Items[0]
+	if n.DrainedAt == nil {
+		t.Fatal("前置条件不成立：它应当是已下线的")
+	}
+	if n.DNSReason != "drained" {
+		t.Errorf("已下线的机器 dns_reason 应当是 drained，实际 %q —— "+
+			"节点页会说「已下线」而 DNS 页说「人手动关的」，两句对不上账 "+
+			"(dns 请求 code=%d msg=%q)", n.DNSReason, e.Code, e.Msg)
+	}
+}

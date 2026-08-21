@@ -447,9 +447,19 @@ func TestDrainedNodeCannotBePutBackIntoDNS(t *testing.T) {
 		t.Errorf("拒绝理由要说清是因为下线: %q", e.Msg)
 	}
 
-	// 关解析仍然要允许 —— 那个方向不会把流量送到一台连不上的机器上，
-	// 而且下线本来就该让它留在解析外面。
-	r.mustDo("POST", "/nodes/node-hk-01/dns", map[string]any{"enabled": false})
+	// **关的方向也拒绝。**
+	//
+	// 这里原先断言「关解析仍然要允许」，理由是「那个方向不会把流量送到一台
+	// 连不上的机器上」。那个理由至今成立，而它**漏了一件事**：
+	// 关这一下会把 dns_reason 从 drained 改写成 manual，而 drained_at 还在
+	// ——节点页说「已下线」，DNS 页说「人手动关的」（见
+	// TestDrainedNodeStaysDrainedInDNSReason）。
+	//
+	// 所以这不是把约束改严了，是**原来那条约束有一个当时没看见的代价**。
+	_, e2 := r.do("POST", "/nodes/node-hk-01/dns", map[string]any{"enabled": false})
+	if e2.Code != api.CodeStateConflict {
+		t.Fatalf("给已下线的节点关解析也该被拒（它本来就不在解析里），code = %d", e2.Code)
+	}
 }
 
 // 已下线的节点不该拿到新的接入 Token —— 否则「重装一台机器」就绕过了下线。

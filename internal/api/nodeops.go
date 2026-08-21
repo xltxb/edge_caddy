@@ -79,15 +79,23 @@ func (s *Server) setNodeDNS(ctx context.Context, nodeID string, enabled bool,
 	// 搭在另一个标志位的当前值上。点一下「恢复解析」标志位就回来了，
 	// 而主控明确拒绝那台机器接入：解析于是指向一台连不上来的机器。
 	//
-	// 关的方向不挡：它不会把流量送过去，而下线本来就该让它留在解析外面。
-	if enabled {
-		drained, err := s.store.IsNodeDrained(ctx, nodeID)
-		if err != nil {
-			return false, "查下线状态失败：" + err.Error(), err
-		}
-		if drained {
+	// **两个方向都挡。**
+	//
+	// 开的方向：解析会指向一台主控明确拒绝它接入的机器。
+	//
+	// 关的方向此前不挡，理由是「它不会把流量送过去」——那个理由仍然成立，
+	// 但它漏了一件事：**关这一下会把 dns_reason 从 drained 改写成 manual**，
+	// 而 drained_at 还在。于是节点页说「已下线」，DNS 页说「人手动关的」，
+	// **两句单独看都对，只有并排才看得出对不上账**。
+	//
+	// 而对一台已下线的机器点「暂停解析」本来就说不通：它已经不在解析里了。
+	if drained, err := s.store.IsNodeDrained(ctx, nodeID); err != nil {
+		return false, "查下线状态失败：" + err.Error(), err
+	} else if drained {
+		if enabled {
 			return false, "该节点已被下线，先「重新上线」再恢复解析", errNodeDrained
 		}
+		return false, "该节点已被下线，本来就不在解析里", errNodeDrained
 	}
 	if err := s.store.SetNodeDNS(ctx, nodeID, enabled, reason, actor); err != nil {
 		return false, "改解析标志位失败：" + err.Error(), err
