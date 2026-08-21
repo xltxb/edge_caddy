@@ -177,3 +177,61 @@ func TestWhitelistDenyWith403IsDistinguishableFromAbort(t *testing.T) {
 		t.Fatalf("处置方式为 403 时应当得到 403，实际 %d", code)
 	}
 }
+
+// **ADR-0005 的前提：同一份字节喂给同一个 Caddy，必然得到同样的拒绝。**
+//
+// 整个「Caddy 拒绝的配置不重试」策略建立在这句话上。而 deploy 那边测的是
+// 主控收到拒绝之后不再重推——那是**结论**，用的还是一个自己造的假回执。
+// 前提本身（Caddy 会怎么答）从来没被验过：它不是关于我们代码的断言，
+// 是关于 Caddy 的断言。
+//
+// 前端 agent 把这个形状说清楚了：**结论是代码，前提是世界。**
+// 测试钉得住代码，钉不住世界——能保护前提的测试，形状上必须真的去碰那个世界。
+//
+// **这条只覆盖 schema 类的拒绝。** 环境类的（端口被别的进程占着之类）不在此列，
+// 而且已知有反例：ADR-0004 的再验证里，那一行「端口占用」在 macOS 上不复现——
+// 重复 bind 直接成功了。那类拒绝**可能**下次就没有，所以 ADR-0005 的兜底是
+// POST /nodes/:id/push 的手动重推，不是自动重试。
+func TestSameBadConfigIsRejectedConsistently(t *testing.T) {
+	up := upstream(t, "STILL ALIVE")
+	c := caddytest.New(t)
+	cli := agent.NewCaddyClient(c.AdminURL())
+	ctx := context.Background()
+
+	good, _ := render.Render([]model.Route{{
+		Domain: "live.example.com", Upstream: up, BlockMode: model.BlockAbort,
+	}}, nil, nil, render.Policies{}, render.Options{HTTPListen: c.EdgeListen()})
+	if _, err := cli.ApplyConfig(ctx, good); err != nil {
+		t.Fatalf("基线配置应当被接受: %v", err)
+	}
+
+	bad := []byte(`{"apps":{"http":{"servers":{"edge":{"listen":[":1"],"routes":[{"handle":[{"handler":"no_such_handler"}]}]}}}}}`)
+
+	var first string
+	const attempts = 5
+	for i := range attempts {
+		_, err := cli.ApplyConfig(ctx, bad)
+		if err == nil {
+			t.Fatalf("第 %d 次喂同一份坏配置竟然被接受了 —— ADR-0005 的前提不成立，"+
+				"「拒绝不重试」会把一个本可恢复的故障永久化", i+1)
+		}
+		var rejected *agent.RejectedError
+		if !errors.As(err, &rejected) {
+			t.Fatalf("第 %d 次得到 %T: %v，想要 RejectedError", i+1, err, err)
+		}
+		if i == 0 {
+			first = rejected.Body
+			continue
+		}
+		// 报错文本也要一致：detail 会原样进下发记录给人看，
+		// 同一个故障每次说法不同的话，人会以为是不同的故障。
+		if rejected.Body != first {
+			t.Errorf("第 %d 次的报错与第一次不同：\n第一次 %q\n这一次 %q", i+1, first, rejected.Body)
+		}
+	}
+
+	// 五次拒绝之后在跑的配置仍然要活着 —— 一次拒绝不留痕，五次也不该。
+	if code, body := c.Get("live.example.com", "/", nil); code != 200 || body != "STILL ALIVE" {
+		t.Fatalf("反复喂坏配置之后在跑的配置没存活：得到 %d %q", code, body)
+	}
+}
