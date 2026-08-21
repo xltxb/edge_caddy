@@ -12,7 +12,6 @@ const form = ref({ node_id: '', city: '', vendor: '', line: '', public_ip: '' })
 const issued = ref<NodeTokenWire | null>(null)
 const busy = ref(false)
 const error = ref('')
-const copied = ref(false)
 
 async function submit(): Promise<void> {
   busy.value = true
@@ -26,12 +25,22 @@ async function submit(): Promise<void> {
   }
 }
 
-async function copy(): Promise<void> {
+/**
+ * 两条命令各有各的复制按钮。
+ *
+ * 一个「复制命令」按钮配两条命令，人无从知道复制到的是哪条 —— 而两条的时机
+ * 完全不同（一条现在跑，一条装完跑）。也不合并成一次复制：把两行一起粘进
+ * shell，install 失败时 verify 照样会跑，给出一个跟真正的失败无关的结果。
+ */
+const copiedKey = ref<'install' | 'verify' | null>(null)
+
+async function copy(which: 'install' | 'verify'): Promise<void> {
   if (!issued.value) return
+  const text = which === 'install' ? issued.value.install_cmd : issued.value.verify_cmd
   try {
-    await navigator.clipboard.writeText(issued.value.install_cmd)
-    copied.value = true
-    setTimeout(() => (copied.value = false), 2000)
+    await navigator.clipboard.writeText(text)
+    copiedKey.value = which
+    setTimeout(() => (copiedKey.value = null), 2000)
   } catch {
     // 没有剪贴板权限时命令仍然可见，用户可以自己选中复制
   }
@@ -73,6 +82,26 @@ async function copy(): Promise<void> {
           这段命令只显示这一次。关闭后 Token 无法再取回，只能重新签发。
         </p>
         <pre class="cmd">{{ issued.install_cmd }}</pre>
+        <div class="cmd-foot">
+          <span>在目标机器上跑这条</span>
+          <button class="ghost" type="button" @click="copy('install')">
+            {{ copiedKey === 'install' ? '已复制' : '复制' }}
+          </button>
+        </div>
+
+        <!--
+          verify 与 install 并排，不折叠进「高级」。它查的是 Caddy Admin 有没有
+          暴露在回环之外 —— 私钥以 load_pem 内联在运行配置里（ADR-0010），能读
+          Admin 就能读到。脚本为「没在监听」和「监听错地方」分了两个返回值，
+          而**一道没有人会执行的检查，等于不存在**。
+        -->
+        <pre class="cmd">{{ issued.verify_cmd }}</pre>
+        <div class="cmd-foot">
+          <span>装完再跑这条 —— 它会真的去查 Agent 接没接上、Caddy Admin 有没有监听在不该监听的地方</span>
+          <button class="ghost" type="button" @click="copy('verify')">
+            {{ copiedKey === 'verify' ? '已复制' : '复制' }}
+          </button>
+        </div>
         <div class="meta">
           <!--
             有效期读 expires_at，不写死「30 分钟」。那是主控的策略，会变；
@@ -80,44 +109,27 @@ async function copy(): Promise<void> {
             早就过期了。
           -->
           <span>有效至 {{ fmtClock(issued.expires_at) }} · 用后即失效</span>
-          <button class="ghost" type="button" @click="copy">
-            {{ copied ? '已复制' : '复制命令' }}
-          </button>
         </div>
         <!--
-          这几条说的是**这条命令能跑起来的前提**，不是泛泛的最佳实践。
+          前提清单**由后端给**（prerequisites），不在这里硬编码，也不按当前长度
+          写死 —— 它是「你必须自己先办好的事」，会随脚本增减。早先我把这两条
+          自己写在这里，那就是两处知识。
 
-          头两条是同一类：命令里的 `./edge-node.sh` 和 `--agent-bin ./edge-agent`
-          都是相对路径，都假定那个文件已经在当前目录。谁也不负责把它们送上去，
-          而不说的话，这条「复制粘贴即可」的命令会在一台远程机器上以
-          「没有那个文件」失败 —— 在人以为一切就绪的时候。
+          下面两条是它没有、也不该有的：一条是这台机器的出网能力，一条是命令
+          文本本身的读法。两者都不是脚本能替人办的事。
 
-          Admin 的监听地址早先写在这里当前提，现在归脚本了（drop-in 里钉死，
-          verify 会真的查一遍），所以只留「装了官方 Caddy」这半句。
+          「机器上已安装官方 Caddy」曾经写在这里，是错的 —— 脚本自己会装
+          （认不出发行版会直接失败并说清楚）。把脚本已经办了的事写成人要办的
+          前提，会让人白做一遍，也会让真正要办的那两条被稀释。
         -->
         <ul class="checklist">
-          <li>
-            当前目录下有 <code>edge-node.sh</code> 与 <code>edge-agent</code> ——
-            命令里那两个相对路径指的就是它们，<b>脚本不负责下载二进制</b>
-          </li>
+          <li v-for="p in issued.prerequisites" :key="p">{{ p }}</li>
           <li>目标机器可以外连主控的 9000 端口（Agent 主动外连，无需入站放行）</li>
-          <li>机器上已安装官方 Caddy（Admin 收到 127.0.0.1:2019 由脚本负责）</li>
           <li>
             命令里的 <code>--ca-pin</code> 是主控的 CA 指纹，<b>不要改也不要省</b>：
             少了它，首连就是纯 TOFU，中间人可以在那一刻把 Token 骗走。
           </li>
         </ul>
-
-        <!--
-          verify 不在 install_cmd 里，照「复制命令」做的人不会跑到它。
-          而它查的两件事处置完全不同：Caddy 没起来，和 Admin 监听在了对外地址上
-          —— 后者是私钥暴露（证书私钥以 load_pem 内联在运行配置里，能读 Admin
-          就能读到）。不提这一步，那道检查等于不存在。
-        -->
-        <p class="verify">
-          装完之后跑一遍 <code>sudo ./edge-node.sh verify</code>：它会真的去查
-          Agent 是否接上、Caddy Admin 有没有监听在不该监听的地方。
-        </p>
         <div class="actions">
           <button class="primary" type="button" @click="emit('close')">完成</button>
         </div>
@@ -209,19 +221,15 @@ input:focus {
   color: var(--text-faint);
   margin-bottom: var(--space-4);
 }
-.verify {
-  margin: 0;
-  padding: 8px 10px;
-  border-left: 2px solid var(--accent);
-  background: var(--surface-sunken, var(--bg-subtle));
-  font-size: var(--fs-2xs);
-  color: var(--text-muted);
-  line-height: 1.7;
-}
-.verify code {
-  font-family: var(--font-mono);
+.cmd-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-top: -2px;
   font-size: var(--fs-micro);
-  color: var(--text-body);
+  color: var(--text-muted);
+  line-height: 1.6;
 }
 .checklist code {
   font-family: var(--font-mono);
