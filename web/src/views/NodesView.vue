@@ -17,6 +17,8 @@ const overview = useOverviewStore()
 const ui = useUiStore()
 
 const open = ref<Set<string>>(new Set())
+/** 节点搜索。与命令面板同一套匹配字段：id / 城市 / 服务商 / IP / 线路。 */
+const query = ref('')
 const drainTarget = ref<string | null>(null)
 const addOpen = ref(false)
 
@@ -48,7 +50,13 @@ function expand(id: string): void {
   open.value = next
 }
 
-const rows = computed(() => nodes.items)
+const rows = computed(() => {
+  const q = query.value.trim().toLowerCase()
+  if (!q) return nodes.items
+  return nodes.items.filter((n) =>
+    `${n.id} ${n.city} ${n.vendor} ${n.ip} ${n.line}`.toLowerCase().includes(q),
+  )
+})
 
 async function onPush(id: string): Promise<void> {
   try {
@@ -121,7 +129,17 @@ const LEVEL_COLOR: Record<string, string> = {
   <section class="panel">
     <header class="head">
       <div class="title">边缘节点</div>
-      <div class="sub">心跳间隔 3s · gRPC 长连接 · 共 {{ rows.length }} 台</div>
+      <div class="sub">
+        心跳间隔 3s · gRPC 长连接 ·
+        {{ query ? `${rows.length} / ${nodes.items.length}` : `共 ${nodes.items.length}` }} 台
+      </div>
+      <input
+        v-model="query"
+        class="search"
+        type="search"
+        placeholder="搜节点名、城市、服务商、IP、线路"
+        aria-label="搜索节点"
+      />
       <button class="primary" type="button" @click="addOpen = true">添加节点</button>
     </header>
 
@@ -130,8 +148,12 @@ const LEVEL_COLOR: Record<string, string> = {
       {{ nodes.error }}
       <button class="mini" type="button" @click="nodes.fetchAll()">重试</button>
     </div>
-    <div v-else-if="!rows.length" class="hint">
+    <div v-else-if="!nodes.items.length" class="hint">
       还没有边缘节点。用「添加节点」签发一次性 Token 接入第一台。
+    </div>
+    <div v-else-if="!rows.length" class="hint">
+      没有匹配「{{ query }}」的节点。
+      <button class="mini" type="button" @click="query = ''">清除搜索</button>
     </div>
 
     <ul v-else class="rows">
@@ -259,6 +281,19 @@ const LEVEL_COLOR: Record<string, string> = {
 }
 .head .sub {
   margin-right: auto;
+}
+.search {
+  width: 230px;
+  padding: 5px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-card);
+  color: var(--text-strong);
+  font-size: var(--fs-micro);
+}
+.search:focus {
+  border-color: var(--accent);
+  outline: none;
 }
 .rows {
   list-style: none;

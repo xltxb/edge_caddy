@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 import { http } from '@/api/http'
 import type { DnsWeightsWire } from '@/api/types'
 import { useUiStore } from '@/stores/ui'
@@ -95,6 +96,7 @@ async function save(): Promise<void> {
     <header class="head">
       <div class="title">DNS 调度</div>
       <div class="sub">按线路分组 · 保存后立即同步到 DNS 服务商</div>
+      <RouterLink class="mini" to="/settings">DNS 服务商设置</RouterLink>
       <button class="mini" type="button" :disabled="!dirty" @click="load">放弃改动</button>
       <button class="primary" type="button" :disabled="!dirty || saving" @click="save">
         {{ saving ? '保存中…' : '保存并同步' }}
@@ -136,6 +138,7 @@ async function save(): Promise<void> {
               />
             </span>
             <span class="share">{{ (localShare(l.code, l.entries).get(e.node) ?? 0).toFixed(1) }}%</span>
+            <span class="st" :class="e.status">{{ e.status }}</span>
             <!--
               退出解析的节点必须说清「权重还在、但不承载流量」，
               否则人看到 weight 40 / share 0 会以为界面算错了。
@@ -212,7 +215,7 @@ async function save(): Promise<void> {
 }
 .entry {
   display: grid;
-  grid-template-columns: 130px 64px 1fr 52px;
+  grid-template-columns: 130px 64px 1fr 52px 44px;
   align-items: center;
   gap: var(--space-3);
   font-family: var(--font-mono);
@@ -254,6 +257,16 @@ async function save(): Promise<void> {
 .share {
   text-align: right;
   color: var(--text-body);
+}
+.st {
+  text-align: right;
+  color: var(--success-text);
+}
+.st.warn {
+  color: var(--warning-text);
+}
+.st.down {
+  color: var(--danger-text);
 }
 .why {
   grid-column: 1 / -1;

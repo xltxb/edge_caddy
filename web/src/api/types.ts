@@ -492,3 +492,9 @@ export interface AlertTestWire {
   sent: boolean
   detail: string
 }
+
+/** 证书续期 —— 异步，立即返回，结果经 WS `event` 帧回报。 */
+export interface CertRenewWire {
+  domain: string
+  accepted: boolean
+}

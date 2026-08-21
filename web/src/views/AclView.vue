@@ -43,6 +43,16 @@ function edit(id: string): void {
       <div class="sub">共 {{ config.rules.length }} 条 · 启停与编辑在配置工作台</div>
     </header>
 
+    <!--
+      「双轨」不是分类学趣味：两条轨道的失败方式不同 —— IP 白名单挡的是来源，
+      签名与 JWT 挡的是身份。只说「三种规则」的话，人不会意识到自己可能
+      只保护了其中一维。
+    -->
+    <p class="lead">
+      双轨准入：第三方系统走 <b>IP 白名单 + 请求签名</b>，终端客户端走 <b>JWT</b>。
+      后两者由边缘节点上的 Agent 验签，Caddy 通过 forward_auth 委托给它。
+    </p>
+
     <div v-if="config.loading && !config.rules.length" class="hint">正在加载…</div>
     <div v-else-if="config.error" class="hint error">
       {{ config.error }}
@@ -94,5 +104,17 @@ function edit(id: string): void {
 @import './catalog.css';
 .small {
   font-size: var(--fs-micro);
+}
+.lead {
+  margin: 0;
+  padding: 10px var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  line-height: 1.7;
+}
+.lead b {
+  color: var(--text-body);
+  font-weight: var(--weight-semibold);
 }
 </style>

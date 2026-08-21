@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { http } from '@/api/http'
-import type { CertWire, Paged } from '@/api/types'
+import type { CertRenewWire, CertWire, Paged } from '@/api/types'
+import { useUiStore } from '@/stores/ui'
 
 /**
  * 证书。
@@ -11,7 +12,11 @@ import type { CertWire, Paged } from '@/api/types'
  * （CONTEXT.md）。N < M 意味着「下发到了但没生效」——这类故障在只显示
  * 一个数字的界面里是完全隐形的。
  */
+const ui = useUiStore()
 const items = ref<CertWire[]>([])
+/** 正在续期的域名。续期是异步的，结果经 WS 事件回报，所以这里只表示「已受理」。 */
+const renewing = ref<Set<string>>(new Set())
+const checkingAll = ref(false)
 const loading = ref(false)
 const error = ref<string | null>(null)
 const openRow = ref<string | null>(null)
@@ -29,6 +34,43 @@ async function load(): Promise<void> {
 }
 
 onMounted(load)
+
+/**
+ * 单张续期。
+ *
+ * **主控自己去 ACME 续，再随下一次下发把新证书内联带下去**（契约 §9），
+ * 不是让节点去续 —— 边缘节点跑官方 Caddy，不持有 DNS 凭据（ADR-0001）。
+ * 异步：接口立即返回，结果经 WS 事件回报。所以按钮回到可点状态不代表续好了。
+ */
+async function renew(domain: string): Promise<void> {
+  renewing.value = new Set(renewing.value).add(domain)
+  try {
+    const r = await http.post<CertRenewWire>(`/certs/${encodeURIComponent(domain)}/renew`)
+    ui.toast(
+      r.accepted ? 'info' : 'warn',
+      r.accepted ? `已受理 ${domain} 的续期` : `${domain} 的续期未被受理`,
+      r.accepted ? '主控正在向 ACME 申请，完成后会出现在事件流里' : '',
+    )
+  } catch (e) {
+    ui.toast('warn', '续期失败', e instanceof Error ? e.message : '')
+  } finally {
+    const next = new Set(renewing.value)
+    next.delete(domain)
+    renewing.value = next
+  }
+}
+
+async function renewCheck(): Promise<void> {
+  checkingAll.value = true
+  try {
+    await http.post('/certs/renew-check')
+    ui.toast('info', '已发起全部证书的到期检查', '需要续期的会自动申请，结果见事件流')
+  } catch (e) {
+    ui.toast('warn', '检查失败', e instanceof Error ? e.message : '')
+  } finally {
+    checkingAll.value = false
+  }
+}
 
 /** 到期条三档：≤7 天危、≤14 天警、其余正常。 */
 function level(days: number): 'crit' | 'warn' | 'ok' {
@@ -48,6 +90,9 @@ const mismatched = computed(() => items.value.filter((c) => c.loaded_nodes < c.e
     <header class="head">
       <div class="title">证书</div>
       <div class="sub">共 {{ items.length }} 张 · 由主控集中签发（DNS-01）</div>
+      <button class="mini" type="button" :disabled="checkingAll" @click="renewCheck">
+        {{ checkingAll ? '检查中…' : '全部续期检查' }}
+      </button>
     </header>
 
     <div v-if="expiring.length" class="banner warn">
@@ -73,6 +118,7 @@ const mismatched = computed(() => items.value.filter((c) => c.loaded_nodes < c.e
           <th>剩余有效期</th>
           <th>续期</th>
           <th>节点（回执 / 签发）</th>
+          <th></th>
         </tr>
       </thead>
       <tbody>
@@ -123,9 +169,19 @@ const mismatched = computed(() => items.value.filter((c) => c.loaded_nodes < c.e
               </button>
               <span v-else class="mono muted">{{ c.loaded_nodes }} / {{ c.expected_nodes }} 个节点</span>
             </td>
+            <td class="right">
+              <button
+                class="mini"
+                type="button"
+                :disabled="renewing.has(c.domain)"
+                @click="renew(c.domain)"
+              >
+                {{ renewing.has(c.domain) ? '受理中…' : '立即续期' }}
+              </button>
+            </td>
           </tr>
           <tr v-if="openRow === c.domain" class="detail-row">
-            <td colspan="6">
+            <td colspan="7">
               <div class="detail">
                 <b>未加载该证书的节点：</b>
                 <span class="mono">{{ c.missing_nodes.join('、') }}</span>
@@ -145,6 +201,9 @@ const mismatched = computed(() => items.value.filter((c) => c.loaded_nodes < c.e
 
 <style scoped>
 @import './catalog.css';
+.head .sub {
+  margin-right: auto;
+}
 .small {
   font-size: var(--fs-micro);
 }

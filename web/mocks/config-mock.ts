@@ -97,6 +97,18 @@ export async function handleConfig(req: IncomingMessage, res: ServerResponse): P
   const m = req.method ?? 'GET'
 
   if (m === 'GET' && path === '/api/v1/routes') return paged(res, state.routes), true
+
+  if (m === 'POST' && path === '/api/v1/routes') {
+    const b = await readBody(req)
+    const domain = String(b.domain ?? '')
+    // 重名返回 1004（契约 §6.1）—— 与「参数格式错」1001 分开，前端要落到域名框上
+    if (state.routes.some((r) => r.domain === domain)) {
+      return json(res, { code: 1004, data: null, msg: '这个域名已经有一条路由了' }), true
+    }
+    // 新建的 version 为 0：尚未下发到任何节点
+    state.routes.push({ ...b, domain, version: 0 })
+    return ok(res, { domain }), true
+  }
   if (m === 'GET' && path === '/api/v1/rules') return paged(res, state.rules), true
 
   const pol = /^\/api\/v1\/policies\/(tls|log)$/.exec(path)

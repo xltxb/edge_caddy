@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import NewRouteModal from '@/components/routes/NewRouteModal.vue'
 import { useConfigStore } from '@/stores/config'
 
 /**
@@ -12,6 +13,7 @@ import { useConfigStore } from '@/stores/config'
  */
 const config = useConfigStore()
 const router = useRouter()
+const newOpen = ref(false)
 
 onMounted(() => {
   if (!config.routes.length) void config.fetchAll().catch(() => {})
@@ -33,6 +35,7 @@ const BLOCK_LABEL: Record<string, string> = {
     <header class="head">
       <div class="title">反代路由</div>
       <div class="sub">共 {{ config.routes.length }} 条 · 编辑与删除在配置工作台</div>
+      <button class="primary" type="button" @click="newOpen = true">新建路由</button>
     </header>
 
     <div v-if="config.loading && !config.routes.length" class="hint">正在加载…</div>
@@ -52,6 +55,7 @@ const BLOCK_LABEL: Record<string, string> = {
           <th>处置方式</th>
           <th>回源 mTLS</th>
           <th>白名单</th>
+          <th>请求体上限</th>
           <th>版本</th>
           <th></th>
         </tr>
@@ -70,6 +74,7 @@ const BLOCK_LABEL: Record<string, string> = {
             <span class="mono muted">{{ r.mtls ? '出示 edge-mtls' : '—' }}</span>
           </td>
           <td class="mono">{{ r.whitelist.length }} 条</td>
+          <td class="mono muted">{{ r.body_max }}</td>
           <td>
             <span v-if="r.version === 0" class="tag new">尚未下发</span>
             <span v-else class="mono muted">v{{ r.version }}</span>
@@ -81,8 +86,23 @@ const BLOCK_LABEL: Record<string, string> = {
       </tbody>
     </table>
   </section>
+
+  <NewRouteModal v-if="newOpen" @close="newOpen = false" />
 </template>
 
 <style scoped>
 @import './catalog.css';
+.head .sub {
+  margin-right: auto;
+}
+.head .primary {
+  padding: 5px 13px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font-size: var(--fs-micro);
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+}
 </style>

@@ -63,6 +63,11 @@ export const handlers = [
 
   /* ── 9. 证书 ── */
   http.get(`${BASE}/certs`, () => paged(seed.certs)),
+  // 续期是异步的：立即返回「已受理」，真实结果经 WS event 帧回报（契约 §9）
+  http.post(`${BASE}/certs/:domain/renew`, ({ params }) =>
+    ok({ domain: decodeURIComponent(String(params.domain)), accepted: true }),
+  ),
+  http.post(`${BASE}/certs/renew-check`, () => ok({ accepted: true })),
 
   /* ── 10. 审计 ── */
   http.get(`${BASE}/audit`, ({ request }) => {
