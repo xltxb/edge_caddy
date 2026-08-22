@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -55,6 +56,28 @@ func main() {
 	// 版本进启动日志：灰度环境上「现在跑的是哪一版」要能从日志里直接读到，
 	// 而不是靠人记得自己推了什么。
 	log.Info("主控启动", "version", Version)
+
+	// **控制台静态文件的位置解析成绝对路径，并当场说它在不在。**
+	//
+	// 默认值 `web/dist` 是**相对路径**，它的行为取决于工作目录：
+	// 在仓库根目录起就能用，systemd 起（工作目录是 /）就不能。
+	//
+	// 前端 agent 撞到过这个形状的另一半：他拿掉 EC_WEB_ROOT 想验「没部署前端」
+	// 那条路径，而它照样绿——因为他正好在仓库根目录起的主控。
+	// **一个检查在他的环境里恒绿，而恒绿的原因跟它要验的东西无关。**
+	//
+	// 所以这里不等到有人访问才发现，启动就说清楚：它在找哪个绝对路径、
+	// 那儿有没有东西。一行日志换掉一类「我以为部署了」。
+	if abs, err := filepath.Abs(cfg.WebRoot); err == nil {
+		cfg.WebRoot = abs
+	}
+	if _, err := os.Stat(filepath.Join(cfg.WebRoot, "index.html")); err != nil {
+		log.Warn("控制台静态文件不在，主控只提供 API",
+			"web_root", cfg.WebRoot,
+			"提示", "把前端产物解到那里，或者把 EC_WEB_ROOT 指过去")
+	} else {
+		log.Info("控制台静态文件", "web_root", cfg.WebRoot)
+	}
 
 	ctx := context.Background()
 	st, err := store.Open(ctx, cfg.DatabaseURL)
