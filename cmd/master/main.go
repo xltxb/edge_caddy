@@ -27,6 +27,9 @@ import (
 	"github.com/xltxb/edge_caddy/internal/ws"
 )
 
+// Version 由打包脚本用 -ldflags 注入（scripts/build.sh）。
+var Version = "dev"
+
 func main() {
 	migrateOnly := flag.Bool("migrate", false, "只执行数据库迁移然后退出")
 	createUser := flag.String("create-user", "", "创建或重置一个控制台账号，格式 用户名:口令")
@@ -48,6 +51,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "配置无效：%v\n", err)
 		os.Exit(1)
 	}
+
+	// 版本进启动日志：灰度环境上「现在跑的是哪一版」要能从日志里直接读到，
+	// 而不是靠人记得自己推了什么。
+	log.Info("主控启动", "version", Version)
 
 	ctx := context.Background()
 	st, err := store.Open(ctx, cfg.DatabaseURL)

@@ -10,6 +10,7 @@
 | `python3 scripts/probes.py --self-test` | 上面那个脚本自己还好使吗 | 改了 probes.py 之后 |
 | `python3 scripts/unread.py` | 有没有**写了但没人读**的 DB 列 / proto 字段 | 加了字段、关了功能之后 |
 | `python3 scripts/comments.py` | 三件：注释**首句在讲已经不成立的事**吗；陈述外部行为的理由**挂在会通知你的东西上**吗；**这份索引还准吗** | 写完注释之后、加删脚本之后 |
+| `bash scripts/build.sh [版本号]` | 打后端的包（主控 + Agent，交叉编译 Linux amd64/arm64） | 要部署的时候 |
 | `bash deploy/edge-node_test.sh` | 部署脚本的那些承重约束还在吗 | 改了 `deploy/edge-node.sh` 之后 |
 
 ## 为什么不是一条 `make check`

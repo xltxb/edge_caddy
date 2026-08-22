@@ -18,6 +18,13 @@ import (
 	"github.com/xltxb/edge_caddy/internal/agent"
 )
 
+// Version 由打包脚本用 -ldflags 注入（scripts/build.sh）。
+//
+// **它会显示在控制台的节点列表上**，所以不能是一个不动的常量：
+// 硬编码 "0.1.0" 的话，灰度环境重新部署之后那一栏还是 0.1.0，
+// 而人正是靠它判断「我推上去的那一版到底上没上」。
+var Version = "dev"
+
 func main() {
 	var cfg agent.Config
 	flag.StringVar(&cfg.MasterAddr, "master", env("EC_MASTER_ADDR", ""), "主控隧道地址 host:port")
@@ -36,7 +43,7 @@ func main() {
 	log := slog.New(logs.Handler(slog.NewJSONHandler(os.Stdout, nil)))
 	cfg.Log = log
 	cfg.Logs = logs
-	cfg.Version = "0.1.0"
+	cfg.Version = Version
 
 	if cfg.MasterAddr == "" || cfg.NodeID == "" {
 		log.Error("--master 与 --node-id 必填")
