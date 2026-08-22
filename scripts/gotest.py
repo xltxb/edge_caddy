@@ -15,6 +15,8 @@
 跑法：python3 scripts/gotest.py [go test 的额外参数...]
 """
 import json
+import pathlib
+import tempfile
 import subprocess
 import sys
 
@@ -73,9 +75,20 @@ def main():
             elif e["Action"] == "output":
                 out.setdefault((e["Package"], e["Test"]), []).append(e["Output"])
 
+    # **把失败现场同时写进文件。**
+    #
+    # 这个脚本存在的全部理由是留下现场，而我一次又一次用 `| tail -2`
+    # 把它截掉——今天第六次。最后一次的代价是真的：一次偶发失败（244/2）
+    # 重跑就绿了，而现场没了。
+    #
+    # 所以不靠「记得别截断」来修，**顺着那个习惯设计**：现场落盘，
+    # 而指向它的那一行印在**最末尾**——`tail` 保得住的地方。
+    report = []
     for key in failed:
-        print(f"\n{'='*70}\nFAIL  {key[0]}\n      {key[1]}\n{'='*70}")
-        print("".join(out.get(key, ["（没有输出——那本身就值得查）"])))
+        block = (f"\n{'='*70}\nFAIL  {key[0]}\n      {key[1]}\n{'='*70}\n"
+                 + "".join(out.get(key, ["（没有输出——那本身就值得查）"])))
+        print(block)
+        report.append(block)
 
     if nonjson:
         print("\n非 JSON 输出：")
@@ -110,6 +123,15 @@ def main():
     # 最常撞上的是手工跑单条时把名字打错：go test 印一行 no tests to run
     # 然后 exit 0，这里会打印「通过=0 失败=0」—— 而一个 && 链会带着
     # 这个「没问题」一路跑到 git commit。
+    if report or nonjson or buildout:
+        path = pathlib.Path(tempfile.gettempdir()) / "edge-gotest-last-failure.txt"
+        try:
+            path.write_text("".join(report) + "".join(nonjson) + "".join(buildout),
+                            encoding="utf-8")
+            print(f"\n现场已存：{path}")
+        except OSError as e:
+            print(f"\n（现场写不进文件：{e}）")
+
     if passed == 0 and not failed:
         # **判词要指对方向。** 前端 agent 在他脚本上撞到这个：
         # 「全部被跳过」被报成「装置可能坏了」，把人指向工具，
