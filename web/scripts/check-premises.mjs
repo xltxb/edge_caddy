@@ -313,6 +313,66 @@ await check(
   },
 )
 
+// ── 两个包的唯一接缝：主控伺服控制台 ──
+await check(
+  '主控伺服控制台：深层路由 fallback、/assets 与 /api 不 fallback',
+  'dist/ 的产物结构；index.html 的根绝对路径',
+  async () => {
+    /*
+     * 这条不查 `/api/v1/...`，查的是**站点根**下的路径 —— 所以它绕过 call()，
+     * 自己拼 origin。
+     *
+     * 为什么值得单独一条：这是我们两个包**唯一的接缝**，而它此前的状态是
+     * 「配置项读进来了，没有任何代码用它」—— 主控根本不伺服前端，而那不会
+     * 有任何东西报错，只会在有人打开控制台时表现成一整片 404。
+     */
+    const origin = BASE.replace(/\/api\/v1\/?$/, '')
+    const get = async (p) => {
+      const r = await fetch(origin + p, { headers: cookie ? { cookie } : {} })
+      return { status: r.status, type: r.headers.get('content-type') ?? '' }
+    }
+
+    const root = await get('/')
+    if (root.status === 404) {
+      throw new Error(
+        '主控没有伺服控制台（/ 是 404）—— EC_WEB_ROOT 没指对，或者这个主控没配前端。' +
+          '这不是前端的问题，但它会表现成整个控制台打不开。',
+      )
+    }
+    must(root.status === 200, `/ 回 ${root.status}`)
+    must(/text\/html/.test(root.type), `/ 的 content-type 是 ${root.type}`)
+
+    /*
+     * 深层路由必须 fallback 到 index.html。**带点又带冒号的那条是重点**：
+     * 工作台的资源 key 形如 `route:api.example.com`，而「路径里有点就不
+     * fallback」这种按扩展名判的规则会把它误伤 —— 那是人刷新页面时最常撞上
+     * 的路径之一。
+     */
+    for (const p of ['/nodes', '/certs', '/workbench/global:tls', '/workbench/route:api.example.com']) {
+      const r = await get(p)
+      must(r.status === 200 && /text\/html/.test(r.type), `${p} 回 ${r.status} ${r.type}`)
+    }
+
+    /*
+     * `/assets/*` 找不到必须 404，不能 fallback：那个路径下的东西**只有一种
+     * 消费者，而那个消费者不认识 HTML**。回 index.html 的话，浏览器会拿一整页
+     * HTML 当 JavaScript 执行，报出来的是 `Unexpected token '<'` —— 而真正的
+     * 问题是那个文件不在（包传了一半、index.html 与 assets 版本错配）。
+     */
+    const miss = await get('/assets/definitely-not-here.js')
+    must(
+      miss.status === 404,
+      `/assets 下缺失的文件回了 ${miss.status} ${miss.type} —— 浏览器会把 HTML 当 JS 执行`,
+    )
+
+    // /api 与 /ws 同理，只是消费者换成了 JSON.parse
+    const api = await get('/api/v1/definitely-not-an-endpoint')
+    must(!/text\/html/.test(api.type), `不存在的 API 路径回了 HTML —— JSON.parse 会报一个跟真正问题无关的错`)
+
+    return `/ 与 4 条深层路由 200，/assets 缺失 404，/api 不 fallback`
+  },
+)
+
 /* ── 报告 ── */
 const bad = results.filter((r) => !r.ok)
 console.log('')
