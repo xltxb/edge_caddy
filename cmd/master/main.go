@@ -237,8 +237,9 @@ func main() {
 		Store: st, Hub: hub, Tunnel: tun, Health: monitor, Alerts: notifier, DNS: dnsOrch,
 		Sealer: sealer, Deployer: scheduler, Certs: certMgr, Log: log,
 		SessionTTL: cfg.SessionTTL, OpsBotToken: cfg.OpsBotToken, WebRoot: cfg.WebRoot,
-		SecureCookie: cfg.MTLSEnabled,
-		MasterAddr:   cfg.Advertise, CAPin: caPin,
+		SecureCookie:   cfg.SecureCookie,
+		TrustedProxies: cfg.TrustedProxies,
+		MasterAddr:     cfg.Advertise, CAPin: caPin,
 	})
 
 	log.Info("HTTP 监听", "addr", cfg.HTTPAddr, "mtls", cfg.MTLSEnabled, "ca_pin", caPin)

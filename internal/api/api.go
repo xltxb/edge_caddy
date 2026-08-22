@@ -78,7 +78,18 @@ type Options struct {
 
 	// SecureCookie 应当与「控制台跑在 TLS 上」一致。ADR-0013 下默认关闭：
 	// 首版绑内网 HTTP，Secure Cookie 在 http:// 下不会被浏览器存下来。
+	//
+	// 它此前由 MTLSEnabled 决定，而那是个错误的耦合——前置 nginx 终止 TLS 时
+	// 主控看到的是 HTTP 而浏览器走的是 HTTPS，那时该开它，跟 mTLS 无关。
 	SecureCookie bool
+
+	// TrustedProxies 是可信反代的地址。**空 = 谁也不信**，来源 IP 一律取
+	// 连接的对端地址。
+	//
+	// gin 的默认是信任所有代理，于是任何能访问控制台的人发一个
+	// X-Forwarded-For 就能伪造审计日志里的来源 IP——而审计是 ADR-0013
+	// 准入模型的三分之一。这里显式收紧。
+	TrustedProxies []string
 }
 
 // New 装配路由。契约见 docs/api-contract.md。
@@ -93,6 +104,23 @@ func New(o Options) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 
 	r := gin.New()
+
+	// **默认谁也不信。**
+	//
+	// gin 不调这个方法时信任所有代理，于是任何能访问控制台的人发一个
+	// `X-Forwarded-For: 1.2.3.4` 就能让审计日志记下那个 IP。
+	// 实测过：不配时 ClientIP 返回 1.2.3.4，配 SetTrustedProxies(nil)
+	// 返回真实对端地址。
+	//
+	// **而审计是 ADR-0013 准入模型的三分之一**（只绑内网 + Cookie + 全写审计）
+	// ——一个可以被访问者伪造的来源 IP，等于那三分之一在追责时不作数。
+	//
+	// 前置反代时把它的地址填进 EC_TRUSTED_PROXIES，那时 XFF 才被采信。
+	if err := r.SetTrustedProxies(o.TrustedProxies); err != nil {
+		o.Log.Error("可信代理配置无效，退回「谁也不信」", "err", err)
+		_ = r.SetTrustedProxies(nil)
+	}
+
 	r.Use(Recover(o.Log))
 
 	s := &Server{

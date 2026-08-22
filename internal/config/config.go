@@ -34,9 +34,31 @@ type Master struct {
 	// 那一半实现掉，连同它写明的「回环逃生口」——开着 mTLS 又弄丢证书时，
 	// 回环上的监听必须仍然可用，否则会把唯一的运维人员锁在系统外面。
 	MTLSEnabled bool
-	SessionTTL  time.Duration
-	OpsBotToken string
-	WebRoot     string
+
+	// SecureCookie 决定会话 Cookie 带不带 Secure 标志。
+	//
+	// **它此前跟 MTLSEnabled 绑死**，而那是个错误的耦合：Secure 该由
+	// 「控制台跑在 TLS 上」决定，跟 mTLS 开没开是两件事。
+	// 前置 nginx 终止 TLS 时，主控自己看到的是 HTTP，而浏览器走的是 HTTPS
+	// ——那时该设 EC_SECURE_COOKIE=1。
+	//
+	// 默认 false：ADR-0013 下首版绑内网 HTTP，硬写 true 会让 Cookie
+	// 在 http:// 下根本不被存下来，现象是「登录成功但立刻又跳回登录页」。
+	SecureCookie bool
+
+	// TrustedProxies 是可信反代的地址，**只有它们发来的 X-Forwarded-For
+	// 才作数**。
+	//
+	// 默认空 = 谁也不信，来源 IP 一律取连接的对端地址。
+	//
+	// 这不是保守，是修一个真问题：gin 默认信任所有代理，于是**任何能访问
+	// 控制台的人发一个 XFF 头就能伪造审计日志里的来源 IP**——而审计是
+	// ADR-0013 准入模型的三分之一。实测过：不配的话 `X-Forwarded-For: 1.2.3.4`
+	// 会原样进审计。
+	TrustedProxies []string
+	SessionTTL     time.Duration
+	OpsBotToken    string
+	WebRoot        string
 
 	// Advertise 是主控对节点公布的地址，进服务端证书的 SAN，也拼进安装命令。
 	//
@@ -75,12 +97,15 @@ func LoadMaster() (Master, error) {
 		DatabaseURL: env("EC_DATABASE_URL", "postgres://localhost:5432/edge_controller?sslmode=disable"),
 		// 默认绑回环而不是 0.0.0.0。ADR-0013 把「只绑内网」定为准入的一半，
 		// 而一个默认对全网监听的控制面，装错一次就永远错着。
-		HTTPAddr:    env("EC_HTTP_ADDR", "127.0.0.1:8080"),
-		GRPCAddr:    env("EC_GRPC_ADDR", "0.0.0.0:9000"),
-		MTLSEnabled: envBool("EC_MTLS", false),
-		SessionTTL:  time.Duration(envInt("EC_SESSION_TTL_HOURS", 12)) * time.Hour,
-		OpsBotToken: os.Getenv("EC_OPS_BOT_TOKEN"),
-		WebRoot:     env("EC_WEB_ROOT", "web/dist"),
+		HTTPAddr:     env("EC_HTTP_ADDR", "127.0.0.1:8080"),
+		GRPCAddr:     env("EC_GRPC_ADDR", "0.0.0.0:9000"),
+		MTLSEnabled:  envBool("EC_MTLS", false),
+		SecureCookie: envBool("EC_SECURE_COOKIE", false),
+		// 逗号分隔，例如 EC_TRUSTED_PROXIES=127.0.0.1,::1
+		TrustedProxies: splitList(os.Getenv("EC_TRUSTED_PROXIES")),
+		SessionTTL:     time.Duration(envInt("EC_SESSION_TTL_HOURS", 12)) * time.Hour,
+		OpsBotToken:    os.Getenv("EC_OPS_BOT_TOKEN"),
+		WebRoot:        env("EC_WEB_ROOT", "web/dist"),
 		// **不给默认值。** 任何默认值在生产上都是错的——没人的主控真叫那个名字——
 		// 而一个能启动的错误默认值比起不来更危险：它会让人以为配好了，
 		// 直到第一台节点连不上。与 EC_SECRET_KEY 同一条。
@@ -161,4 +186,18 @@ func envInt(k string, def int) int {
 		return def
 	}
 	return n
+}
+
+// splitList 把逗号分隔的列表切开，去掉空白项。
+//
+// 空字符串返回 nil 而不是 []string{""} —— 后者会被 gin 当成一个
+// 名为空串的可信代理，而那是个既不报错也不生效的状态。
+func splitList(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
