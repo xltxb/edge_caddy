@@ -55,6 +55,23 @@ func (s *Server) serveWeb(root string) gin.HandlerFunc {
 			}
 		}
 
+		// **`/assets/` 下找不到就 404，不 fallback。**
+		//
+		// 判据跟上面的 `/api/` 完全一样：**那个路径下的东西只有一种消费者，
+		// 而那个消费者不认识 HTML**。浏览器会拿一整页 HTML 当 JavaScript 执行，
+		// 报 `Unexpected token '<'` —— 而真正的问题是那个文件不在，
+		// 人会去看那个文件的语法，而它的语法完全正确。
+		//
+		// 灰度上这很容易发生：包传了一半、`index.html` 与 `assets/` 版本不匹配。
+		//
+		// **按目录判，不按扩展名判。** 「路径里有点就不 fallback」会误伤
+		// 工作台的资源 key（`/workbench/route:api.example.com` 带点也带冒号），
+		// 而那是人刷新页面时最常撞上的路径之一。
+		if strings.HasPrefix(p, "/assets/") {
+			c.Status(http.StatusNotFound)
+			return
+		}
+
 		// 其余一律回 index.html：控制台是单页应用，`/nodes`、
 		// `/workbench/global:tls` 这些路径在服务端不存在，由前端路由接管。
 		if _, err := os.Stat(index); err != nil {

@@ -109,6 +109,15 @@ export EC_WEB_ROOT="/opt/edge/web"          # ← 控制台静态文件，见下
 ./master
 ```
 
+### `EC_MTLS` 现在只能是 0
+
+翻开它主控**拒绝启动**：ADR-0013 说控制台的 mTLS 以 `tls.Config.ClientAuth`
+实现，而**那一半从来没有写**。这个开关此前唯一的效果是把会话 Cookie 标成
+`Secure`，那会让你在纯 HTTP 的主控上登录不上——一个跟 mTLS 无关的故障。
+
+控制台当前的准入是「**只绑内网或回环** + Cookie 会话 + 全写审计」。
+远程访问走 SSH 隧道 / WireGuard。
+
 ### `EC_WEB_ROOT` 是前后端两个包唯一的接缝
 
 后端出一个 `master`，前端出一堆静态文件，**把它们接起来的就是这一个变量**。

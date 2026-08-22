@@ -70,3 +70,33 @@ func TestAdvertiseErrorTellsPeopleWhatToDo(t *testing.T) {
 		t.Error("「没设置」与「填了 IP」应当给不同的说法")
 	}
 }
+
+// **一个翻开之后什么也不做的安全开关，比没有这个开关危险得多。**
+//
+// ADR-0013 说控制台的 mTLS 以 tls.Config.ClientAuth 实现为一个默认关的开关，
+// 而那一半从来没有写。EC_MTLS=1 此前唯一的效果是把会话 Cookie 标成 Secure
+// ——那与 mTLS 是两件事，而且会让人在纯 HTTP 的主控上登录不上。
+//
+// 人会以为控制台开着 mTLS，而它没有；**而这件事不会有任何症状**，
+// 直到有人真的去中间人。
+func TestMTLSSwitchRefusesToPretend(t *testing.T) {
+	if err := config.ValidateMTLS(false); err != nil {
+		t.Fatalf("默认关是正常状态，不该报错：%v", err)
+	}
+
+	err := config.ValidateMTLS(true)
+	if err == nil {
+		t.Fatal("EC_MTLS=1 应当拒绝启动 —— 一个静默的假象比一个响亮的失败危险")
+	}
+	msg := err.Error()
+	// 错误信息要说清三件：它没实现、此前那个副作用会造成什么、现在该怎么办。
+	for _, want := range []string{"还没有实现", "Cookie", "EC_MTLS=0"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("错误信息里应当有 %q：%s", want, msg)
+		}
+	}
+	// 指向 ADR，而不是让人去猜「那一半」指什么。
+	if !strings.Contains(msg, "ADR-0013") {
+		t.Errorf("应当指向 ADR-0013：%s", msg)
+	}
+}

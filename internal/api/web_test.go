@@ -143,3 +143,43 @@ func get(r http.Handler, path string) (int, string) {
 	r.ServeHTTP(w, req)
 	return w.Code, w.Body.String()
 }
+
+// **`/assets/` 下找不到就 404，不 fallback。**
+//
+// 前端 agent 用他自己的产物验出来的：`/assets/nonexistent.js` 回了
+// 200 + `text/html`。判据跟 `/api/*` 完全一样——**那个路径下的东西
+// 只有一种消费者，而那个消费者不认识 HTML**。
+//
+// 后果比 API 那边更难查：浏览器会拿一整页 HTML 当 JavaScript 执行，
+// 报出来的是 `Unexpected token '<'`，**而真正的问题是那个文件不在**。
+// 人会去看那个文件的语法，而它的语法完全正确。
+//
+// 灰度上这很容易发生：包传了一半、`index.html` 与 `assets/` 版本不匹配
+// （前端的文件名带 hash，正是为了让这两者不会静默错配）。
+func TestMissingAssetIs404NotIndexHTML(t *testing.T) {
+	r, _ := newServerWithWeb(t, webRoot(t))
+
+	code, body := get(r, "/assets/nonexistent.js")
+	if code != http.StatusNotFound {
+		t.Errorf("/assets/nonexistent.js = %d，想要 404", code)
+	}
+	if strings.Contains(body, "<!doctype html>") {
+		t.Errorf("回了 index.html —— 浏览器会拿这页 HTML 当 JS 执行，"+
+			"报 Unexpected token '<'，而真正的问题是文件不在：%q", body)
+	}
+
+	// **而带点的 SPA 路由仍然要 fallback。**
+	//
+	// 这一条是这个判据为什么按**目录**而不按**扩展名**：工作台的路径里
+	// 有资源 key（`route:api.example.com`），它带点、也带冒号。
+	// 一个「路径里有点就不 fallback」的规则会把它误伤成 404，
+	// 而那是人刷新页面时最常撞上的路径之一。
+	for _, p := range []string{
+		"/workbench/route:api.example.com",
+		"/workbench/global:tls",
+	} {
+		if code, body := get(r, p); code != 200 || !strings.Contains(body, "<!doctype html>") {
+			t.Errorf("%s 应当 fallback，实际 %d %q", p, code, body)
+		}
+	}
+}

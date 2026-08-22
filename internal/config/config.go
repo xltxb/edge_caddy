@@ -19,9 +19,20 @@ type Master struct {
 	GRPCAddr    string
 	SecretKey   []byte
 
-	// MTLS 默认关。见 docs/adr/0013-console-access-is-network-plus-session.md：
-	// 控制台准入首版靠「只绑内网 + 会话 Cookie + 全写审计」，mTLS 是留给
-	// 「控制台要挪出内网」那天的开关。
+	// MTLSEnabled 目前**只能是 false**：翻开它主控会拒绝启动。
+	//
+	// ADR-0013 说 mTLS 以 `tls.Config.ClientAuth` 实现为一个默认关的开关，
+	// 而**那一半从来没有写**。这个字段现在唯一的用处是决定 Cookie 的
+	// Secure 标志——那与 mTLS 是两件事。
+	//
+	// **一个翻开之后什么也不做的安全开关，比没有这个开关危险得多**：
+	// 人会以为控制台开着 mTLS，而它没有，**而这件事不会有任何症状**，
+	// 直到有人真的去中间人。
+	//
+	// 所以它现在是一个会拒绝启动的开关（见 ValidateMTLS）：
+	// 把一个静默的假象换成一个响亮的失败。真要用它，先把 ADR-0013 里
+	// 那一半实现掉，连同它写明的「回环逃生口」——开着 mTLS 又弄丢证书时，
+	// 回环上的监听必须仍然可用，否则会把唯一的运维人员锁在系统外面。
 	MTLSEnabled bool
 	SessionTTL  time.Duration
 	OpsBotToken string
@@ -95,6 +106,9 @@ func LoadMaster() (Master, error) {
 	// 放在最后：先把该报的凭据问题报完，再报这个。一次只让人改一样东西时，
 	// 顺序就是他修复的顺序。
 	if err := ValidateAdvertise(c.Advertise); err != nil {
+		return c, err
+	}
+	if err := ValidateMTLS(c.MTLSEnabled); err != nil {
 		return c, err
 	}
 	return c, nil
