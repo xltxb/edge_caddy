@@ -33,6 +33,9 @@ func (s *Server) serveWeb(root string) gin.HandlerFunc {
 		// 一个不存在的 API 路径回 index.html，前端会拿到一整页 HTML
 		// 去 JSON.parse ——报出来的错跟真正的问题（路径写错了）
 		// 毫无关系，而人会照着那个错去查解析代码。
+		// `/api/` 已经盖住了 WebSocket（它的真实路径是 `/api/v1/ws`，
+		// 契约 §2）。裸的 `/ws` 也一并挡住：它不是一个前端路由，
+		// 回 index.html 只会让一个配错了路径的客户端拿到 HTML。
 		if strings.HasPrefix(p, "/api/") || p == "/ws" {
 			c.JSON(http.StatusNotFound,
 				Envelope{Code: CodeOK, Data: nil, Msg: "端点不存在"})
