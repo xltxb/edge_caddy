@@ -212,3 +212,44 @@ func (m *Manager) event(ctx context.Context, kind, msg string) {
 		})
 	}
 }
+
+// Import 把一张外部签发的证书存进来，并**立刻触发一次下发**。
+//
+// 不下发的话，证书在库里、界面上显示「已导入」，而节点上还是旧的那张
+// ——这正是这个仓库里反复出现的形状：**机制建好了，没接到最该接的那个输出上**。
+//
+// **auto_renew 强制为 false。** 主控续不了一张不是它签的证书：ACME 需要
+// 那个域名的 DNS 控制权与账户绑定，而导入的证书来自别处。
+//
+// 更要紧的是**留着 true 的后果**：到期前 30 天，续期扫描会挑中它，
+// 主控用 ACME 重签一张**覆盖掉导入的那张**——而那不会有任何提示，
+// 人只会在某天发现证书的签发者变了。
+func (m *Manager) Import(ctx context.Context, domain string, imp Imported) error {
+	if err := m.Store.PutCert(ctx, store.Cert{
+		Domain:    domain,
+		Issuer:    imp.Issuer,
+		Challenge: "imported", // 不是通过任何 challenge 拿到的
+		AutoRenew: false,
+		CertPEM:   imp.CertPEM,
+		KeyPEM:    imp.KeyPEM,
+		NotAfter:  imp.NotAfter,
+	}, m.Sealer); err != nil {
+		return fmt.Errorf("保存证书: %w", err)
+	}
+
+	m.event(ctx, "ok", fmt.Sprintf("证书 %s 已导入（签发者 %s，%s 到期）",
+		domain, imp.Issuer, imp.NotAfter.Format("2006-01-02")))
+
+	if m.Redeploy == nil {
+		return nil
+	}
+	if err := m.Redeploy(ctx, "证书导入"); err != nil {
+		// **这一步失败要说出来，而不是让「导入成功」独自站着。**
+		// 证书已经在库里了，而节点上还是旧的——两句都对，合起来才是真相。
+		m.Log.Error("导入后下发失败", "domain", domain, "err", err)
+		m.event(ctx, "warn", fmt.Sprintf(
+			"证书 %s 已导入，但下发失败，节点上仍是旧证书：%v", domain, err))
+		return fmt.Errorf("证书已存下，但下发失败：%w", err)
+	}
+	return nil
+}

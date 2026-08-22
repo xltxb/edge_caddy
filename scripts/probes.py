@@ -144,6 +144,26 @@ PROBES = [
         "在线判定拿不到数据时必须炸",
     ),
     Probe(
+        "导入证书-auto_renew 必须关",
+        "留成 true 的话，到期前 30 天续期扫描会挑中它，主控用 ACME 重签一张"
+        "**覆盖掉导入的那张** —— 而那不会有任何提示，人只会在某天发现签发者变了",
+        "internal/certs/manager.go",
+        "\t\tAutoRenew: false,",
+        "\t\tAutoRenew: true,",
+        "./internal/e2e/", "TestImportedCertReachesNodesAndIsNotAutoRenewed",
+        "auto_renew",
+    ),
+    Probe(
+        "导入证书-域名必须对得上",
+        "证书本身完全有效，只是签的是别的域名 —— 浏览器报名称不符，"
+        "而人会去查 DNS、查 Caddy，因为「证书是有效的」",
+        "internal/certs/import.go",
+        "\tif err := leaf.VerifyHostname(domain); err != nil {",
+        "\tif false {",
+        "./internal/certs/", "TestImportRejectsWrongDomain",
+        "必须拒绝",
+    ),
+    Probe(
         "节点日志-level 用契约的四个小写值",
         "slog 的 String() 给的是 INFO/WARN，直接透出去会让前端在契约列的"
         "四个已知取值之外再见到四个大写的 —— 而它长得像是「多了几个取值」，"

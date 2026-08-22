@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"github.com/xltxb/edge_caddy/internal/certs"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -115,4 +116,75 @@ func (s *Server) handleRenewCheck(c *gin.Context) {
 	}
 	n := s.certs.RenewDueAsync()
 	OK(c, gin.H{"accepted": true, "queued": n})
+}
+
+type importCertReq struct {
+	CertPEM string `json:"cert_pem"`
+	KeyPEM  string `json:"key_pem"`
+}
+
+// handleImportCert 从外部证书平台导入一张证书（PUT /certs/:domain）。
+//
+// 这是主控获取证书的**第二条路**，与 ACME 并行。节点那一侧完全不变：
+// 仍然是主控集中持有、经隧道内联下发（ADR-0001、ADR-0010），
+// 节点照旧不持有 DNS 凭据、不自行申请。
+//
+// **校验在存之前做完。** 一张不匹配的证书会一路走到节点上：存库成功、
+// 下发成功、界面显示「已导入」——而站点是坏的。
+func (s *Server) handleImportCert(c *gin.Context) {
+	domain := c.Param("domain")
+	setAuditTarget(c, domain)
+
+	if s.certs == nil {
+		Fail(c, CodeStateConflict, "证书管理未装配")
+		return
+	}
+	var req importCertReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Fail(c, CodeBadParam, "请求格式错误")
+		return
+	}
+	if req.CertPEM == "" || req.KeyPEM == "" {
+		FailValidation(c, "证书与私钥都要给", []FieldError{
+			{ResKey: "cert:" + domain, Field: "cert_pem", Reason: "必填"},
+			{ResKey: "cert:" + domain, Field: "key_pem", Reason: "必填"},
+		})
+		return
+	}
+
+	imp, err := certs.ValidateImport(domain, []byte(req.CertPEM), []byte(req.KeyPEM))
+	if err != nil {
+		// **校验失败是 1002 而不是 1001。**
+		//
+		// 1001 是「格式错」，而这里的失败多半是内容不对：证书配不上私钥、
+		// 覆盖的域名不是这个、已经过期。人拿到 1001 会去检查 JSON 有没有写错，
+		// 而问题在 PEM 里面。
+		FailValidation(c, err.Error(), []FieldError{
+			{ResKey: "cert:" + domain, Field: "cert_pem", Reason: err.Error()},
+		})
+		return
+	}
+
+	if err := s.certs.Import(c.Request.Context(), domain, imp); err != nil {
+		s.log.Error("导入证书失败", "domain", domain, "err", err)
+		// 证书可能已经存下了而下发失败——那时 detail 会说清，
+		// 而审计要记成 partial 而不是 fail。
+		setAuditPartial(c, err.Error())
+		Fail(c, CodeDownstream, err.Error())
+		return
+	}
+
+	// **私钥不回显**（PRD §7，与规则的共享密钥、DNS 凭证同一条）。
+	// 回的是「我们从这张证书里读出了什么」——那让人当场看得出
+	// 自己传的是不是想传的那张。
+	OK(c, gin.H{
+		"domain":     domain,
+		"issuer":     imp.Issuer,
+		"not_after":  imp.NotAfter.Format(time.RFC3339),
+		"days_left":  int(time.Until(imp.NotAfter).Hours() / 24),
+		"domains":    imp.Domains,
+		"auto_renew": false,
+		"warnings":   imp.Warnings,
+		"detail":     "已导入并下发到各节点",
+	})
 }

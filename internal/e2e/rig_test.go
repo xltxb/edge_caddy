@@ -3,9 +3,16 @@ package e2e_test
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	crand "crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"log/slog"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -440,4 +447,55 @@ func (testIssuer) Issue(_ context.Context, domain string) ([]byte, []byte, time.
 		return nil, nil, time.Time{}, err
 	}
 	return leaf.CertPEM, leaf.KeyPEM, time.Now().Add(90 * 24 * time.Hour), nil
+}
+
+// importableCert 造一张由「外部平台 CA」签出来的叶子证书，
+// 用来测导入接口。**不用自签**：自签证书的签发者是它自己，
+// 而导入接口回报的 issuer 正是要让人认出「这张是谁签的」。
+func importableCert(t *testing.T, domain string) (certPEM, keyPEM []byte) {
+	t.Helper()
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), crand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caTpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "外部证书平台 CA"},
+		NotBefore:             time.Now().Add(-24 * time.Hour),
+		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	caDER, err := x509.CreateCertificate(crand.Reader, caTpl, caTpl, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), crand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.CreateCertificate(crand.Reader, &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: domain},
+		DNSNames:     []string{domain},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(90 * 24 * time.Hour),
+	}, ca, &key.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kb, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	inter := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Raw})
+	return append(leaf, inter...),
+		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kb})
 }

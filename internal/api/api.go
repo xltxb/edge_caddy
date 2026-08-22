@@ -174,6 +174,7 @@ func New(o Options) *gin.Engine {
 	authed.POST("/nodes/:id/rejoin", audited("重新上线", s.handleNodeRejoin))
 
 	authed.GET("/certs", s.handleListCerts)
+	authed.PUT("/certs/:domain", audited("导入证书", s.handleImportCert))
 	authed.POST("/certs/:domain/renew", audited("续期证书", s.handleRenewCert))
 	authed.POST("/certs/renew-check", audited("续期证书", s.handleRenewCheck))
 

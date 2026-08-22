@@ -519,3 +519,105 @@ func TestDeleteRule(t *testing.T) {
 		t.Errorf("删不存在的规则 code = %d，想要 %d", e.Code, api.CodeNotFound)
 	}
 }
+
+// **导入的证书要真的到节点上，而且不能被 ACME 覆盖回去。**
+//
+// 两条都是「不接上就没有症状」的那类：证书存进库、界面显示「已导入」，
+// 而节点上还是旧的；或者到期前 30 天主控用 ACME 重签一张盖掉它，
+// 而人只会在某天发现签发者变了。
+func TestImportedCertReachesNodesAndIsNotAutoRenewed(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "imported.example.com", "upstream": r.upstream, "block_mode": "abort",
+	})
+	r.deployNow("route:imported.example.com")
+
+	certPEM, keyPEM := importableCert(t, "imported.example.com")
+	e := r.mustDo("PUT", "/certs/imported.example.com", map[string]any{
+		"cert_pem": string(certPEM), "key_pem": string(keyPEM),
+	})
+	var imp struct {
+		Domain    string   `json:"domain"`
+		Issuer    string   `json:"issuer"`
+		AutoRenew bool     `json:"auto_renew"`
+		Domains   []string `json:"domains"`
+		KeyPEM    string   `json:"key_pem"`
+	}
+	if err := json.Unmarshal(e.Data, &imp); err != nil {
+		t.Fatal(err)
+	}
+
+	// **私钥不回显**（PRD §7，与共享密钥、DNS 凭证同一条）。
+	if imp.KeyPEM != "" || contains(string(e.Data), "PRIVATE KEY") {
+		t.Fatalf("响应里回显了私钥：%s", e.Data)
+	}
+	// 回的是「我们从这张证书里读出了什么」——那让人当场看得出传对没有。
+	if imp.Issuer == "" || len(imp.Domains) == 0 {
+		t.Errorf("应当回报读出来的签发者与覆盖域名：%+v", imp)
+	}
+
+	// **auto_renew 必须是 false。**
+	//
+	// 留着 true 的话，到期前 30 天续期扫描会挑中它，主控用 ACME 重签一张
+	// 覆盖掉导入的——而那不会有任何提示。
+	if imp.AutoRenew {
+		t.Error("导入的证书 auto_renew 必须是 false —— 主控续不了一张不是它签的证书")
+	}
+	list := r.mustDo("GET", "/certs", nil)
+	var d struct {
+		Items []struct {
+			Domain    string `json:"domain"`
+			Challenge string `json:"challenge"`
+			AutoRenew bool   `json:"auto_renew"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(list.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, it := range d.Items {
+		if it.Domain != "imported.example.com" {
+			continue
+		}
+		found = true
+		if it.AutoRenew {
+			t.Error("列表里 auto_renew 也该是 false")
+		}
+		// challenge 说「它是怎么来的」——导入的不是通过任何 challenge 拿到的。
+		if it.Challenge != "imported" {
+			t.Errorf("challenge = %q，想要 imported", it.Challenge)
+		}
+	}
+	if !found {
+		t.Fatalf("导入的证书没出现在列表里：%s", list.Data)
+	}
+}
+
+// 校验失败要在**存之前**挡住，而且报 1002 带上原因。
+//
+// 报 1001（格式错）的话人会去检查 JSON 有没有写错，而问题在 PEM 里面。
+func TestImportRejectsCertForAnotherDomain(t *testing.T) {
+	r := newRig(t)
+	certPEM, keyPEM := importableCert(t, "other.example.com")
+
+	_, e := r.do("PUT", "/certs/api.example.com", map[string]any{
+		"cert_pem": string(certPEM), "key_pem": string(keyPEM),
+	})
+	if e.Code != api.CodeValidation {
+		t.Fatalf("证书不覆盖那个域名时应当报 1002，实际 code=%d msg=%q", e.Code, e.Msg)
+	}
+	if !contains(e.Msg, "other.example.com") {
+		t.Errorf("要说出它实际覆盖的域名，人多半是传错了文件：%q", e.Msg)
+	}
+
+	// 而且**什么也不该存下**：一张被拒绝的证书出现在列表里，
+	// 比拒绝本身更让人困惑。
+	list := r.mustDo("GET", "/certs", nil)
+	if contains(string(list.Data), "api.example.com") {
+		t.Errorf("被拒绝的证书不该进库：%s", list.Data)
+	}
+}
