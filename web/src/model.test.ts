@@ -16,6 +16,7 @@ const wire = (over: Partial<NodeWire> = {}): NodeWire => ({
   last_hb_at: '2026-08-21T10:42:05+08:00',
   hb_age_ms: 1200,
   cfg_version: 'cfg-2f9a1c',
+  agent_version: 'v0.2.0 (d3da612)',
   drift: false,
   dns_enabled: true,
   drained_at: null,

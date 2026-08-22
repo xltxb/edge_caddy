@@ -34,6 +34,8 @@ export interface EdgeNode {
    */
   hbStampedAt: number
   cfgVersion: string
+  /** Agent 版本；空串 = 还没接入过。灰度部署时人最先问的就是这个。 */
+  agentVersion: string
   /** cfg_version ≠ 基线。只比版本号，发现不了 SSH 手改（ADR-0002）。 */
   drift: boolean
   dnsEnabled: boolean
@@ -67,6 +69,7 @@ export function fromNodeWire(w: NodeWire, stampedAt = Date.now()): EdgeNode {
     hbAgeMs: w.hb_age_ms,
     hbStampedAt: stampedAt,
     cfgVersion: w.cfg_version,
+    agentVersion: w.agent_version ?? '',
     drift: w.drift,
     dnsEnabled: w.dns_enabled,
     drainedAt: w.drained_at ?? null,

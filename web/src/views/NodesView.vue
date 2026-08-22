@@ -254,6 +254,17 @@ const LEVEL_COLOR: Record<string, string> = {
                 </dd>
                 <dt>基线</dt>
                 <dd class="mono">{{ overview.baseline || '—' }}</dd>
+                <!--
+                  版本号放在展开后的详情里，不放在行上：行上那几个数字（CPU、
+                  内存、连接、心跳）是**变化的**，版本号是**静止的**，混在一起
+                  会让人扫不动那一行。
+                  空串说「还没接入过」而不是留白 —— 灰度部署时人最先问的就是
+                  「我推上去的那一版到底上没上」，一片空白答不了这个问题。
+                -->
+                <dt>Agent 版本</dt>
+                <dd class="mono" :class="{ muted: !n.agentVersion }">
+                  {{ n.agentVersion || '还没接入过' }}
+                </dd>
                 <dt>生效路由 / 规则</dt>
                 <dd class="mono">{{ n.routes }} / {{ n.rules }}</dd>
                 <dt>DNS 解析</dt>

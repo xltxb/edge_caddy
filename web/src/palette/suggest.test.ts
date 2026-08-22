@@ -16,6 +16,7 @@ const node = (id: string, over: Partial<EdgeNode> = {}): EdgeNode => ({
   hbAgeMs: 0,
   hbStampedAt: 0,
   cfgVersion: 'cfg-a',
+  agentVersion: 'v0.2.0 (d3da612)',
   drift: false,
   dnsEnabled: true,
   drainedAt: null,

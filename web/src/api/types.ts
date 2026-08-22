@@ -138,6 +138,11 @@ export interface NodeWire {
   hb_age_ms: number
   cfg_version: string
   drift: boolean
+  /**
+   * 那台机器上跑的 Agent 版本，接入时上报、每次接入覆写（契约 §4）。
+   * **空串 = 还没接入过**，不是「版本未知」——两者在灰度上意思完全不同。
+   */
+  agent_version: string
   dns_enabled: boolean
   /**
    * 人**明确让它退出服务**的时刻；没下线过就是 null。

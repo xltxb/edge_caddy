@@ -28,6 +28,7 @@ const wire = (id: string, cfg: string, over: Partial<NodeWire> = {}): NodeWire =
   last_hb_at: '',
   hb_age_ms: 0,
   cfg_version: cfg,
+  agent_version: 'v0.2.0 (d3da612)',
   drift: false,
   dns_enabled: true,
   drained_at: null,

@@ -84,6 +84,8 @@ const node = (
   last_hb_at: ago(hbSec),
   hb_age_ms: Math.round(hbSec * 1000),
   cfg_version,
+  // 空串 = 还没接入过。给离线那台留空，让「还没接入过」这一支在界面上走得到。
+  agent_version: status === 'down' ? '' : 'v0.2.0 (d3da612)',
   drift: cfg_version !== BASELINE,
   dns_enabled,
   // 下线是**意图**，与 status 各记各的（CONTEXT.md）。默认没人下过线。
