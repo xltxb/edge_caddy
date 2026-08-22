@@ -19,7 +19,13 @@ version="${1:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
 commit="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 stamp="${version} (${commit})"
 
-rm -rf "$out" && mkdir -p "$out"
+# **只清自己的产物，不要 rm -rf 整个 dist。**
+#
+# 前端的包也放在这里（同一个仓库，两个 agent）。`rm -rf dist` 会把
+# `edge-console-*.tar.gz` 一起删掉——而那**不会报错**：下一个人打开 dist
+# 只看到后端的包，会以为前端还没打，或者以为自己记错了。
+mkdir -p "$out"
+rm -rf "$out"/linux-* "$out"/edge-controller-*.tar.gz "$out"/SHA256SUMS
 
 echo "版本：${stamp}"
 echo
@@ -48,7 +54,8 @@ for arch in amd64 arm64; do
   rm -rf "$d"
 done
 
-( cd "$out" && shasum -a 256 ./*.tar.gz > SHA256SUMS )
+# 校验和也只算自己的：前端的包有它自己的 SHA256SUMS.web。
+( cd "$out" && shasum -a 256 ./edge-controller-*.tar.gz > SHA256SUMS )
 
 echo "产物："
 ls -lh "$out"/*.tar.gz | awk '{printf "  %-52s %s\n", $9, $5}'
