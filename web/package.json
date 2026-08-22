@@ -20,7 +20,8 @@
     "check:fast": "node scripts/test.mjs --fast",
     "check:comments": "node scripts/check-comments.mjs",
     "check:anchors": "node scripts/check-anchors.mjs",
-    "check:certs": "node scripts/check-certs.mjs"
+    "check:certs": "node scripts/check-certs.mjs",
+    "check:dist": "node scripts/check-dist.mjs"
   },
   "dependencies": {
     "pinia": "^2.2.6",

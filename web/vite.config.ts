@@ -60,7 +60,25 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       outDir: 'dist',
+      /*
+       * 留着 sourcemap：控制台只在内网可达（登录页那句就是这么写的），
+       * 而线上排障时一份 sourcemap 抵得上很多次猜。这是有意识的取舍，不是忘了关。
+       */
       sourcemap: true,
+      rollupOptions: {
+        /*
+         * **MSW 的 worker 不进生产包。**
+         *
+         * 它在 `public/` 下，vite 会原样拷进 dist。注册那段有 `import.meta.env.DEV`
+         * 守着，所以它不会被启用 —— 但**它仍然会被部署到主控上并且可以被直接访问**。
+         * 一个能拦截全站请求的 Service Worker 躺在生产目录里，不该有。
+         *
+         * 「不会被启用」和「不在那儿」是两件事，而只有后者不依赖那句 DEV 守卫
+         * 一直正确。
+         */
+      },
     },
+    // public 目录只有那一个文件，整个不拷比逐个排除干净
+    publicDir: mode === 'production' ? false : 'public',
   }
 })
