@@ -354,6 +354,7 @@ WS 断开时前端按指数退避重连；重连期间对进行中的下发降�
   "dns_enabled": true,
   "drained_at": null,
   "dns_reason": "manual", "dns_actor": "abiu", "dns_changed_at": "2026-08-22T14:30:00+08:00",
+  "agent_version": "v0.2.0 (d3da612)",
   "routes": 7, "rules": 3,
   "created_at": "2026-08-01T09:00:00+08:00"
 }
@@ -370,6 +371,14 @@ WS 断开时前端按指数退避重连；重连期间对进行中的下发降�
 
   `drained_at` 非 `null` 时该节点：不参与解析、不进下发目标、不接受接入、
   **也不报离线告警**。
+
+- **`agent_version` 是那台机器上跑的 Agent 版本**，接入时上报，每次接入覆写。
+  空串表示还没接入过。
+
+  灰度部署时人最先问的就是「我推上去的那一版到底上没上」。
+  它是 `git describe + commit` 的形式（二十来个字符），
+  **建议放在展开后的详情里而不是行上**——行上那几个数字是变化的，
+  版本号是静止的，混在一起会让人扫不动。
 
 - **`dns_reason` / `dns_actor` / `dns_changed_at` 说的是「最近一次解析开关是谁改的」。**
 

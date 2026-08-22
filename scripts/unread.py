@@ -116,6 +116,49 @@ def scan_proto_fields(gosrc):
     return out, len(fields)
 
 
+def scan_config_fields(gosrc):
+    """`internal/config` 里读进来的配置项，有没有人真的用。
+
+    **这一类是补上的。** `EC_WEB_ROOT` 从第一天起就被读进 `Master.WebRoot`，
+    而 `internal/api` 一处都没引用它——主控对 `/`、`/nodes`、`/assets/…`
+    一律回 404，**根本不伺服前端**。
+
+    是前端 agent 在灰度打包时真起了一个主控发现的，而这个扫描当时
+    只看 DB 列和 proto 字段，看不见配置项。**它长在两个包唯一的接缝上。**
+    """
+    src = (ROOT / "internal/config/config.go").read_text(encoding="utf-8")
+    fields = []
+    # **只扫 struct 定义块内部。** 第一版按「制表符 + 标识符 + 类型」扫全文，
+    # 把 `return` 语句当成了字段名 —— 误报要修，不要豁免：
+    # 加豁免会把「扫描不准」记成「这条不用管」，而那是两件事。
+    for blk in re.finditer(r"type \w+ struct \{(.*?)\n\}", src, re.S):
+        for line in blk.group(1).split("\n"):
+            m = re.match(r"\t(\w+)\s+[\w\[\]\*\.]+(\s+`[^`]*`)?$", line)
+            if m:
+                fields.append(m.group(1))
+
+    # 排除 config 包自己的引用：它当然会提到自己的字段。
+    outside = "\n".join(
+        p.read_text(encoding="utf-8")
+        for d in ("internal", "cmd")
+        for p in pathlib.Path(d).rglob("*.go")
+        if "internal/config" not in str(p)
+    )
+    # **判据是 `cfg.<字段>`，不是「这个名字出现过」。**
+    #
+    # 第一版用后者，于是去掉 `WebRoot: cfg.WebRoot` 之后扫描仍说「都有人读」
+    # —— 它读到的是 `api.Options.WebRoot`，**另一个类型的同名字段**。
+    # 一个同名字段能替真正的那个作保，而那正是这个扫描要防的事。
+    #
+    # `cfg` 是这个仓库里 config 值的惯用接收者名（cmd/ 里全是）。
+    # 换个变量名会假阳性 —— 而**假阳性比假阴性好**：误报会吵，漏报不会。
+    out = []
+    for f in sorted(set(fields)):
+        if not re.search(rf"\bcfg\.{re.escape(f)}\b", outside):
+            out.append(f"config.{f}")
+    return out, len(set(fields))
+
+
 def main():
     gosrc = go_source()
     # 装置自检：Go 源码得真的读进来了。
@@ -130,6 +173,7 @@ def main():
     for label, (items, total) in (
         ("DB 列", scan_db_columns(gosrc)),
         ("proto 字段", scan_proto_fields(gosrc)),
+        ("配置项", scan_config_fields(gosrc)),
     ):
         print(f"\n  {label}（共 {total} 个）")
         if not items:

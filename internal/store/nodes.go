@@ -32,6 +32,10 @@ type Node struct {
 	DNSReason    string     `json:"dns_reason"` // manual | auto_offline | drained
 	DNSActor     string     `json:"dns_actor"`  // 操作人；系统自动摘除时为空
 	DNSChangedAt *time.Time `json:"dns_changed_at"`
+
+	// AgentVersion 是节点上跑的 Agent 版本，接入时由 Hello 带上来。
+	// **灰度时人最先问的就是「我推上去的那一版到底上没上」。**
+	AgentVersion string `json:"agent_version"`
 }
 
 // UpsertNode 在接入时写入或更新节点。同一台机器重新接入时更新元信息，
@@ -51,7 +55,8 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 	rows, err := s.Pool.Query(ctx,
 		`SELECT id, city, vendor, line, host(public_ip), status::text,
 		        cfg_version, dns_enabled, last_hb_at, created_at, drained_at,
-		        coalesce(dns_reason::text, ''), coalesce(dns_actor, ''), dns_changed_at
+		        coalesce(dns_reason::text, ''), coalesce(dns_actor, ''), dns_changed_at,
+		        agent_version
 		 FROM edge_nodes ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -63,7 +68,8 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 		var n Node
 		if err := rows.Scan(&n.ID, &n.City, &n.Vendor, &n.Line, &n.PublicIP,
 			&n.Status, &n.CfgVersion, &n.DNSEnabled, &n.LastHBAt, &n.CreatedAt,
-			&n.DrainedAt, &n.DNSReason, &n.DNSActor, &n.DNSChangedAt); err != nil {
+			&n.DrainedAt, &n.DNSReason, &n.DNSActor, &n.DNSChangedAt,
+			&n.AgentVersion); err != nil {
 			return nil, err
 		}
 		out = append(out, n)
@@ -103,6 +109,15 @@ func (s *Store) CountNodesByStatus(ctx context.Context) (ok, warn, down, total i
 		        count(*)
 		 FROM edge_nodes`).Scan(&ok, &warn, &down, &total)
 	return
+}
+
+// SetAgentVersion 记下节点上跑的 Agent 版本。
+//
+// 每次接入都写：Agent 升级之后重连，那一刻的版本才是当前值。
+func (s *Store) SetAgentVersion(ctx context.Context, nodeID, version string) error {
+	_, err := s.Pool.Exec(ctx,
+		`UPDATE edge_nodes SET agent_version = $2 WHERE id = $1`, nodeID, version)
+	return err
 }
 
 func (s *Store) SetNodeCfgVersion(ctx context.Context, nodeID, cfgVersion string) error {

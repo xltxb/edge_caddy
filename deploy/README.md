@@ -101,12 +101,42 @@ export EC_DATABASE_URL="postgres://localhost:5432/edge_controller?sslmode=disabl
 export EC_SECRET_KEY="…至少 32 字节…"      # DNS/Lark 凭据与两套 CA 的根私钥都用它加密
 export EC_ADVERTISE="ec.internal:9000"      # ← 必须是域名，填 IP 主控不启动，见下
 export EC_HTTP_ADDR="127.0.0.1:8080"        # ← 见下
+export EC_WEB_ROOT="/opt/edge/web"          # ← 控制台静态文件，见下
 
 ./master -migrate
 ./master --create-user 'abiu:…'
 ./master -ca-pin                            # 打印 CA 指纹，添加节点时要用
 ./master
 ```
+
+### `EC_WEB_ROOT` 是前后端两个包唯一的接缝
+
+后端出一个 `master`，前端出一堆静态文件，**把它们接起来的就是这一个变量**。
+
+```bash
+# 前端的包解到主控机器上，然后指过去
+mkdir -p /opt/edge/web && tar xzf edge-console-*.tar.gz -C /opt/edge/web --strip-components=1
+export EC_WEB_ROOT=/opt/edge/web
+```
+
+留空则主控只跑 API，根路径会回一段说明（说清缺什么、怎么补），
+而不是一个让人去猜的 404 —— **「没部署前端」和「前端崩了」要分得开**。
+
+几件与伺服有关的：
+
+- **控制台是单页应用**，`/nodes`、`/certs`、`/workbench/global:tls` 这些路径
+  在服务端不存在，主控会 fallback 到 `index.html`。
+- **`/api/v1/*` 与 `/ws` 永不 fallback**：一个不存在的 API 路径回 `index.html`，
+  前端会拿一整页 HTML 去 `JSON.parse`，报出来的错跟真正的问题毫无关系。
+- 前端资源用**根绝对路径**（`/assets/…`），所以控制台必须挂在域名根下，
+  不能挂子路径。
+
+> 这一段直到 2026-08-22 才存在，而 `EC_WEB_ROOT` 从第一天起就在配置里
+> ——**它被读进来，而没有任何代码用它**。主控对 `/` 一律回 404，
+> 是前端 agent 在灰度打包时真起了一个主控才发现的。
+>
+> `scripts/unread.py` 当时没抓到它：那个扫描只看 DB 列和 proto 字段，
+> **看不见配置项**。现在补上了。
 
 ### `EC_ADVERTISE` 必须是域名，没有默认值
 

@@ -43,6 +43,8 @@ type nodeResp struct {
 	DNSReason    string  `json:"dns_reason"` // manual | auto_offline | drained
 	DNSActor     *string `json:"dns_actor"`  // 操作人；系统自动摘除时是 null
 	DNSChangedAt *string `json:"dns_changed_at"`
+	// AgentVersion 是节点上跑的 Agent 版本。空串表示这台机器还没接入过。
+	AgentVersion string `json:"agent_version"`
 }
 
 func (s *Server) handleListNodes(c *gin.Context) {
@@ -94,6 +96,7 @@ func (s *Server) handleListNodes(c *gin.Context) {
 			ts := n.DrainedAt.Format(time.RFC3339)
 			item.DrainedAt = &ts
 		}
+		item.AgentVersion = n.AgentVersion
 		item.DNSReason = n.DNSReason
 		if n.DNSActor != "" {
 			// **系统自动摘除时是 null，不是「system」。**

@@ -32,6 +32,21 @@ func newServer(t *testing.T) (*gin.Engine, *store.Store) {
 	return r, st
 }
 
+// newServerWithWeb 与 newServer 一样，但指定控制台静态文件的位置。
+func newServerWithWeb(t *testing.T, webRoot string) (*gin.Engine, *store.Store) {
+	t.Helper()
+	st := testdb.New(t)
+	if err := st.CreateUser(context.Background(), "abiu", "correct-horse"); err != nil {
+		t.Fatalf("建账号: %v", err)
+	}
+	r := api.New(api.Options{
+		Store:      st,
+		SessionTTL: time.Hour,
+		WebRoot:    webRoot,
+	})
+	return r, st
+}
+
 type envelope struct {
 	Code int             `json:"code"`
 	Data json.RawMessage `json:"data"`

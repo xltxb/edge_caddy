@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"log/slog"
-	"net/http"
 	"time"
 
 	"github.com/xltxb/edge_caddy/internal/alert"
@@ -49,6 +48,7 @@ type Server struct {
 	masterAddr       string
 	caPin            string
 	opsBotConfigured bool
+	webRoot          string
 }
 
 type Options struct {
@@ -69,6 +69,12 @@ type Options struct {
 	CAPin       string
 	SessionTTL  time.Duration
 	OpsBotToken string
+	// WebRoot 是控制台静态文件所在的目录（EC_WEB_ROOT）。
+	//
+	// **这是后端包与前端包唯一的接缝**：后端出一个 master，前端出一堆静态
+	// 文件，把它们接起来的就是这一个值。留空则只跑 API，根路径会说清
+	// 缺的是什么——而不是回一个让人去猜的 404。
+	WebRoot string
 
 	// SecureCookie 应当与「控制台跑在 TLS 上」一致。ADR-0013 下默认关闭：
 	// 首版绑内网 HTTP，Secure Cookie 在 http:// 下不会被浏览器存下来。
@@ -104,6 +110,7 @@ func New(o Options) *gin.Engine {
 		masterAddr:       o.MasterAddr,
 		caPin:            o.CAPin,
 		opsBotConfigured: o.OpsBotToken != "",
+		webRoot:          o.WebRoot,
 	}
 
 	v1 := r.Group("/api/v1")
@@ -175,10 +182,10 @@ func New(o Options) *gin.Engine {
 	authed.GET("/deploys/:id", s.handleGetDeploy)
 	authed.POST("/deploys/:id/rollback", audited("回滚配置", s.handleRollback))
 
-	// 端点不存在用 HTTP 404，而不是 CodeNotFound——后者表示**资源**不存在。
+	// 没匹配到任何 API 路由的请求交给控制台：静态文件、或者单页应用的
+	// fallback。API 路径永不 fallback（见 serveWeb）——
+	// 端点不存在仍然是 HTTP 404 而不是 CodeNotFound，后者表示**资源**不存在，
 	// 混在一起前端就分不清「路由写错了」和「这条路由被别人删了」。
-	r.NoRoute(func(c *gin.Context) {
-		c.JSON(http.StatusNotFound, Envelope{Code: CodeOK, Data: nil, Msg: "端点不存在"})
-	})
+	r.NoRoute(s.serveWeb(o.WebRoot))
 	return r
 }

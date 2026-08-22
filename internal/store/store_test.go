@@ -250,3 +250,43 @@ func TestPeekDoesNotConsumeButConsumeDoes(t *testing.T) {
 		t.Errorf("已用过的 Token 查验也该报 ErrTokenUsed，实际 %v", err)
 	}
 }
+
+// Agent 版本每次接入都覆写：升级之后重连，那一刻的版本才是当前值。
+func TestAgentVersionIsOverwrittenOnEachEnroll(t *testing.T) {
+	s := testdb.New(t)
+	ctx := context.Background()
+	if err := s.UpsertNode(ctx, store.NodeSpec{
+		NodeID: "node-a", City: "香港", Vendor: "DMIT", Line: "CN2 GIA",
+		PublicIP: "203.0.113.7",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	read := func() string {
+		t.Helper()
+		nodes, err := s.ListNodes(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return nodes[0].AgentVersion
+	}
+
+	// 没接入过时是空串，不是别的什么占位。
+	if v := read(); v != "" {
+		t.Fatalf("还没接入过，应当是空串，实际 %q", v)
+	}
+	if err := s.SetAgentVersion(ctx, "node-a", "d3da612 (d3da612)"); err != nil {
+		t.Fatal(err)
+	}
+	if v := read(); v != "d3da612 (d3da612)" {
+		t.Fatalf("版本没记上：%q", v)
+	}
+	// **升级之后要变。** 这条是这个字段存在的全部理由——
+	// 一个不会变的版本号跟硬编码的 "0.1.0" 没有区别。
+	if err := s.SetAgentVersion(ctx, "node-a", "v0.2.0 (abc1234)"); err != nil {
+		t.Fatal(err)
+	}
+	if v := read(); v != "v0.2.0 (abc1234)" {
+		t.Fatalf("升级之后版本应当跟着变，实际 %q", v)
+	}
+}

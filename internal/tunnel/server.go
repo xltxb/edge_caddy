@@ -253,6 +253,11 @@ func (s *Server) Channel(stream edgev1.EdgeTunnel_ChannelServer) error {
 	defer s.unregister(nodeID, sess)
 
 	s.log.Info("节点接入", "node_id", nodeID, "agent_version", hello.GetVersion())
+	// 版本要落库，不能只进日志 —— 灰度时人是在控制台上问
+	// 「我推上去的那一版到底上没上」，而不是去翻主控的日志。
+	if err := s.opt.Store.SetAgentVersion(ctx, nodeID, hello.GetVersion()); err != nil {
+		s.log.Error("记录 Agent 版本失败", "node_id", nodeID, "err", err)
+	}
 	if _, err := s.opt.Store.InsertEvent(ctx, nodeID, "ok", "节点已接入"); err != nil {
 		s.log.Error("写接入事件失败", "err", err)
 	}

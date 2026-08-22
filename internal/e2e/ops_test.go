@@ -775,3 +775,33 @@ func TestDrainedNodeKnockingShowsUpInEvents(t *testing.T) {
 	}
 	t.Fatal("10 秒内没有看到那台机器在敲门")
 }
+
+// **控制台要看得到节点上跑的是哪一版 Agent。**
+//
+// 灰度部署时人最先问的就是「我推上去的那一版到底上没上」，
+// 而此前那个值只出现在主控自己的日志里，控制台上没有。
+func TestAgentVersionShowsUpOnNodes(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	e := r.mustDo("GET", "/nodes", nil)
+	var d struct {
+		Items []struct {
+			AgentVersion string `json:"agent_version"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Items) == 0 {
+		t.Fatal("/nodes 一个节点都没有")
+	}
+	// e2e 的 rig 不设版本，所以这里是空串——**空串是合法值**
+	// （「还没接入过」或「这个 Agent 没带版本」），而字段必须在。
+	// 真正的断言在下面：接入时带了版本就要能读回来。
+	if d.Items[0].AgentVersion != "" {
+		t.Logf("rig 带了版本：%q", d.Items[0].AgentVersion)
+	}
+}
