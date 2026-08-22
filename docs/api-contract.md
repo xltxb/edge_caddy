@@ -47,6 +47,19 @@
 **未实现的端点不注册，也不给返回空数据的桩。** 桩会被读成「还没有节点」，
 而 404 说得出「这个端点还没做」——两者的处置完全不同。
 
+### 0.2.1 未知字段一律拒绝
+
+**请求体里出现契约没有的字段，返回 `1001` 并点名那个字段。**
+
+静默忽略的话，一个写错的 key 会得到 `code: 0`——**请求成功了，
+而什么也没存进去**。前端 agent 真撞上过：发了顶层 `dns_credential`
+而不是 `dns_provider.credential`，返回成功、界面提示「设置已保存」，
+而 `configured` 一直是 `false`。
+
+**这是「没生效」那一族里最坏的一种：成功的假象。**
+报错会让人再试，假象让人走开——他会去查别的地方，
+因为「保存那一步明明成功了」。
+
 ### 0.3 `code` 取值
 
 | code | 含义 | 典型场景 |
@@ -1284,15 +1297,53 @@ cursor 分页（§0.5），可选 `?operator=abiu`。倒序。
   "auto_drop_dns": true,
   "warn_cpu_pct": 80,
   "warn_mem_pct": 90,
-  "dns_provider": { "kind": "cloudflare", "credential_mode": "api_token", "configured": true },
+  "dns_provider": {
+    "kind": "cloudflare",          // dnspod | cloudflare | ""（未配置）
+    "domain": "example.com",       // 根域名
+    "sub": "cdn",                  // 子域前缀，@ 表示根
+    "credential_mode": "api_token",// 仅 cloudflare：api_token | global_key
+    "configured": true             // 凭证在不在，永远没有明文
+  },
+  "master_endpoint_readonly": true,
   "ops_bot_token_configured": true
 }
 ```
 
+**`PUT` 时 `dns_provider` 的字段**（两家不同，界面按 `kind` 切换）：
+
+| 字段 | dnspod | cloudflare |
+|---|---|---|
+| `kind` | ✓ | ✓ |
+| `domain` / `sub` | ✓ | ✓ |
+| `credential` | `ID,Token` | API Token 或 Global Key |
+| `credential_mode` | — | `api_token` \| `global_key` |
+| `zone_id` | — | ✓ |
+| `email` | — | 仅 `global_key` |
+| `account_id` | — | 可选 |
+
+**不带 `dns_provider` = 不动它；带一个空对象会把已配的清掉。**
+
+> 这张表此前不在契约里——示例只有 `kind` / `credential_mode` / `configured`，
+> 而主控实际还回 `domain` / `sub`、`PUT` 还接受 `zone_id` / `email` / `account_id`。
+> 前端 agent 是去读 `internal/api/settings.go` 才拿到准确的 key 的。
+> **一份要靠读实现才能用的契约，在那一段上不成立。**
+
 - `warn_cpu_pct` / `warn_mem_pct` 决定一台节点什么时候进 `warn`（默认 80 / 90）。
   没有阈值的话 `warn` 永远不会被写入，「异常 N 个」那个桶就恒为 0——
   **一个永远是零的计数比没有这个计数更糟**，它会让人以为「系统看过了，没问题」。
-- `master_endpoint` **必须是域名不是 IP**，后端校验，违反返回 `code: 1001`。
+- **`master_endpoint` 是只读的**（`master_endpoint_readonly: true`），
+  `PUT` 带它一律返回 `1002`。
+
+  它的值来自启动配置 `EC_ADVERTISE`，**运行时改不了**：这个地址进了主控
+  服务端证书的 SAN，而证书是启动时签的——改设置改不了证书，
+  那时节点会连上一个证书里没有它的地址，握手直接失败。
+
+  「必须是域名不是 IP」那条规则没有消失，它在**启动时**校验（填 IP 主控拒绝启动）。
+
+  > 此前 `PUT` 会把新值存进库，而**没有任何东西读那一列**（拼安装命令用的是
+  > `EC_ADVERTISE`）。人改完看到「已保存」，节点的连接地址一个字没变。
+  > 而 `GET` 回的是库里那一列——灰度上它一直是空的，于是设置页显示空白，
+  > 而主控明明知道自己公布的是什么。
 - 「节点最长 N 秒后被摘除」= `heartbeat_interval_s × offline_threshold_count`，
   由前端算出来实时显示（这是设置页的联动提示，不需要后端给）。
 - **凭证只写入不回显**。`dns_provider` 里永远没有明文，只有 `configured: true/false`

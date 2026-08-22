@@ -218,13 +218,46 @@ func TestAlertCredentialsAreNeverEchoed(t *testing.T) {
 }
 
 // 主控接入强制域名而非 IP（PRD §5）。
-func TestMasterEndpointMustBeDomainNotIP(t *testing.T) {
+// **master_endpoint 在运行时改不了，所以拒绝而不是假装存下。**
+//
+// 这一条此前断言「填域名会成功」——而那个成功是假的：新值存进了库，
+// 而**没有任何东西读那一列**（拼安装命令用的是 EC_ADVERTISE）。
+// 人改完看到「已保存」，节点的连接地址一个字没变。
+//
+// 这不是把约束改严了，是**发现了旧行为的一个代价**：那个地址进了主控
+// 服务端证书的 SAN，而证书是启动时签的。运行时改它改不了证书——
+// 节点会连上一个证书里没有它的地址，握手直接失败。
+//
+// 「必须是域名不是 IP」那条规则没有消失，它移到了启动配置
+// （config.ValidateAdvertise，填 IP 主控拒绝启动）。
+func TestMasterEndpointIsReadOnlyAtRuntime(t *testing.T) {
 	r := newRig(t)
-	_, e := r.do("PUT", "/settings", map[string]any{"master_endpoint": "203.0.113.7:9000"})
+
+	// 域名也拒绝 —— 拒的不是「值不对」，是「这件事运行时做不了」。
+	_, e := r.do("PUT", "/settings", map[string]any{"master_endpoint": "ec.internal:9000"})
 	if e.Code != api.CodeValidation {
-		t.Fatalf("code = %d，想要 %d", e.Code, api.CodeValidation)
+		t.Fatalf("修改 master_endpoint 应当被拒，实际 code=%d msg=%q", e.Code, e.Msg)
 	}
-	r.mustDo("PUT", "/settings", map[string]any{"master_endpoint": "ec.internal:9000"})
+
+	// **理由要指向能解决问题的地方。** 人拿到「不能改」而不知道去哪儿改，
+	// 会以为这是个 bug；说了 EC_ADVERTISE 他就知道该动哪儿。
+	e2 := r.mustDo("GET", "/settings", nil)
+	var d struct {
+		MasterEndpoint string `json:"master_endpoint"`
+		ReadOnly       bool   `json:"master_endpoint_readonly"`
+	}
+	if err := json.Unmarshal(e2.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	// **GET 要回主控真正在用的那个值**，不是库里那一列（它一直是空的）。
+	// 设置页上显示空白，而主控明明知道自己公布的是什么——
+	// 那正是前端撞上的：一个「还没配过」被渲染成了「你填错了」。
+	if d.MasterEndpoint == "" {
+		t.Error("应当回主控真正公布的地址，而不是库里那一列")
+	}
+	if !d.ReadOnly {
+		t.Error("要告诉前端这一栏是只读的，否则它只能靠猜")
+	}
 }
 
 // 审计 cursor 分页，且能按操作人过滤。

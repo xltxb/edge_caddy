@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net"
 
 	"github.com/gin-gonic/gin"
@@ -30,12 +31,20 @@ func (s *Server) handleGetSettings(c *gin.Context) {
 	}
 
 	OK(c, gin.H{
-		"master_endpoint":         sys.MasterEndpoint,
-		"heartbeat_interval_s":    sys.HeartbeatInterval,
-		"offline_threshold_count": sys.OfflineThreshold,
-		"auto_drop_dns":           sys.AutoDropDNS,
-		"warn_cpu_pct":            sys.WarnCPUPct,
-		"warn_mem_pct":            sys.WarnMemPct,
+		// **回主控真正在用的那个值，不是库里那一列。**
+		//
+		// 库里那一列存得下、读得出，而**没有任何东西用它**：拼安装命令用的是
+		// EC_ADVERTISE（o.MasterAddr）。人在设置页改它，什么也不会发生
+		// ——而那一栏的标签写着「Agent 连接地址」，看起来正是控制这件事的。
+		//
+		// 「有人读」和「读对了」是两件事，而 scripts/unread.py 只答得出前一件。
+		"master_endpoint":          s.masterAddr,
+		"master_endpoint_readonly": true,
+		"heartbeat_interval_s":     sys.HeartbeatInterval,
+		"offline_threshold_count":  sys.OfflineThreshold,
+		"auto_drop_dns":            sys.AutoDropDNS,
+		"warn_cpu_pct":             sys.WarnCPUPct,
+		"warn_mem_pct":             sys.WarnMemPct,
 		"dns_provider": gin.H{
 			"kind":            dns.Kind,
 			"domain":          dns.Domain,
@@ -69,8 +78,21 @@ type systemReq struct {
 
 func (s *Server) handlePutSettings(c *gin.Context) {
 	var req systemReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		Fail(c, CodeBadParam, "请求格式错误")
+	// **严格绑定：拒绝契约里没有的字段。**
+	//
+	// 静默忽略的话，一个写错的 key 会得到 code 0 而什么也没存
+	// —— 前端就是这么撞上的（发了顶层 dns_credential 而不是
+	// dns_provider.credential，返回成功、configured 一直 false）。
+	if err := bindStrict(c, &req); err != nil {
+		// **把 bindStrict 的话原样带出去。**
+		//
+		// 这里原先回一句固定的「请求格式错误」——而 bindStrict 特意点了
+		// 那个写错的字段名。一个只说「格式错误」的响应，会让人去检查 JSON
+		// 的括号，而问题是他把嵌套的 key 写成了顶层。
+		//
+		// **做了一个诊断，然后在调用点把它扔掉**——这个仓库里出现过好几次，
+		// 而这次是我在写它的同一段工作里犯的。
+		Fail(c, CodeBadParam, err.Error())
 		return
 	}
 
@@ -83,15 +105,21 @@ func (s *Server) handlePutSettings(c *gin.Context) {
 	}
 
 	if req.MasterEndpoint != nil {
-		// PRD §5 要求主控接入强制域名而非 IP：IP 一旦变更，全部已接入的节点
-		// 都要重新接入，而域名换个 A 记录就行。
-		if err := validateEndpointIsDomain(*req.MasterEndpoint); err != nil {
-			FailValidation(c, "系统设置未通过校验", []FieldError{
-				{ResKey: "settings", Field: "master_endpoint", Reason: err.Error()},
-			})
-			return
-		}
-		cur.MasterEndpoint = *req.MasterEndpoint
+		// **它在运行时改不了，所以拒绝而不是假装存下。**
+		//
+		// 这个地址进了**主控服务端证书的 SAN**，而那张证书是启动时签的
+		// （tunnel.New 的 Advertise）。改设置改不了证书——那时节点会连上一个
+		// 证书里没有它的地址，握手直接失败。
+		//
+		// 此前这里会把新值存进库，而库里那一列没有任何东西读
+		// ——人改完看到「已保存」，节点的连接地址一个字没变。
+		FailValidation(c, "系统设置未通过校验", []FieldError{
+			{ResKey: "settings", Field: "master_endpoint", Reason: fmt.Sprintf(
+				"这个地址由启动配置 EC_ADVERTISE 决定（当前 %q），运行时改不了："+
+					"它进了主控服务端证书的 SAN，而证书是启动时签的。"+
+					"要改就改环境变量再重启主控。", s.masterAddr)},
+		})
+		return
 	}
 	if req.HeartbeatSeconds != nil {
 		if *req.HeartbeatSeconds < 1 || *req.HeartbeatSeconds > 60 {

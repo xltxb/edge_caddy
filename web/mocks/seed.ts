@@ -332,7 +332,7 @@ export const settings: SettingsWire & Record<string, unknown> = {
   offline_threshold_count: 3,
   auto_drop_dns: true,
   // 凭证只写入不回显：这里永远没有明文，只有「配没配」
-  dns_provider: { kind: 'cloudflare', credential_mode: 'api_token', configured: true },
+  dns_provider: { kind: 'cloudflare', domain: 'example.com', sub: '', credential_mode: 'api_token', configured: true },
   ops_bot_token_configured: true,
 }
 

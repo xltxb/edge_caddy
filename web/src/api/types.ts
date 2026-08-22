@@ -637,11 +637,48 @@ export interface DnsWeightsWire {
 
 export type CredentialMode = 'api_token' | 'global_key'
 
+/**
+ * `GET /settings` 回的那一份。**凭证不在里面**，只有「配没配」。
+ *
+ * 契约 §11 的示例只列了 kind / credential_mode / configured，而主控实际还回
+ * `domain` 与 `sub` —— 那两个是**配置这件事本身需要的**（要往哪个 zone 写记录），
+ * 不带它们的话界面配不出一个完整的服务商。
+ */
 export interface DnsProviderWire {
   kind: string
-  credential_mode: CredentialMode
+  /** 解析域名，例如 `example.com`。空串 = 还没配过。 */
+  domain: string
+  /** 子域前缀，可空 —— 记录写在 `<sub>.<domain>` 上。 */
+  sub: string
+  credential_mode: CredentialMode | ''
   /** 凭证只写入不回显 —— 这里永远没有明文，只有「配没配」。 */
   configured: boolean
+}
+
+/**
+ * `PUT /settings` 的 `dns_provider`。**字段嵌在这个对象里，不在顶层。**
+ *
+ * 我此前把凭证发成了顶层的 `dns_credential` —— 后端不认识那个 key，
+ * **静默忽略并回 code 0**，于是界面弹「设置已保存」而什么都没存进去。
+ * 一个成功的假象比一个报错难查得多：报错会让人再试，假象让人走开。
+ *
+ * 两家服务商需要的字段不一样，界面据此切换（契约 §11）：
+ *   dnspod      kind + domain + sub + credential（形如 `ID,Token`）
+ *   cloudflare  上面这些 + credential_mode，再加
+ *               api_token  → zone_id
+ *               global_key → email + zone_id（account_id 可选）
+ *
+ * `credential` 留空 = 保持不变，带了 = 替换。
+ */
+export interface DnsProviderPatch {
+  kind?: string
+  domain?: string
+  sub?: string
+  credential_mode?: CredentialMode
+  zone_id?: string
+  account_id?: string
+  email?: string
+  credential?: string
 }
 
 export interface SettingsWire {

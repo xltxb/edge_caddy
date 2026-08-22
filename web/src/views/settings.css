@@ -123,3 +123,23 @@
   color: var(--text-on-accent);
   font-weight: var(--weight-semibold);
 }
+
+.sel {
+  cursor: pointer;
+}
+
+/*
+ * 一块设置的引导语。目前只有 DNS 服务商那块用它 —— 那一块没配的时候，
+ * 光看几个空输入框看不出「这件事卡着三条链路」。
+ */
+.group-lead {
+  margin: 0 0 var(--space-3);
+  padding: 8px 10px;
+  border-left: 2px solid var(--warning-text);
+  background: var(--surface-sunken, var(--bg-subtle));
+  font-size: var(--fs-2xs);
+  line-height: 1.7;
+}
+.group-lead.warn {
+  color: var(--warning-text);
+}

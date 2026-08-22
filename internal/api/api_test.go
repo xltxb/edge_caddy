@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/xltxb/edge_caddy/internal/api"
+	"github.com/xltxb/edge_caddy/internal/secret"
 	"github.com/xltxb/edge_caddy/internal/store"
 	"github.com/xltxb/edge_caddy/internal/testdb"
 )
@@ -24,10 +25,17 @@ func newServer(t *testing.T) (*gin.Engine, *store.Store) {
 	if err := st.CreateUser(context.Background(), "abiu", "correct-horse"); err != nil {
 		t.Fatalf("建账号: %v", err)
 	}
+	// Sealer 装上：凭证类设置（DNS 服务商、告警 webhook）没有它存不进去，
+	// 而「存不进去」在测试里会表现成一个跟被测行为无关的 3001。
+	sealer, err := secret.New([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	r := api.New(api.Options{
 		Store:       st,
 		SessionTTL:  time.Hour,
 		OpsBotToken: opsBotToken,
+		Sealer:      sealer,
 	})
 	return r, st
 }
