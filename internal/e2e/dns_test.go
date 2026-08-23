@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"github.com/xltxb/edge_caddy/internal/store"
 	"github.com/xltxb/edge_caddy/internal/testdb"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -755,5 +756,52 @@ func TestSavingWeightsSaysWhetherItPushed(t *testing.T) {
 		t.Errorf("成功的说明里没有实际写入的名字（%q）—— "+
 			"domain 与 sub 拼重复时记录会建到一个人不会去看的名字下，"+
 			"而每一层都是成功的", d.Sync.Detail)
+	}
+}
+
+// TestRefusesDNSHostnameThatCollidesWithTheConsole 钉的是**不可逆的那一步要拦在前面**。
+//
+// 解析要管的域名如果就是主控自己对外的那个域名，第一次同步会把控制台的
+// A 记录换成边缘节点的 IP —— 而边缘节点上跑的是 Caddy，不是主控。
+// **控制台当场打不开。**
+//
+// 而这件事最坏的地方是它不可逆：**改回来要用控制台，而控制台已经没了。**
+// 剩下的路只有进服务商后台手改，或者直接改数据库。
+//
+// 所以这里硬拒、不给 force：一个「按下去就再也按不了第二次」的开关，
+// 逃生口给了也没用 —— 人是在它已经生效之后才知道自己需要它的。
+func TestRefusesDNSHostnameThatCollidesWithTheConsole(t *testing.T) {
+	r := newRig(t)
+
+	// rig 的 MasterAddr 是 127.0.0.1:port，取它的 host 当作控制台域名。
+	host, _, _ := net.SplitHostPort(r.tunnelAddr)
+
+	_, e := r.do("PUT", "/settings", map[string]any{
+		"dns_provider": map[string]any{
+			"kind": "dnspod", "domain": host, "sub": "",
+			"credential": "fake-token",
+		},
+	})
+	if e.Code != api.CodeValidation {
+		t.Fatalf("解析域名撞上控制台域名时应当以 1002 拒绝，实际 code=%d msg=%q",
+			e.Code, e.Msg)
+	}
+	if !strings.Contains(string(e.Data), "dns_provider.sub") {
+		t.Errorf("要点名是哪个字段：%s", e.Data)
+	}
+	if !strings.Contains(string(e.Data), "控制台") {
+		t.Errorf("要说清后果 —— 只说「不允许」的话人不知道为什么：%s", e.Data)
+	}
+
+	// **反过来：换个名字就该放行。** 没有这一条，一个「无条件拒绝」的实现
+	// 也能让上面全绿，而那会让任何人都配不了 DNS。
+	ok := r.mustDo("PUT", "/settings", map[string]any{
+		"dns_provider": map[string]any{
+			"kind": "dnspod", "domain": host, "sub": "edge",
+			"credential": "fake-token",
+		},
+	})
+	if ok.Code != api.CodeOK {
+		t.Fatalf("换了子域名之后不该再拒：%v", ok)
 	}
 }

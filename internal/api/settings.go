@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/xltxb/edge_caddy/internal/config"
 	"github.com/xltxb/edge_caddy/internal/dnsctl"
 	"github.com/xltxb/edge_caddy/internal/dnsops"
 	"github.com/xltxb/edge_caddy/internal/store"
@@ -251,6 +252,29 @@ func (s *Server) handlePutSettings(c *gin.Context) {
 			FailValidation(c, "DNS 服务商配置不完整", issues)
 			return
 		}
+		// **解析要管的域名，不能是主控自己对外的那个域名。**
+		//
+		// 撞上的话，第一次同步就会把控制台的 A 记录换成边缘节点的 IP，
+		// 而边缘节点上跑的是 Caddy、不是主控——**控制台当场打不开**。
+		//
+		// 而这件事最坏的地方是它不可逆：**改回来要用控制台，而控制台已经没了**。
+		// 剩下的路只有 ssh 进服务商后台手改，或者直接改数据库。
+		//
+		// 所以这里硬拒，不给 force：一个「按下去就再也按不了第二次」的开关，
+		// 逃生口给了也没用——人是在它已经生效之后才知道自己需要它的。
+		if h := dnsops.HostnameOf(dns); h != "" && s.masterAddr != "" {
+			if strings.EqualFold(h, config.AdvertiseHost(s.masterAddr)) {
+				FailValidation(c, "系统设置未通过校验", []FieldError{
+					{ResKey: "settings", Field: "dns_provider.sub",
+						Reason: "解析要管的域名（" + h + "）和控制台自己的域名是同一个。" +
+							"同步会把这个名字的记录换成边缘节点的 IP，控制台当场打不开，" +
+							"而改回来要用控制台 —— 给边缘轮换换一个名字，比如 edge." +
+							config.AdvertiseHost(s.masterAddr)},
+				})
+				return
+			}
+		}
+
 		if err := s.store.PutDNSProvider(ctx, dns, s.sealer); err != nil {
 			s.log.Error("保存 DNS 服务商设置失败", "err", err)
 			Fail(c, CodeDownstream, "保存失败")

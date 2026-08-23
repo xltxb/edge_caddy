@@ -100,12 +100,22 @@ func (o *Orchestrator) Provider(ctx context.Context) (dnsctl.Provider, store.DNS
 	}
 }
 
-func hostname(cfg store.DNSProviderSettings) string {
+// HostnameOf 是 sub + domain 的拼法。**导出是为了让它只有一份。**
+//
+// 校验那一侧要用它判「解析域名会不会撞上控制台自己的域名」，
+// 而那时配置还没落库（Orchestrator.Hostname 读的是库）。
+// 抄一份过去的话，两边迟早分叉，而分叉的症状是那道门放行了一个真会撞的配置。
+func HostnameOf(cfg store.DNSProviderSettings) string {
+	if cfg.Domain == "" {
+		return ""
+	}
 	if cfg.SubName == "" || cfg.SubName == "@" {
 		return cfg.Domain
 	}
 	return cfg.SubName + "." + cfg.Domain
 }
+
+func hostname(cfg store.DNSProviderSettings) string { return HostnameOf(cfg) }
 
 // Hostname 是解析记录**实际会写到的那个名字**（sub + domain）。
 //
