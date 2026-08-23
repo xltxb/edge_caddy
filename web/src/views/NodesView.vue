@@ -342,6 +342,11 @@ const LEVEL_COLOR: Record<string, string> = {
                     灰度上真发生过，当时唯一的痕迹在 Agent 日志里，要人主动去翻。
 
                     0 不显示：它是常态，占着地方会稀释掉真正要看的那一行。
+
+                    **措辞是「主控记录到 N 次隧道建立」，不是「断连 N 次」**：
+                    右边那栏就是 Agent 日志，而两个来源结构上对不齐 ——
+                    一个被 kill 的进程不会记录自己的死亡。写成「断连」会让人
+                    拿这两个数对账，而它们本来就不该相等（契约 §4）。
                   -->
                   <span v-if="reconnectNote(n)" class="warn">· {{ reconnectNote(n) }}</span>
                 </dd>
