@@ -22,6 +22,7 @@
 
 import { setupServer } from 'msw/node'
 import { createServer as createViteServer } from 'vite'
+import { readFileSync } from 'node:fs'
 
 const arg = (k, d) => {
   const i = process.argv.indexOf(`--${k}`)
@@ -232,6 +233,42 @@ const CASES = [
   },
 ]
 
+/*
+ * **写端点的覆盖账：可以不比，但必须说出为什么。**
+ *
+ * `PUT /alerts` 带着和设置页一模一样的白屏活了一整轮，原因不是它难，是这张
+ * 用例表当时只列了出事的那一个 —— **而「没覆盖」和「覆盖了没问题」在输出里
+ * 长得一模一样**。
+ *
+ * 所以：`request-shapes.json` 里的每个写端点，要么在 CASES 里，要么在这里
+ * 写明理由。两样都没有就红 —— 新加的端点默认落进「两样都没有」，逼我当场决定。
+ *
+ * 这不是「先记着以后做」的清单。多数理由是**做不到**，不是没排上：一个检查器
+ * 不该在别人正用着的环境里下线节点、真发一次配置、或者删掉一条规则。
+ */
+const NOT_COMPARED = {
+  'POST /auth/login': '每跑一次都要登录，本来就在自检里走过了',
+  'POST /auth/logout': '跑完就没会话了，后面的用例全废',
+  'POST /nodes/:id/push': '真给节点推一次配置',
+  'POST /nodes/:id/rejoin': '改节点状态',
+  'POST /nodes/:id/probe': '会真去连那台机器，慢且结果取决于它在不在',
+  'POST /nodes/:id/dns': '改解析，会影响真实流量分配',
+  'POST /nodes/:id/drain': '下线一台节点',
+  'POST /nodes/token': '签发一次性接入 token，留下一条可用凭证',
+  'POST /routes': '会真建一条路由，删不掉（前端没有删路由的路径）',
+  'PUT /rules/:id': '要一个真规则 id，而且会动共享密钥',
+  'DELETE /rules/:id': '删东西',
+  'PUT /drafts/:key': '草稿的字段名按资源种类不同，没有固定形状可比',
+  'DELETE /drafts': '会清掉别人正在编辑的草稿',
+  'POST /deploys/preview': '要真实的 res_keys，而且预览结果取决于当前草稿',
+  'POST /deploys': '真发一次配置到所有节点',
+  'POST /deploys/:cfg/rollback': '真回滚',
+  'PUT /dns/weights': '改解析权重，会影响真实流量分配',
+  'POST /certs/:domain/renew': '真去 ACME 签一次',
+  'POST /certs/renew-check': '会触发一轮续期检查',
+  'POST /alerts/test': '真往 Lark 群里发一张卡片',
+}
+
 const rows = []
 for (const c of CASES) {
   let m, r
@@ -266,6 +303,19 @@ for (const c of CASES) {
     realCode: r.body?.code,
   })
 }
+
+/* ── 覆盖账 ─────────────────────────────────────────────────────────── */
+
+const shapes = JSON.parse(readFileSync(new URL('../request-shapes.json', import.meta.url), 'utf8'))
+const norm = (k) => k.replace(/:[a-zA-Z_][a-zA-Z0-9_]*/g, ':x')
+const comparedWrites = new Set(
+  CASES.filter((c) => c.init?.method).map((c) => norm(`${c.init.method} ${c.path}`)),
+)
+const excused = new Set(Object.keys(NOT_COMPARED).map(norm))
+
+const unaccounted = Object.keys(shapes.endpoints).filter(
+  (k) => !comparedWrites.has(norm(k)) && !excused.has(norm(k)),
+)
 
 /* ── 报告 ──────────────────────────────────────────────────────────── */
 
@@ -304,6 +354,23 @@ for (const row of rows) {
 }
 
 await vite.close()
+
+console.log('')
+console.log(
+  `写端点：比了 ${comparedWrites.size} 个，${excused.size} 个写明了不比的理由` +
+    `（跑 \`node scripts/check-shapes.mjs --why\` 看理由）。`,
+)
+if (process.argv.includes('--why')) {
+  for (const [k, why] of Object.entries(NOT_COMPARED)) console.log(`    ${k}\n        ${why}`)
+}
+if (unaccounted.length) {
+  bad += unaccounted.length
+  console.log('')
+  console.log('✗ 这些写端点既没比、也没写明为什么不比：')
+  for (const k of unaccounted) console.log(`    ${k}`)
+  console.log('  加进 CASES，或者在 NOT_COMPARED 里写一句理由。')
+  console.log('  **两样都没有的时候，它在输出里跟「比过了没问题」长得一样。**')
+}
 
 console.log('')
 if (bad) {
