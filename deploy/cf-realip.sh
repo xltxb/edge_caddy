@@ -43,7 +43,12 @@ v6="$(fetch https://www.cloudflare.com/ips-v6)"
 # 校验不过就不写，跟 packcheck.py 那条一样：
 # **一份没通过校验的产物，是在说「别用它」。**
 tmp="$(mktemp)"
-trap 'rm -f "$tmp"' EXIT
+# 双引号：路径在**设置 trap 的这一刻**就展开进去。
+# 这里 $tmp 是全局的，单引号其实也对——写成这样是为了让两个脚本
+# 只有一种写法。edge-node.sh 里那个是 local 的，单引号会在退出时
+# 报 unbound variable，而那句话出现在**所有检查都 ✓ 之后**，
+# 还会把退出码变成非零。**同一种形式，就不需要每次去想作用域。**
+trap "rm -f '$tmp'" EXIT
 n=0
 while IFS= read -r cidr; do
   [ -n "$cidr" ] || continue

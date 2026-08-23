@@ -175,5 +175,29 @@ hasnt "$out" "/api" "路径不该混进主机名"
 out="$( (preflight_master "https://cdn.example.com") 2>&1 )"
 has "$out" "只能是 wss" "https:// 被明确拒绝，而不是悄悄当成 wss"
 
+printf '\nverify 自己不能崩\n'
+#
+# 灰度上真发生过：六条检查全部 ✓ 打印完，然后
+#
+#   ./edge-node.sh: line 1: ss_out: unbound variable
+#
+# 成因是 `trap 'rm -f "$ss_out"' EXIT` —— **单引号让 $ss_out 留到退出那一刻
+# 才求值**，而它是 local 的，函数一返回就出了作用域。
+#
+# 后果不只是难看：**退出码跟着变成非零**，任何按 verify 的结果判断的地方
+# 都会把一台完全健康的节点当成失败。
+#
+# 这条测试在开发机上跑，那儿没有 systemctl 也没有 ss，所以 do_verify 的
+# 每一项都会判失败 —— **无所谓**。它验的不是那些项的结论，
+# 是「这个函数从头跑到尾、退出时不炸」。
+out="$( (do_verify) 2>&1 )"
+hasnt "$out" "unbound variable" "verify 跑完不留 unbound variable"
+# 原先这里还有一条 `hasnt "$out" "line 1:"`。删了：macOS 的 bash 报的是
+# `bash: ss_out: unbound variable`，不带 "line 1:" —— **那条断言在这台机器上
+# 永远不会红**。一条不会红的断言不是多一层保障，是伪装成覆盖的噪音。
+# 反向：确认它**真的跑到了最后**。没有这一条，上面两条在
+# 「do_verify 第一行就返回」时也全绿 —— 那时它当然不会有 unbound variable。
+has "$out" "没有**查" "verify 跑到了最后那段说明（否则上面两条是空转）"
+
 printf '\n──────────\n通过 %d，失败 %d\n\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

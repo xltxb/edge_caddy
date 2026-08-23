@@ -366,7 +366,18 @@ do_install() {
 # 没查过的报告，比没有这份报告更糟——它会让人停止怀疑。
 do_verify() {
   local rc=0 ss_out
-  ss_out="$(mktemp)"; trap 'rm -f "$ss_out"' EXIT
+  ss_out="$(mktemp)"
+  # **单引号会让 $ss_out 留到退出那一刻才求值，而那时它早出了作用域。**
+  #
+  # 它是 local 的，函数一返回就没了；EXIT trap 在脚本退出时才跑，
+  # 于是 set -u 报 `ss_out: unbound variable` —— 而这句话出现在
+  # **六条检查全部 ✓ 之后**，退出码也跟着变成非零。
+  #
+  # 后果不只是难看：任何按 verify 的退出码判断的地方，
+  # 都会把一台完全健康的节点当成失败。
+  #
+  # 双引号在这里是承重的：路径在**设置 trap 的这一刻**就展开进去了。
+  trap "rm -f '$ss_out'" EXIT
   if command -v ss >/dev/null 2>&1; then
     ss -ltn > "$ss_out" 2>/dev/null || true
   else
