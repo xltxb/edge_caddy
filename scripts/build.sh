@@ -50,9 +50,38 @@ for arch in amd64 arm64; do
   cp deploy/edge-node.sh "$d/"
   cp deploy/README.md "$d/部署说明.md"
 
-  ( cd "$out" && tar czf "edge-controller-${version}-linux-${arch}.tar.gz" "linux-$arch" )
+  # **属主归零，不是只归模式。**
+  #
+  # 归档里每个条目都带着打包机器的 uid/gid。以 root 用 GNU tar 解包时，
+  # 它会把**属主一起恢复**——于是一台 macOS 的 UID 501 / 组 staff
+  # 会被印到目标机器上，而那台机器上根本没有 501 这个用户。
+  #
+  # 灰度上真实发生过（是前端那个包，形状完全一样）：`/opt` 变成
+  # `drwx------ 501 staff`，**整台机器上任何非 root 用户都进不了 /opt**。
+  #
+  # 我第一次看自己的包时只看了顶层是不是 `./`，看到是 `linux-amd64/`
+  # 就收手了——**没看属主那一列**。同形状的另一个不会自己浮出来，
+  # 哪怕别人刚把机制原原本本讲给你听。
+  #
+  # 归零是「做不到那件事」，解包后 chown 是「记得做」。
+  # 而 --uname/--gname 也要给：GNU tar 优先按**名字**解析，
+  # 只归零数字 uid 的话，目标机器上若恰好有个叫 abiu 的用户就又落到他头上。
+  ( cd "$out" && tar czf "edge-controller-${version}-linux-${arch}.tar.gz" \
+      --uid 0 --gid 0 --uname root --gname root \
+      "linux-$arch" )
   rm -rf "$d"
 done
+
+# **校验不过就不写校验和。** 一个没有校验和的包，是在说「别发它」。
+#
+# 前端 agent 的说法值得照抄：把「这次记得检查」换成「不检查就没有可发的东西」。
+echo "检查包对目标机器有没有意见："
+if ! python3 scripts/packcheck.py "$out"/edge-controller-*.tar.gz; then
+  echo
+  echo "包有问题，没有写 SHA256SUMS —— 别发它。" >&2
+  exit 1
+fi
+echo
 
 # 校验和也只算自己的：前端的包有它自己的 SHA256SUMS.web。
 ( cd "$out" && shasum -a 256 ./edge-controller-*.tar.gz > SHA256SUMS )

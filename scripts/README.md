@@ -12,6 +12,7 @@
 | `python3 scripts/comments.py` | 三件：注释**首句在讲已经不成立的事**吗；陈述外部行为的理由**挂在会通知你的东西上**吗；**这份索引还准吗** | 写完注释之后、加删脚本之后 |
 | `python3 scripts/humantext.py` | 面向人的字符串里，有没有**渲染不出来的标记** | 写完 `msg` / `reason` 之后 |
 | `bash scripts/build.sh [版本号]` | 打后端的包（主控 + Agent，交叉编译 Linux amd64/arm64） | 要部署的时候 |
+| `python3 scripts/packcheck.py <包>` | 这个包解到目标机器上，**会不会弄坏它落脚的那个目录** | `build.sh` 自动跑，不过就不写校验和 |
 | `bash deploy/edge-node_test.sh` | 部署脚本的那些承重约束还在吗 | 改了 `deploy/edge-node.sh` 之后 |
 
 ## 为什么不是一条 `make check`
@@ -28,7 +29,8 @@
 **先证明自己不瞎。** 每个脚本都有装置自检：`gotest.py` 在「一条测试都没跑」
 时非零退出（编译失败、名字打错、全被 skip 都长成「0 失败」）；
 `unread.py` 读不到十万字节 Go 源码就报错；`comments.py` 找不到二十个文件就报错；
-`humantext.py` 扫不到 20 个文件或 200 个字符串就报错。
+`humantext.py` 扫不到 20 个文件或 200 个字符串就报错；
+`packcheck.py` 遇到少于 3 个条目的归档直接判装置坏了（空归档会让每一条都平静通过）。
 
 > 一次什么也没找到的扫描，要先证明它能找到什么。
 
