@@ -256,6 +256,8 @@ const NOT_COMPARED = {
   'POST /nodes/:id/drain': '下线一台节点',
   'POST /nodes/token': '签发一次性接入 token，留下一条可用凭证',
   'POST /routes': '会真建一条路由，删不掉（前端没有删路由的路径）',
+  'PUT /nodes/:id': '会真改一台节点的元数据；改 public_ip 还会立刻把解析推到服务商',
+  'DELETE /nodes/:id': '真删一台节点的记录 —— 删完就没了，而那台机器还在跑',
   'PUT /rules/:id': '要一个真规则 id，而且会动共享密钥',
   'DELETE /rules/:id': '删东西',
   'PUT /drafts/:key': '草稿的字段名按资源种类不同，没有固定形状可比',
@@ -263,8 +265,11 @@ const NOT_COMPARED = {
   'POST /deploys': '真发一次配置到所有节点',
   'POST /deploys/:cfg/rollback': '真回滚',
   'PUT /dns/weights': '改解析权重，会影响真实流量分配（界面上走得到，f8e84d7 之前走不到）',
-  'POST /certs/:domain/renew': '真去 ACME 签一次',
-  'POST /certs/renew-check': '会触发一轮续期检查',
+  /*
+   * 这里**曾经有** `POST /certs/:domain/renew` 与 `POST /certs/renew-check`。
+   * 主控不再签发也不再续期（ADR-0015），那两个端点后端删了、前端也不调了 ——
+   * 留着理由等于在为一件不会发生的事写理由，跟登记表里那种假话是一回事。
+   */
   'POST /alerts/test': '真往 Lark 群里发一张卡片',
 }
 

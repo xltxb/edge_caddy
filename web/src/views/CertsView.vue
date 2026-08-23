@@ -2,8 +2,10 @@
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { http, errorText } from '@/api/http'
-import type { CertRenewWire, CertWire, Paged } from '@/api/types'
-import { useUiStore } from '@/stores/ui'
+import type { CertWire, Paged } from '@/api/types'
+import { challengeText } from '@/certs/challenge'
+import { coverageText } from '@/certs/coverage'
+import { fmtDate } from '@/utils/format'
 
 /**
  * 证书。
@@ -13,11 +15,7 @@ import { useUiStore } from '@/stores/ui'
  * （CONTEXT.md）。N < M 意味着「下发到了但没生效」——这类故障在只显示
  * 一个数字的界面里是完全隐形的。
  */
-const ui = useUiStore()
 const items = ref<CertWire[]>([])
-/** 正在续期的域名。续期是异步的，结果经 WS 事件回报，所以这里只表示「已受理」。 */
-const renewing = ref<Set<string>>(new Set())
-const checkingAll = ref(false)
 const loading = ref(false)
 const error = ref<string | null>(null)
 const openRow = ref<string | null>(null)
@@ -37,52 +35,31 @@ async function load(): Promise<void> {
 onMounted(load)
 
 /**
- * 单张续期。
+ * 到期两档，**而分两档是有意的**。
  *
- * **主控自己去 ACME 续，再随下一次下发把新证书内联带下去**（契约 §9），
- * 不是让节点去续 —— 边缘节点跑官方 Caddy，不持有 DNS 凭据（ADR-0001）。
- * 异步：接口立即返回，结果经 WS 事件回报。所以按钮回到可点状态不代表续好了。
+ *   < 14 天  红，且后端每天发一条告警 —— 「今天就得做」
+ *   < 30 天  黄，**不发告警** —— 「安排一下」，主动来看才看得到
+ *
+ * 两档的边界与「哪一档发告警」都在**契约 §9**，不是这一页自己定的口径。
+ *
+ * 合成一档会把「还早」说成「来不及了」，于是前一种被当成后一种忽略掉 ——
+ * **而那正好训练人在真的来不及时也忽略**。
+ *
+ * 主控不再签发也不再自动续期（**契约 §9**：证书只从外部平台导入），所以这两档
+ * 现在是**唯一**会提醒人去续证书的东西。此前那句「≤7 天危」对应的是自动续期
+ * 兜底之下的余量，而那个兜底没有了。
  */
-async function renew(domain: string): Promise<void> {
-  renewing.value = new Set(renewing.value).add(domain)
-  try {
-    const r = await http.post<CertRenewWire>(`/certs/${encodeURIComponent(domain)}/renew`)
-    ui.toast(
-      r.accepted ? 'info' : 'warn',
-      r.accepted ? `已受理 ${domain} 的续期` : `${domain} 的续期未被受理`,
-      r.accepted ? '主控正在向 ACME 申请，完成后会出现在事件流里' : '',
-    )
-  } catch (e) {
-    ui.toast('warn', '续期失败', errorText(e, ''))
-  } finally {
-    const next = new Set(renewing.value)
-    next.delete(domain)
-    renewing.value = next
-  }
-}
-
-async function renewCheck(): Promise<void> {
-  checkingAll.value = true
-  try {
-    await http.post('/certs/renew-check')
-    ui.toast('info', '已发起全部证书的到期检查', '需要续期的会自动申请，结果见事件流')
-  } catch (e) {
-    ui.toast('warn', '检查失败', errorText(e, ''))
-  } finally {
-    checkingAll.value = false
-  }
-}
-
-/** 到期条三档：≤7 天危、≤14 天警、其余正常。 */
 function level(days: number): 'crit' | 'warn' | 'ok' {
-  return days <= 7 ? 'crit' : days <= 14 ? 'warn' : 'ok'
+  return days < 14 ? 'crit' : days < 30 ? 'warn' : 'ok'
 }
 
 const COLOR = { crit: 'var(--danger)', warn: 'var(--warning)', ok: 'var(--success)' }
 const TEXT = { crit: 'var(--danger-text)', warn: 'var(--warning-text)', ok: 'var(--text-strong)' }
 
-const expiring = computed(() => items.value.filter((c) => c.days_left <= 14))
-const manual = computed(() => expiring.value.filter((c) => !c.auto_renew))
+/** 红档：14 天内到期，后端每天一条告警。 */
+const urgent = computed(() => items.value.filter((c) => c.days_left < 14))
+/** 黄档：30 天内但还没进红档。**不发告警，所以只有这一行会说它。** */
+const soon = computed(() => items.value.filter((c) => c.days_left >= 14 && c.days_left < 30))
 const mismatched = computed(() => items.value.filter((c) => c.loaded_nodes < c.expected_nodes))
 </script>
 
@@ -90,15 +67,30 @@ const mismatched = computed(() => items.value.filter((c) => c.loaded_nodes < c.e
   <section class="panel">
     <header class="head">
       <div class="title">证书</div>
-      <div class="sub">共 {{ items.length }} 张 · 由主控集中签发（DNS-01）</div>
-      <button class="mini" type="button" :disabled="checkingAll" @click="renewCheck">
-        {{ checkingAll ? '检查中…' : '全部续期检查' }}
-      </button>
+      <!--
+        **「由主控集中签发（DNS-01）」是假的。** 主控不再签发也不再续期，
+        证书只从外部平台导入 —— 这一页从「看主控签发了什么」变成了
+        「你导入了什么，以及哪些快到期了」。
+      -->
+      <div class="sub">共 {{ items.length }} 张 · 从外部平台导入</div>
     </header>
 
-    <div v-if="expiring.length" class="banner warn">
-      {{ expiring.length }} 张证书将在 14 天内到期<span v-if="manual.length">，其中
-        {{ manual.length }} 张未开启自动续期，需要手动处理</span>。
+    <!--
+      **两档分开说，因为它们要人做的事不同。**
+
+      原来这里写的是「N 张将在 14 天内到期，其中 M 张未开启自动续期，需要手动
+      处理」。后半句现在错得很特别：它把「需要手动处理」说成一个**子集**的属性，
+      而拆掉自动续期之后那是**全集**的属性 —— 字面仍然成立（那 M 张确实需要
+      手动处理），而**它暗示的对比不存在了**。这类句子比直接说错更难发现。
+
+      黄档单独一行、不用警示色：它不发告警，**这一行是它唯一会被看见的地方**。
+    -->
+    <div v-if="urgent.length" class="banner danger">
+      {{ urgent.length }} 张证书将在 14 天内到期，需要去外部平台续期后重新导入。
+    </div>
+    <div v-if="soon.length" class="banner warn">
+      另有 {{ soon.length }} 张在 30 天内到期 —— 还不紧急，但这一档不发告警，
+      只有在这一页看得到。
     </div>
     <div v-if="mismatched.length" class="banner danger">
       {{ mismatched.length }} 张证书的节点回执少于签发记录——已下发但未在全部节点上生效。
@@ -110,12 +102,19 @@ const mismatched = computed(() => items.value.filter((c) => c.loaded_nodes < c.e
       <button class="mini" type="button" @click="load">重试</button>
     </div>
     <!--
-      空不等于坏。证书跟着路由走 —— 第一次下发之前这里本来就是空的，
-      而一个只有表头的空表格什么也没说，看起来像加载失败。
+      **这块地方的意思整个反过来了。**
+
+      原来写的是「证书由主控在下发时自动签发，所以第一次下发之前这里是空的」——
+      它不只是描述错了，它还**解释了为什么空**，而那个解释会让人得出「我什么都
+      不用做，下发之后自然就有」。
+
+      现在空着恰恰是因为**没人导入过，而不导入它会一直空着**（契约 §9：
+      证书只从外部平台导入，`PUT /certs/:domain` 是唯一入口）。
+      同一块地方，从「不用管」变成了「这里就是你该动手的地方」。
     -->
     <div v-else-if="!items.length" class="hint">
-      还没有证书。证书由主控在下发时自动为路由域名签发（DNS-01），
-      所以第一次下发之前这里是空的。
+      还没有证书。证书不再由主控签发 —— 要在外部平台签好之后导入进来，
+      在这之前用到 HTTPS 的路由不会有可用的证书。
       <RouterLink class="mini" to="/routes">去看反代路由</RouterLink>
     </div>
 
@@ -124,11 +123,9 @@ const mismatched = computed(() => items.value.filter((c) => c.loaded_nodes < c.e
         <tr>
           <th>域名</th>
           <th>签发者</th>
-          <th>密钥</th>
+          <th>来源</th>
           <th>剩余有效期</th>
-          <th>续期</th>
           <th>节点（回执 / 签发）</th>
-          <th></th>
         </tr>
       </thead>
       <tbody>
@@ -136,10 +133,17 @@ const mismatched = computed(() => items.value.filter((c) => c.loaded_nodes < c.e
           <tr>
             <td>
               <div class="mono strong">{{ c.domain }}</div>
-              <div class="mono muted small">{{ c.scope }} · {{ c.challenge }}</div>
+              <!--
+                摘要够扫，**完整列表要留得住**：`*.a.com` 不覆盖 `x.y.a.com`
+                （RFC 6125，通配符只匹配一级），所以「通配符」三个字回答不了
+                「我这个域名在不在里面」。全量挂在 title 上。
+              -->
+              <div class="muted small" :title="c.domains?.join('、')">
+                {{ coverageText(c.domains) }}
+              </div>
             </td>
             <td class="muted">{{ c.issuer }}</td>
-            <td class="mono muted">{{ c.key_type }}</td>
+            <td class="muted small">{{ challengeText(c.challenge) }}</td>
             <td>
               <div class="bar">
                 <span
@@ -150,14 +154,24 @@ const mismatched = computed(() => items.value.filter((c) => c.loaded_nodes < c.e
                   }"
                 />
               </div>
-              <div class="mono days" :style="{ color: TEXT[level(c.days_left)] }">
+              <!--
+                **天数好扫，日期用来跟告警对上。**
+
+                到期告警的文案是「还有 12 天到期（2026-09-04）」（契约 §9），
+                而列表里只有天数 —— 人拿着告警来对界面时，中间那步换算得他自己做。
+                日期常驻在 title 上；**只在红黄两档显示出来**，因为只有那两档
+                会发告警，而正常的证书不需要占这一行。
+              -->
+              <div
+                class="mono days"
+                :style="{ color: TEXT[level(c.days_left)] }"
+                :title="`到期 ${fmtDate(c.not_after)}`"
+              >
                 {{ c.days_left }} 天
+                <span v-if="level(c.days_left) !== 'ok'" class="muted">
+                  · {{ fmtDate(c.not_after) }}
+                </span>
               </div>
-            </td>
-            <td>
-              <span class="tag" :class="c.auto_renew ? 'ok' : 'warn'">
-                {{ c.auto_renew ? '自动' : '手动' }}
-              </span>
             </td>
             <td>
               <!-- 相等时中性；回执少于账面时转警示并可展开看缺哪几个 -->
@@ -179,19 +193,9 @@ const mismatched = computed(() => items.value.filter((c) => c.loaded_nodes < c.e
               </button>
               <span v-else class="mono muted">{{ c.loaded_nodes }} / {{ c.expected_nodes }} 个节点</span>
             </td>
-            <td class="right">
-              <button
-                class="mini"
-                type="button"
-                :disabled="renewing.has(c.domain)"
-                @click="renew(c.domain)"
-              >
-                {{ renewing.has(c.domain) ? '受理中…' : '立即续期' }}
-              </button>
-            </td>
           </tr>
           <tr v-if="openRow === c.domain" class="detail-row">
-            <td colspan="7">
+            <td colspan="5">
               <div class="detail">
                 <b>未加载该证书的节点：</b>
                 <span class="mono">{{ c.missing_nodes.join('、') }}</span>

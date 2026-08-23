@@ -463,18 +463,60 @@ export interface AuditWire {
 
 export interface CertWire {
   domain: string
-  scope: string
   issuer: string
-  key_type: string
-  days_left: number
-  auto_renew: boolean
+  /**
+   * 这张证书**怎么来的**：`imported`（外部平台推进来）或 `dns-01`
+   * （ADR-0015 之前主控自己签的，历史数据）。界面上不直接渲染这个英文值
+   * —— 映射见 `CertsView.vue`。
+   *
+   * **字段名不好**（契约 §9 也记了这一条）：`challenge` 在 ACME 里指校验方式，
+   * 而 `imported` 恰恰是「没有经过任何校验」。留着是因为库里那一列就叫这个
+   * 名字，改名要动迁移、契约、前端三处。
+   */
   challenge: string
+  /**
+   * 这张证书**实际覆盖的域名**，含通配符（契约 §9）。
+   *
+   * 后端**从证书本身读出来、不落库** —— 存一份副本意味着两处真相，而两处
+   * 迟早分叉：导入时解析对了，后来换了张证书而副本没更新，界面就会说这张
+   * `*.a.com` 覆盖的是 `b.com`。
+   *
+   * 界面上摘要成「单域名 / 通配符 / N 个域名」（`@/certs/coverage`），
+   * **但完整列表要留得住**：`*.a.com` 不覆盖 `x.y.a.com`（RFC 6125，通配符
+   * 只匹配一级），所以那句摘要回答不了「我这个域名在不在里面」。
+   */
+  domains: string[]
+  /**
+   * 到期时刻，RFC3339（契约 §9）。
+   *
+   * **后端一直在返回它，而前端此前不知道它存在** —— 数据到了没人用，两边都
+   * 不报错。这跟 `scope` / `key_type` 那两个（前端声明了而后端从来没发过）
+   * 正好是镜像，共同点是**类型定义与真实响应之间没有任何东西在比对**：
+   *
+   *   前端有、后端没发   → 界面上一个空格子
+   *   后端发了、前端没有 → **连空格子都没有**，所以更不会被发现
+   *
+   * 列表里显示的是 `days_left`（好扫），日期用在快到期的那两档 —— 到期告警的
+   * 文案里带的是日期，人拿着告警来对界面时得能一眼对上。
+   */
+  not_after: string
+  days_left: number
   /** 主控签发记录上应覆盖的节点数 —— 账本 */
   expected_nodes: number
   /** Agent 回执里真正加载了的节点数 —— 回执，不是账本 */
   loaded_nodes: number
   /** 账面有、回执没有的节点。loaded < expected 时界面要能列出来。 */
   missing_nodes: string[]
+  /*
+   * **没有 `auto_renew`**（契约 §9）：主控不自动续期，那是这套系统的属性，
+   * 不是每一行的属性。一个恒为 false 的字段会暗示「这个概念存在、只是关着」，
+   * 于是人会去找打开它的地方。
+   *
+   * **也没有 `scope` / `key_type`。** 这两个前端曾经声明过、模板也渲染过，
+   * 而后端 `certResp` 里**从来没有过它们** —— 线上那两格一直是空的，
+   * 而 mock 的 seed 提供了它们，所以 dev 下一直看着正常。
+   * **替身比真的更完整，于是这个洞在开发期是隐形的。**
+   */
 }
 
 /* ── 4. 节点操作 ── */
@@ -804,10 +846,4 @@ export interface AlertsWire {
 export interface AlertTestWire {
   sent: boolean
   detail: string
-}
-
-/** 证书续期 —— 异步，立即返回，结果经 WS `event` 帧回报。 */
-export interface CertRenewWire {
-  domain: string
-  accepted: boolean
 }

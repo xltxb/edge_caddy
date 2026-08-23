@@ -115,14 +115,6 @@
       ],
       "optional": []
     },
-    "POST /certs/:domain/renew": {
-      "required": [],
-      "optional": []
-    },
-    "POST /certs/renew-check": {
-      "required": [],
-      "optional": []
-    },
     "PUT /alerts": {
       "required": [],
       "optional": [

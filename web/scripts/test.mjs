@@ -62,6 +62,35 @@ const STEPS = [
     ranRe: /(\d+) 个字符串/,
   },
   {
+    /*
+     * **对真主控比响应形状。连不上就跳过（exit 3），而跳过要说出来。**
+     *
+     * 这一步此前不在这张表里，于是 `check:shapes` 写完之后基本没跑过 ——
+     * 而它本该抓到两个真 bug，两个方向各一个：
+     *
+     *   scope / key_type   前端声明了、后端从来没发过 → 界面上一直是空格子
+     *   not_after          后端一直在发、前端不知道   → 连空格子都没有
+     *
+     * 它的判据是**双向**的（「一边有这个键、另一边压根没有」算硬分歧），
+     * 两个都在射程里。没抓到不是判据窄，是**它没跑**。
+     *
+     * > **一个从没跑过的检查，和一句「等条件具备我跑一遍」的承诺没有区别。**
+     *
+     * 这句话就写在 `src/certs-assertions.test.ts` 顶上 —— 同一个形状，
+     * 在同一个仓库里，被写下来之后又发生了一次。
+     *
+     * 另外两个要连主控的检查**故意不在这里**：`check:certs` 会真的 drain 一台
+     * 节点，`check:premises` 有真写。它们对生产是破坏性的，不能挂在一条谁都会
+     * 顺手跑的链上。`check:shapes` 只读（两个 PUT 是空 body 的 no-op），所以它可以。
+     */
+    name: '响应形状（对真主控）',
+    cmd: 'node',
+    args: ['scripts/check-shapes.mjs'],
+    /** exit 3 = 连不上真主控。不是失败，但**必须打出来**，否则又是一次静默跳过。 */
+    skipStatus: 3,
+    ranRe: /(\d+) 个端点/,
+  },
+  {
     // 不需要真主控：它只比源码与登记表，以及那份导给后端的 JSON 有没有过期
     name: '写请求的字段清单',
     cmd: 'node',
@@ -81,9 +110,22 @@ const STEPS = [
 ]
 
 let bad = 0
+/** 跳过的步骤名。**收尾那句必须点出来** —— 跳过与通过不能长成一个样子。 */
+const skipped = []
 for (const s of STEPS) {
   const r = spawnSync(s.cmd, s.args, { encoding: 'utf8' })
   const out = `${r.stdout ?? ''}${r.stderr ?? ''}`
+
+  if (s.skipStatus !== undefined && r.status === s.skipStatus) {
+    /*
+     * **跳过不是通过。** 打一行独立的记号，并计进收尾那句 —— 一次没跑的检查
+     * 和一次通过的检查，在「N 步全过」里长得一模一样，而今天撞到的每一个坑
+     * 都是这个形状。
+     */
+    skipped.push(s.name)
+    console.log(`⊘ ${s.name}：跳过 —— ${(out.trim().split('\n').pop() || '连不上真主控').trim()}`)
+    continue
+  }
 
   if (r.status !== 0) {
     bad += 1
@@ -144,4 +186,9 @@ if (bad) {
   console.error(`${bad} / ${STEPS.length} 步没过。**不要在这个状态下提交。**\n`)
   process.exit(1)
 }
-console.log(`${STEPS.length} 步全过${fast ? '（跳过了 e2e）' : ''}。\n`)
+const ran = STEPS.length - skipped.length
+console.log(
+  `${ran} / ${STEPS.length} 步通过${fast ? '（跳过了 e2e）' : ''}` +
+    (skipped.length ? `，${skipped.length} 步跳过：${skipped.join('、')}` : '') +
+    '。\n',
+)

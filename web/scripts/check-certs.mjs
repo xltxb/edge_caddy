@@ -112,44 +112,62 @@ await check(
   },
 )
 
-// ── 2. 签发的是真 CA，不是内部 CA ──
+// ── 2. 每张证书都说得出自己从哪来 ──
+/*
+ * **这一条换过判据，而不是改了个值。**
+ *
+ * 原来它守的是「ACME 那一步真走了」：issuer 不是内部 CA，且 challenge 是
+ * `dns-01`。ADR-0015 之后主控不再签发证书 —— **那个被守的行为整个没有了**，
+ * 于是把 `'dns-01'` 顺手改成 `'imported'` 会得到一条看着还在工作、实际上
+ * 什么都不再保护的检查。
+ *
+ * 现在守的是契约 §9 那一条：**导入的证书不能记成 `dns-01`**，因为那会让人
+ * 以为主控自己跑过一次校验。而库里确实还留着 ADR-0015 之前的 `dns-01`，
+ * 所以它们不算失败 —— 但要在摘要里点出来，那是「还没被换掉的历史证书」。
+ */
 await check(
-  '证书由真 CA 签发、走 DNS-01',
-  'CertsView 的 issuer 与 challenge 两列',
+  '每张证书的来源都标记正确（imported / dns-01 历史）',
+  'src/certs/challenge.ts 的映射、CertsView 的「来源」列',
   async () => {
     const r = await call('/certs')
     const items = r.body?.data?.items ?? []
     must(items.length > 0, '没有证书')
-    /*
-     * **内部 CA 的客户端证书不走 ACME**（回源 mTLS 那张），不该被这条管。
-     * 第一版忘了排除它，对着夹具立刻红 —— 断言写窄了，把一个合法状态当成故障。
-     */
-    const acme = items.filter((c) => !/internal|self-signed/i.test(c.issuer ?? ''))
-    must(acme.length > 0, 'ACME 证书一张都没有 —— 这一条测的是空集')
-    for (const c of acme) {
+
+    const KNOWN = new Set(['imported', 'dns-01'])
+    // 内部 CA 的客户端证书（回源 mTLS 那张）既不是导入也不是 ACME，不归这条管
+    const managed = items.filter((c) => !/internal|self-signed/i.test(c.issuer ?? ''))
+    must(managed.length > 0, '一张受管证书都没有 —— 这一条测的是空集')
+
+    for (const c of managed) {
       must(c.issuer, `${c.domain} 没有 issuer`)
       must(
-        !/internal|self-signed/i.test(c.issuer),
-        `${c.domain} 的 issuer 是「${c.issuer}」—— 看着像内部 CA，那说明 ACME 那一步没真走`,
+        c.challenge && KNOWN.has(c.challenge),
+        `${c.domain} 的 challenge 是「${c.challenge}」—— 不在 ${[...KNOWN].join(' / ')} 里，` +
+          `界面会原样把它显示出来，而没人知道那是什么`,
       )
-      must(c.challenge === 'dns-01', `${c.domain} 的 challenge 是 ${c.challenge}，不是 dns-01`)
     }
-    return acme.map((c) => `${c.domain} ← ${c.issuer} / ${c.challenge}`).join('；')
+
+    const legacy = managed.filter((c) => c.challenge === 'dns-01')
+    const imported = managed.filter((c) => c.challenge === 'imported')
+    return (
+      `${imported.length} 张外部导入` +
+      (legacy.length
+        ? `；${legacy.length} 张仍是 ADR-0015 之前主控签的（${legacy.map((c) => c.domain).join('、')}）` +
+          ` —— 主控不会再续它们，到期前要从外部平台重新导入`
+        : '')
+    )
   },
 )
 
-// ── 3. 手动续期受理 ──
-await check('POST /certs/:domain/renew 受理', 'CertsView 的「立即续期」', async () => {
-  const r0 = await call('/certs')
-  const first = (r0.body?.data?.items ?? []).find(
-    (c) => !/internal|self-signed/i.test(c.issuer ?? ''),
-  )
-  must(first, '没有证书')
-  const r = await call(`/certs/${first.domain}/renew`, { method: 'POST' })
-  must(r.body?.code === 0, `续期被拒：${r.body?.msg}`)
-  must(r.body.data?.accepted === true, `accepted 不是 true：${JSON.stringify(r.body.data)}`)
-  return `${first.domain} 已受理（异步，结果经 WS event 回报）`
-})
+/*
+ * ── 3.（已删）手动续期受理 ──
+ *
+ * 原来这里验 `POST /certs/:domain/renew` 会不会受理。**那个端点没了**
+ * （ADR-0015：主控不签发也不续期），所以这条检查的对象不存在了。
+ *
+ * 删掉而不是留着跳过：一条永远不会红的检查会让通过数虚高，而那个数字是
+ * 判断这套装置有多严的唯一依据。
+ */
 
 // ── 4. dns_sync.ok 该转真了 ──
 await check(

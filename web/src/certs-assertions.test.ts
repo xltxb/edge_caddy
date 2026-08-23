@@ -34,18 +34,30 @@ describe('证书断言的逻辑（用夹具走一遍）', () => {
   })
 
   /*
-   * 内部 CA 的客户端证书**不走 ACME**，所以不该被这条断言管。
+   * **这一条换过判据，不是改了个值。**
    *
-   * 我第一版忘了排除它，脚本对着夹具立刻红 —— 而那正是它该红的样子：
-   * 断言写窄了，把一个合法状态当成了故障。真主控上同样有这张证书（回源 mTLS
-   * 用的那张），所以这个排除不是为夹具开的后门。
+   * 原来它守的是「ACME 签发的证书走 dns-01」。ADR-0015 之后主控不再签发 ——
+   * **那个被守的行为整个没有了**，而顺手把 'dns-01' 改成 'imported' 会得到
+   * 一条看着还在工作、实际上只是在复述我自己刚写进夹具的值的测试。
+   *
+   * 现在守的是契约 §9 那条：每张受管证书都得说得出自己从哪来，取值只能是
+   * `imported`（外部导入）或 `dns-01`（ADR-0015 之前的历史）。冒出第三种值
+   * 时界面会原样显示它 —— 那是有意的（见 src/certs/challenge.ts），
+   * 但**在受管证书上出现就是后端标错了**。
+   *
+   * 内部 CA 的客户端证书（回源 mTLS 那张）既不是导入也不是 ACME，不归这条管。
+   * 这个排除不是为夹具开的后门：真主控上同样有那张证书。
    */
-  it('ACME 签发的证书走 dns-01；内部 CA 的客户端证书不在此列', () => {
-    const acme = certs.filter((c) => !/internal|self-signed/i.test(c.issuer))
-    expect(acme.length, 'ACME 证书一张都没有，这条测的是空集').toBeGreaterThan(0)
-    for (const c of acme) {
+  it('每张受管证书的来源都在已知取值里；内部 CA 那张不在此列', () => {
+    const KNOWN = new Set(['imported', 'dns-01'])
+    const managed = certs.filter((c) => !/internal|self-signed/i.test(c.issuer))
+    expect(managed.length, '受管证书一张都没有，这条测的是空集').toBeGreaterThan(0)
+    for (const c of managed) {
       expect(c.issuer, `${c.domain} 没有 issuer`).toBeTruthy()
-      expect(c.challenge, `${c.domain}`).toBe('dns-01')
+      expect(
+        KNOWN.has(c.challenge),
+        `${c.domain} 的 challenge 是「${c.challenge}」，不在 ${[...KNOWN].join(' / ')} 里`,
+      ).toBe(true)
     }
     // 反面对照：内部那张确实存在，证明上面的过滤不是把所有东西都滤掉了
     expect(certs.some((c) => /internal/i.test(c.issuer)), '夹具里没有内部 CA 那张').toBe(true)

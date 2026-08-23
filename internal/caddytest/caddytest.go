@@ -231,8 +231,11 @@ func (c *Caddy) PostApp(name string, body []byte) (int, string) {
 //
 // 理由写在 internal/agent/caddy.go 的 NewCaddyClient 上（Caddy 每次写配置
 // 都重启 admin 监听，池子里的连接必然作废）。这里跟着改，是因为
-// 这个 flake 恰恰是在这个包的测试里现身的——**测试替身和被测对象在
-// 连接复用这件事上必须一致，否则测试跑的是另一条路径。**
+// **测试替身和被测对象在连接复用这件事上必须一致，否则测试跑的是另一条路径**
+// ——那个 flake 恰恰是在这个包的测试里现身的。
+//
+// 守着这一致的是 TestTestDoubleDoesNotReuseConnectionsEither（client_test.go）。
+// agent 那条测试管不到这里：把下面那行删掉，它照样全绿。
 func unixClient(sock string) *http.Client {
 	return &http.Client{
 		Timeout: 10 * time.Second,

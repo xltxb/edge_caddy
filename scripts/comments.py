@@ -284,7 +284,25 @@ def main():
     bad += check_backlinks(files)
     print()
     bad += check_index()
-    return 1 if (found or bad) else 0
+
+    # **判词放最后一行。**
+    #
+    # 这个脚本原先把失败印在最前面、把 ✓ 印在最后，于是 `| tail -1`
+    # 永远看到一行绿的 —— 而那是最省事、因此最常见的读法。
+    # 我今天一晚上就是这么读它的，于是它连续几次报错退出 1 而我没看见。
+    #
+    # **让偷懒的读法也是对的读法。** 靠人记得读全篇是靠不住的，
+    # 而把结论放在人一定会看到的位置是结构性的。
+    #
+    # （这是「观测手段截断了它要看的东西」那一格的处置：
+    # 与其要求自己别用 tail，不如让 tail 说真话。）
+    total = len(found) + bad
+    print()
+    if total:
+        print(f"  ✗ 共 {total} 处要改（首句讲历史 / 理由没锚 / 索引对不上）")
+    else:
+        print(f"  ✓ 全部通过（扫了 {len(files)} 个文件）")
+    return 1 if total else 0
 
 
 if __name__ == "__main__":

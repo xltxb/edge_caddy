@@ -170,11 +170,13 @@ def main():
         return 2
 
     findings, fresh = [], []
+    checked = 0
     for label, (items, total) in (
         ("DB 列", scan_db_columns(gosrc)),
         ("proto 字段", scan_proto_fields(gosrc)),
         ("配置项", scan_config_fields(gosrc)),
     ):
+        checked += total
         print(f"\n  {label}（共 {total} 个）")
         if not items:
             print("    （都有人读）")
@@ -186,11 +188,30 @@ def main():
                 fresh.append(it)
         findings += items
 
-    print(f"\n  共 {len(findings)} 项没人读，其中 {len(fresh)} 项是新的")
+    # **说出「查了多少」，而不只是「没查出问题」。**
+    #
+    # 「共 0 项没人读」和「抽取器一条都没抽到」印出来是同一句话——
+    # 前者是好消息，后者是这个脚本坏了，而两者走的是同一条输出路径：
+    # 绿色的意思是「没有坏消息」，而「根本没跑」也满足「没有坏消息」。
+    #
+    # 上面那条自检守的是**输入**（源码真的读到了）。这条守的是**抽取**：
+    # 源码读到了而正则坏了的话，输入自检照样绿。
+    if checked < 40:
+        print(f"\n  ✗ 只抽到 {checked} 项 —— 抽取器坏了，上面的结果没有意义")
+        return 2
+    print(f"\n  查了 {checked} 项，其中 {len(findings)} 项没人读（{len(fresh)} 项是新的）")
     print(f"  盲区：{BLIND_SPOT}")
     if fresh:
         print("\n  新出现的要当场判：它是欠条（开单子）、是死代码（删掉并说清为什么）、"
               "还是扫描不准（修扫描，别加豁免）。")
+
+    # 判词放最后一行，理由同 comments.py：`| tail -1` 是最省事、
+    # 因此最常见的读法，让它说真话比要求自己别用它可靠。
+    print()
+    if fresh:
+        print(f"  ✗ {len(fresh)} 项没人读，也没人认领")
+    else:
+        print(f"  ✓ 全部有人读（查了 {checked} 项）")
     return 1 if fresh else 0
 
 

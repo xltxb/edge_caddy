@@ -31,9 +31,17 @@ export type RuleDraft = IpWhitelistRule | ServiceSecretRule | JwtBearerRule
 
 export interface TlsPolicy extends PolicyWire {
   spec: {
-    ca: string
-    email: string
-    key_type: string
+    /*
+     * **没有 ca / email / key_type。** 那三项是主控用 ACME 签发证书时的参数，
+     * 而主控不再签发（ADR-0015、契约 §9）—— 后端把它们从响应里删了。
+     *
+     * 它们比一个恒为 false 的字段更坏：**那三项是可编辑的**。人会在这里把 CA
+     * 从 letsencrypt 改成 zerossl、按下发，每一步都成功，而什么也不会发生。
+     * 而后端对它们**有校验**，那让它更像真的 —— 一个会拒绝非法值的字段，
+     * 读起来就是「系统在认真对待这个输入」。
+     *
+     * 库里旧 spec 还带着这三个键，后端非严格 Unmarshal 会静默忽略，不用迁移。
+     */
     min_version: string
     http3: boolean
     hsts: boolean
@@ -224,48 +232,23 @@ export const JWT_BEARER_FIELDS = fieldsOf<RuleDraft>([
 
 /* ── 全局策略 ── */
 
-// 契约 §6.3：前三个字段是**主控**签发证书时用的参数，不下发给节点。
-// 不分组的话，人会以为改 email 也要走一次全网下发。
-const G_ISSUE = '主控签发参数（不下发给节点）'
-const G_NODE = '下发到节点的 TLS 配置'
+/*
+ * **分组一起去掉了，因为分组的作用是对比。**
+ *
+ * 原来分两组：「主控签发参数（不下发给节点）」与「下发到节点的 TLS 配置」——
+ * 后者的信息量全部来自前者的存在。主控不再签发，前一组的三项没了，
+ * 而单独留下「下发到节点的」这个标题会暗示**还有一类不下发的**，
+ * 那类现在不存在。
+ *
+ * 与顶部 banner 那句「其中 M 张未开启自动续期」同形：一句话字面上仍然成立，
+ * 而**它暗示的对比不存在了** —— 这类比直接说错难发现得多。
+ */
 
 export const TLS_FIELDS = fieldsOf<TlsPolicy>([
   {
     kind: 'seg',
-    field: 'spec.ca',
-    label: '证书颁发机构',
-    group: G_ISSUE,
-    // 设计稿原文是「Caddy 全生命周期自动申请与续期」——与 ADR-0001 矛盾：
-    // 签发在主控，边缘节点跑官方 Caddy，不自己申请证书。
-    hint: '主控用 certmagic 跑 DNS-01 集中签发，边缘节点不申请证书。',
-    options: [
-      ['letsencrypt', "Let's Encrypt"],
-      ['zerossl', 'ZeroSSL'],
-    ],
-  },
-  {
-    kind: 'text',
-    field: 'spec.email',
-    label: 'ACME 账户邮箱',
-    group: G_ISSUE,
-    hint: '证书到期前的通知会发到这里。',
-  },
-  {
-    kind: 'seg',
-    field: 'spec.key_type',
-    label: '密钥算法',
-    group: G_ISSUE,
-    options: [
-      ['p256', 'ECDSA P-256'],
-      ['p384', 'ECDSA P-384'],
-      ['rsa2048', 'RSA 2048'],
-    ],
-  },
-  {
-    kind: 'seg',
     field: 'spec.min_version',
     label: '最低 TLS 版本',
-    group: G_NODE,
     options: [
       ['1.2', 'TLS 1.2'],
       ['1.3', 'TLS 1.3'],
@@ -282,7 +265,6 @@ export const TLS_FIELDS = fieldsOf<TlsPolicy>([
     kind: 'switch',
     field: 'spec.http3',
     label: 'HTTP/3 (QUIC)',
-    group: G_NODE,
     onText: '开启。需在防火墙放行 443/udp。',
     offText: '关闭。弱网环境下首包延迟会高于 QUIC。',
   },
@@ -290,7 +272,6 @@ export const TLS_FIELDS = fieldsOf<TlsPolicy>([
     kind: 'switch',
     field: 'spec.hsts',
     label: 'HSTS',
-    group: G_NODE,
     // 没配过时不要打印 undefined —— 界面上出现 undefined 永远是错的
     onText: (v) =>
       v.spec.hsts_max_age
@@ -302,7 +283,6 @@ export const TLS_FIELDS = fieldsOf<TlsPolicy>([
     kind: 'text',
     field: 'spec.hsts_max_age',
     label: 'HSTS max-age（秒）',
-    group: G_NODE,
     width: '160px',
     numeric: true,
     visible: (v) => v.spec.hsts === true,
@@ -311,7 +291,6 @@ export const TLS_FIELDS = fieldsOf<TlsPolicy>([
     kind: 'switch',
     field: 'spec.ocsp',
     label: 'OCSP Must-Staple',
-    group: G_NODE,
     onText: '开启后 OCSP 响应器故障会导致握手失败，谨慎使用。',
     offText: '关闭。由客户端自行查询 OCSP。',
   },

@@ -120,8 +120,9 @@ func (s *Server) handleNodeDNS(c *gin.Context) {
 	setAuditTarget(c, nodeID)
 
 	var req dnsToggleReq
-	// 两件事分开报。原先它们并在一个条件里，于是「字段名写错了」和
-	// 「没带 enabled」得到同一句话——而前者要改的是 key，后者要加的是字段。
+	// 两件事分开报：「字段名写错了」要改的是 key，「没带 enabled」要加的是字段。
+	//
+	// 并在一个条件里的话，两种情况得到同一句话，而它们的处置不一样。
 	if err := bindStrict(c, &req); err != nil {
 		Fail(c, CodeBadParam, err.Error())
 		return

@@ -276,8 +276,16 @@ export const REQUEST_SHAPES: Record<string, Shape> = {
 
   'PUT /dns/weights': shape<DnsWeightsBody>()({ required: ['lines'], optional: [] }),
 
-  'POST /certs/:domain/renew': { required: [], optional: [] },
-  'POST /certs/renew-check': { required: [], optional: [] },
+  /*
+   * **没有 `POST /certs/:domain/renew`，也没有 `POST /certs/renew-check`。**
+   *
+   * 主控不再签发也不再续期证书 —— 证书只从外部平台导入（`PUT /certs/:domain`），
+   * 那两个端点后端已经删了。留在这张表里就是在向后端宣称一件不会发生的事，
+   * 跟此前 `DELETE /drafts` 那条一样。
+   *
+   * 而这次是**后端那条断言反过来救的场**：它平时守「前端发了后端收不下的
+   * 字段」，这次报的是「后端删了而前端还在调」—— 同一条断言，两个方向。
+   */
 
   'PUT /alerts': shape<AlertsPutBody>()({
     required: [],

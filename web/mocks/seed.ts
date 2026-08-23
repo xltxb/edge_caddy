@@ -190,7 +190,7 @@ export const rules: RuleWire[] = [
 ]
 
 export const policies: PolicyWire[] = [
-  { id: 'tls', name: 'TLS / 证书策略', version: 3, spec: { ca: 'letsencrypt', email: 'ops@example.com', key_type: 'p256', min_version: '1.2', hsts: true, hsts_max_age: 63072000, http3: true, ocsp: false } },
+  { id: 'tls', name: 'TLS / 证书策略', version: 3, spec: { min_version: '1.2', hsts: true, hsts_max_age: 63072000, http3: true, ocsp: false } },
   // rate_limit 关掉时 rate_rps / rate_burst 是**条件字段**，spec 里可以不存在。
   // 这里跟真主控一样是 false —— 官方 Caddy 没有限流模块，true 是个下发一定会被拒的
   // 状态。让 mock 里躺着一份「能成功下发的 true」，等于把真实的失败藏起来。
@@ -217,21 +217,21 @@ const ALL = [...NODE_IDS]
 
 const cert = (
   domain: string,
-  scope: string,
   issuer: string,
-  key_type: string,
   days_left: number,
-  auto_renew: boolean,
   challenge: string,
   expected: string[],
   loaded: string[],
+  /** 证书实际覆盖的域名。默认就是它自己 —— 多域名 / 通配符的那几张显式传。 */
+  domains: string[] = [domain],
 ): CertWire => ({
   domain,
-  scope,
   issuer,
-  key_type,
+  domains,
+  // 从 days_left 倒推，两者必须自洽 —— 夹具里说「12 天」而日期在三个月后，
+  // 界面上那两个数会互相打脸，而它们本来是同一个事实的两种写法
+  not_after: new Date(T0 + days_left * 86_400_000).toISOString(),
   days_left,
-  auto_renew,
   challenge,
   expected_nodes: expected.length,
   loaded_nodes: loaded.length,
@@ -243,15 +243,32 @@ const STATIC_LOADED = ['node-hk-01', 'node-jp-01', 'node-kr-01', 'node-de-01']
 const WS_LOADED = ['node-hk-01', 'node-jp-01', 'node-de-01']
 
 export const certs: CertWire[] = [
-  cert('api.example.com', '单域名', "Let's Encrypt", 'ECDSA P-256', 47, true, 'dns-01', ALL, ALL),
-  cert('cdn.example.com', '单域名', "Let's Encrypt", 'ECDSA P-256', 61, true, 'dns-01', ALL, ALL),
-  cert('*.example.com', '通配符', "Let's Encrypt", 'ECDSA P-256', 12, true, 'dns-01', ALL, ALL),
-  cert('admin.example.com', '单域名', 'ZeroSSL', 'RSA 2048', 4, false, 'dns-01', ['node-hk-01'], ['node-hk-01']),
-  cert('push.example.com', '单域名', "Let's Encrypt", 'ECDSA P-256', 73, true, 'dns-01', ALL, ALL),
-  cert('edge-mtls (内部 CA)', '客户端', 'Edge Internal CA', 'ECDSA P-256', 203, true, '内部签发', ALL, ALL),
-  cert('master.example.com', '单域名', "Let's Encrypt", 'ECDSA P-256', 38, true, 'dns-01', [], []),
-  cert('static.example.com', '单域名', "Let's Encrypt", 'ECDSA P-256', 19, true, 'dns-01', ALL, STATIC_LOADED),
-  cert('ws.example.com', '单域名', "Let's Encrypt", 'ECDSA P-256', 55, true, 'dns-01', ALL, WS_LOADED),
+  /*
+   * challenge 三种值都在，因为界面对它们的处置不同（ADR-0015、契约 §9）：
+   *
+   *   imported   外部平台推进来的 —— **新的常态**
+   *   dns-01     主控自己签的     —— 历史数据，界面要标出「（历史）」
+   *   内部签发    映射表里没有的   —— **原样显示，不假装认识它**
+   *
+   * 最后那个是 fallback 那一支的夹具。少了它，一个「映射不到就显示空」的实现
+   * 也能让另外两条通过。
+   *
+   * days_left 覆盖两档：4 / 12 红（<14），19 黄（14–30），其余正常。
+   */
+  // 契约 §9 的例子：裸域 + 通配符 —— 「N 个域名（含通配符）」那一支的夹具
+  cert('api.example.com', '外部证书平台 CA', 47, 'imported', ALL, ALL, [
+    'api.example.com',
+    '*.api.example.com',
+  ]),
+  cert('cdn.example.com', '外部证书平台 CA', 61, 'imported', ALL, ALL),
+  cert('*.example.com', '外部证书平台 CA', 12, 'imported', ALL, ALL),
+  cert('admin.example.com', 'ZeroSSL', 4, 'imported', ['node-hk-01'], ['node-hk-01']),
+  cert('push.example.com', '外部证书平台 CA', 73, 'imported', ALL, ALL),
+  cert('edge-mtls (内部 CA)', 'Edge Internal CA', 203, '内部签发', ALL, ALL),
+  // ADR-0015 之前主控自己签的两张，留着让「（历史）」那一支在界面上走得到
+  cert('master.example.com', "Let's Encrypt", 38, 'dns-01', [], []),
+  cert('static.example.com', "Let's Encrypt", 19, 'dns-01', ALL, STATIC_LOADED),
+  cert('ws.example.com', '外部证书平台 CA', 55, 'imported', ALL, WS_LOADED),
 ]
 
 /* ── DNS 调度 ── */

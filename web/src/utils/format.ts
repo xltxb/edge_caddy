@@ -56,3 +56,21 @@ export function fmtClock(iso: string | null | undefined): string {
   const p = (n: number) => String(n).padStart(2, '0')
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
+
+/**
+ * 年-月-日。**给「拿着告警来对界面」的人用的。**
+ *
+ * 到期告警的文案里带日期（「还有 12 天到期（2026-09-04）」，契约 §9），而列表里
+ * 显示的是天数 —— 天数好扫，但人手里那条告警说的是日期。两边给的是不同形状的
+ * 同一件事，中间那一步换算得由人自己做。
+ *
+ * 与 `fmtClock` 同一条规矩：**null 给「—」，不给一个格式正确而意思是假的值**。
+ * 零值时间（`0001-01-01`）也挡掉 —— 它会被渲染成一个像模像样的日期。
+ */
+export function fmtDate(iso: string | null | undefined): string {
+  if (!iso || iso.startsWith('0001-01-01')) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
