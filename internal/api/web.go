@@ -103,25 +103,37 @@ func (s *Server) serveWeb(root string) gin.HandlerFunc {
 //
 // 那句「文件不在」把人直接送去 `ls`，而 `ls`（用 root 跑）会显示文件都在。
 // **一句错误的诊断比没有诊断更贵：它给了人一个方向，而那个方向是反的。**
-// 人会去查解包、查路径、查版本，唯独不会去查权限——因为主控已经"告诉"他了。
+// 人会去查解包、查路径、查版本，唯独不会去查权限——因为主控已经「告诉」他了。
+//
+// **而修好措辞之后还错了一轮，错在指的是叶子。**
+//
+// 第一版权限文案给的是 `ls -ld <WebRoot>`。现场照着做，看到的是
+// `drwxr-xr-x edge edge`——完全正常。于是又绕了一圈，
+// 直到 `namei -l` 才看出坏的是 `/opt`（`drwx------`，属主是一个
+// **macOS 的 UID 501/staff**，随某个归档以 root 解包印上去的）。
+//
+// 权限是**逐层**检查的，而这句报错里唯一出现的路径是 EC_WEB_ROOT。
+// **一个只报叶子的错误信息，会让所有人只看叶子**——包括写它的人。
+// 所以这里给的是 `namei -l`：它不回答「那个文件怎么了」，
+// 它回答「这条路每一层分别怎么了」。
 func (s *Server) notDeployed(c *gin.Context, err error) {
 	c.Header("Content-Type", "text/plain; charset=utf-8")
 
 	// 权限问题单独成篇：它的排查方向跟「没解包」完全不同，
 	// 而两者在 `ls` 下看起来一模一样。
 	if errors.Is(err, fs.ErrPermission) {
+		index := filepath.Join(s.webRoot, "index.html")
 		c.String(http.StatusNotFound,
 			"控制台的静态文件读不到——不是不在，是没权限。\n\n"+
 				"主控从 EC_WEB_ROOT 找它们（当前：%q），系统报：%v\n\n"+
-				"注意用 root 跑 ls 会看到文件都在，那不说明主控读得到。\n"+
+				"先看整条路径，不要只看这个目录：\n"+
+				"  namei -l %s\n\n"+
+				"权限是逐层检查的，路径上任何一层缺 x，结果都是这一句。\n"+
+				"而用 root 跑 ls 会一路畅通，它证明不了主控读得到。\n"+
 				"主控跑在哪个用户下，就用哪个用户去试：\n"+
-				"  ls -ld %s\n"+
 				"  sudo -u <那个用户> test -r %s && echo 读得到 || echo 读不到\n\n"+
-				"最常见的成因：tar 包顶层目录带着 0700，解包时盖到了目标目录上。\n"+
-				"  sudo chown -R <那个用户> %s && sudo chmod 755 %s\n\n"+
 				"API 不受影响，/api/v1/* 照常工作。\n",
-			s.webRoot, err, s.webRoot, filepath.Join(s.webRoot, "index.html"),
-			s.webRoot, s.webRoot)
+			s.webRoot, err, index, index)
 		return
 	}
 

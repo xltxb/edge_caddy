@@ -83,8 +83,10 @@ func main() {
 	case errors.Is(err, fs.ErrPermission):
 		log.Warn("控制台静态文件读不到（没权限，不是不在），主控只提供 API",
 			"web_root", cfg.WebRoot, "err", err,
-			"提示", "主控不是 root。用它的身份验：sudo -u <该用户> test -r <路径>；"+
-				"常见成因是 tar 包顶层目录带 0700，解包时盖到了目标目录上")
+			// **指整条路径，不是只指 web_root。** 权限逐层检查，
+			// 坏的那一层可能跟这个项目毫无关系（现场就是 /opt 本身）。
+			"提示", "先看 namei -l "+filepath.Join(cfg.WebRoot, "index.html")+
+				"；主控不是 root，用它的身份验：sudo -u <该用户> test -r <路径>")
 	case err != nil:
 		log.Warn("控制台静态文件不在，主控只提供 API",
 			"web_root", cfg.WebRoot, "err", err,

@@ -218,7 +218,13 @@ func TestUnreadableWebRootSaysPermissionNotMissing(t *testing.T) {
 		t.Errorf("读不到不等于不在 —— 这句话会把人送去 ls，"+
 			"而 ls 会告诉他文件都在：%s", body)
 	}
-	for _, want := range []string{"权限", "ls", "EC_WEB_ROOT"} {
+	// **必须指整条路径，不能只指 WebRoot。**
+	//
+	// 第一版文案给的是 `ls -ld <WebRoot>`。现场照着做，看到 `drwxr-xr-x edge edge`
+	// ——完全正常，于是又绕了一圈；真正坏的是 `/opt`（`drwx------`）。
+	// 权限是逐层检查的，而那句报错里唯一出现的路径是 WebRoot。
+	// **一个只报叶子的错误信息，会让所有人只看叶子。**
+	for _, want := range []string{"权限", "namei", "EC_WEB_ROOT"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("报错里缺 %q —— 排查方向指不出来：%s", want, body)
 		}
