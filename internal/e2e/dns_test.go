@@ -511,3 +511,62 @@ func TestDrainedNodeStaysDrainedInDNSReason(t *testing.T) {
 			"(dns 请求 code=%d msg=%q)", n.DNSReason, e.Code, e.Msg)
 	}
 }
+
+// **系统自动摘除时 `dns_actor` 在 JSON 里必须是 `null`，不是空串。**
+//
+// 这条是前端 agent 点出来的一处「什么情况下返回空」的约定：
+// 契约 §4 写着 auto_offline 时 `dns_actor` 是 `null`，
+// 而**在这条测试之前，只有 store 那一层被验过**——
+// `store.Node.DNSActor` 是 `string`（SQL 里 coalesce 成了空串），
+// 所以那条测试断言的是 `== ""`。把 `nodeResp.DNSActor` 从 `*string`
+// 改成 `string`，它照样全绿，而 JSON 里会变成 `""`。
+//
+// 空串与 null 在这里不是风格问题（契约 §0.4）：
+// 界面按「有没有操作人」分岔——有就说「谁关的」，没有就说「系统自动摘的，
+// **先去修那台机器**」。空串会走进第一条分支，然后显示一个空的名字。
+//
+// 顺带钉住反面：人手动关的时候必须**有**操作人。
+// 少了这一条，一个「永远返回 null」的实现也能让上半条通过。
+func TestAutoOfflineHasNullActorInJSON(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	read := func() (string, *string) {
+		t.Helper()
+		nodes := r.mustDo("GET", "/nodes", nil)
+		var d struct {
+			Items []struct {
+				DNSReason string  `json:"dns_reason"`
+				DNSActor  *string `json:"dns_actor"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(nodes.Data, &d); err != nil {
+			t.Fatal(err)
+		}
+		if len(d.Items) != 1 {
+			t.Fatalf("装置坏了：想要 1 个节点，实际 %d", len(d.Items))
+		}
+		return d.Items[0].DNSReason, d.Items[0].DNSActor
+	}
+
+	// 一、人手动关：必须有操作人。
+	r.mustDo("POST", "/nodes/node-hk-01/dns", map[string]any{"enabled": false})
+	if reason, actor := read(); reason != "manual" || actor == nil || *actor == "" {
+		t.Fatalf("人手动关的要记下是谁，实际 reason=%q actor=%v", reason, actor)
+	}
+
+	// 二、系统自动摘除：actor 必须是 JSON 的 null。
+	if err := r.store.SetNodeDown(context.Background(), "node-hk-01"); err != nil {
+		t.Fatal(err)
+	}
+	reason, actor := read()
+	if reason != "auto_offline" {
+		t.Fatalf("reason = %q，想要 auto_offline", reason)
+	}
+	if actor != nil {
+		t.Errorf("系统自动摘除时 dns_actor 必须是 null，实际 %q —— "+
+			"空串会让界面走进「谁关的」那条分支，然后显示一个空的名字", *actor)
+	}
+}
