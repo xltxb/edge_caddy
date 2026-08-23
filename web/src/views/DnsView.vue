@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { http, errorText } from '@/api/http'
 import type { DnsWeightsWire } from '@/api/types'
-import { isDivergent, lineInputs, mergedWeight, type LineInput } from '@/dns/capability'
+import { isDivergent, isIdle, lineInputs, mergedWeight, type LineInput } from '@/dns/capability'
 import { useUiStore } from '@/stores/ui'
 import { useNodesStore } from '@/stores/nodes'
 import { participation as whyNotServing } from '@/dns/participation'
@@ -159,6 +159,30 @@ function participation(g: LineInput): { on: number; total: number } {
   return { on: nodes.filter((n) => entryOf(g, n)?.dns_enabled).length, total: nodes.length }
 }
 
+/**
+ * 这条解析线路上，所有参与解析的节点权重加起来是不是 0。
+ *
+ * **权重全 0 = 这条线路没有任何节点承载流量**，而「1 / 1 个节点参与解析」
+ * 读起来像它在正常工作。两句话都对，但只说前一句会让人以为配好了。
+ *
+ * 这个状态现在是**常态而不是异常**：节点接入后会自动出现在全部五条解析线路上，
+ * 权重 0 —— 那就是给它配权重的入口（契约 §8）。此前后端只列「已经在权重表里」
+ * 的节点，而写那张表的唯一入口又是这一页，于是新接入的节点永远进不了解析，
+ * 而这一页看上去完全正常：五条线路齐全，只是全空。
+ */
+function idle(g: LineInput): boolean {
+  return isIdle(
+    weights.value,
+    g,
+    nodesOf(g).map((id) => ({ id, dnsEnabled: entryOf(g, id)?.dns_enabled === true })),
+  )
+}
+
+/** 五条线路全都不承载流量 —— 全新装机就是这个样子，值得在页头说一次。 */
+const allIdle = computed(
+  () => groups.value.length > 0 && groups.value.filter((g) => g.supported).every(idle),
+)
+
 /** 已经分叉的合并组：保存会把它们拉平，得先说。 */
 const divergent = computed(() =>
   groups.value.filter((g) => g.supported && isDivergent(weights.value, g)).map((g) => g.name),
@@ -198,7 +222,7 @@ async function save(): Promise<void> {
     <header class="head">
       <div class="title">DNS 调度</div>
       <div class="sub">
-        {{ data?.domain ? `解析域名 ${data.domain}` : '按线路分组' }} ·
+        {{ data?.domain ? `解析域名 ${data.domain}` : '按解析线路分组' }} ·
         {{ configured ? '保存后立即同步到 DNS 服务商' : '尚未配置服务商' }}
       </div>
       <RouterLink class="mini" to="/settings">DNS 服务商设置</RouterLink>
@@ -238,6 +262,17 @@ async function save(): Promise<void> {
       保存会把它们拉平成同一个值。
     </div>
 
+    <!--
+      全新装机的样子：五条线路都在、节点都列着、而一条流量都不会走。
+      **不能只靠每条线路自己那句提示** —— 五条各说一遍等于没说，
+      而人第一次打开这一页时需要知道的是「接下来该做什么」。
+    -->
+    <div v-if="allIdle" class="banner warn">
+      <b>还没有任何流量被分出去。</b>
+      节点接入后会出现在全部五条解析线路上、权重为 0 —— 这里就是给它配权重的地方。
+      填上数字再保存，那台机器才会承载对应线路的访问者。
+    </div>
+
     <div v-if="loading && !data" class="hint">正在加载…</div>
     <div v-else-if="error" class="hint error">
       {{ error }}
@@ -252,6 +287,7 @@ async function save(): Promise<void> {
           <span v-if="!g.supported" class="unsupported">当前服务商表达不了这条线路</span>
           <span v-else class="count">
             {{ participation(g).on }} / {{ participation(g).total }} 个节点参与解析
+            <b v-if="idle(g)" class="idle">· 权重全为 0，这条线路不承载任何流量</b>
           </span>
         </header>
 
@@ -367,6 +403,12 @@ async function save(): Promise<void> {
   font-size: var(--fs-xs);
   font-weight: var(--weight-semibold);
   color: var(--text-strong);
+}
+/* 「权重全为 0」要比旁边的计数显眼 —— 计数说的是「几台在名单里」，
+   这一句说的是「一台都没在分流」，后者才是人要处置的那件事 */
+.count .idle {
+  color: var(--warning-text);
+  font-weight: var(--weight-semibold);
 }
 .count,
 .unsupported {

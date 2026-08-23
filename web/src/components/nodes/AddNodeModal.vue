@@ -61,7 +61,7 @@ async function copy(which: 'install' | 'verify'): Promise<void> {
           <label><span>节点 ID</span><input v-model="form.node_id" required placeholder="node-sg-01" /></label>
           <label><span>城市</span><input v-model="form.city" required placeholder="新加坡" /></label>
           <label><span>服务商</span><input v-model="form.vendor" required placeholder="V.PS" /></label>
-          <label><span>线路</span><input v-model="form.line" required placeholder="CMIN2" /></label>
+          <label><span>中转线路</span><input v-model="form.line" required placeholder="CMIN2" /></label>
           <label><span>公网 IP</span><input v-model="form.public_ip" required placeholder="203.0.113.9" /></label>
           <p v-if="error" class="err">{{ error }}</p>
           <div class="actions">

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isDivergent, lineInputs, mergedWeight } from './capability'
+import { isDivergent, isIdle, lineInputs, mergedWeight, type LineInput } from './capability'
 
 const CONTRACT = [
   { code: 'ct', name: '电信' },
@@ -93,5 +93,39 @@ describe('isDivergent', () => {
   it('单线路组永远不分叉', () => {
     const single = lineInputs(CONTRACT, [TW])[0]!
     expect(isDivergent({ tw: { a: 1 } }, single)).toBe(false)
+  })
+})
+
+describe('isIdle —— 这条解析线路上有没有流量真的被分出去', () => {
+  const g: LineInput = { code: 'cn', name: '中国', covers: ['ct', 'cu', 'cm'], supported: true }
+  const on = (id: string) => ({ id, dnsEnabled: true })
+
+  it('权重全为 0 时算 idle —— 节点列着，但一条流量都不走', () => {
+    // 全新装机就是这个样子：节点在五条线路上都出现，权重 0。
+    expect(isIdle({ ct: { a: 0 }, cu: { a: 0 }, cm: { a: 0 } }, g, [on('a')])).toBe(true)
+  })
+
+  it('权重表里压根没有这个节点时也算 idle', () => {
+    // mergedWeight 对缺失的键返回 0 —— 这正是后端修复前那个闭环的形状：
+    // 节点不在权重表里，于是它一份流量也拿不到，而页面不会说这件事。
+    expect(isIdle({}, g, [on('a')])).toBe(true)
+  })
+
+  it('有一个非 0 权重就不算 idle', () => {
+    expect(isIdle({ ct: { a: 0, b: 10 }, cu: {}, cm: {} }, g, [on('a'), on('b')])).toBe(false)
+  })
+
+  it('**只数参与解析的节点**：唯一有权重的那台被暂停了，仍然算 idle', () => {
+    // 这条是这个函数存在的理由。按「有没有非 0 权重」判会说「不 idle」，
+    // 而那台机器不承载流量 —— 这条线路实际上没有出口，界面却不会提示。
+    expect(
+      isIdle({ ct: { a: 60 }, cu: { a: 60 }, cm: { a: 60 } }, g, [{ id: 'a', dnsEnabled: false }]),
+    ).toBe(true)
+  })
+
+  it('一个候选节点都没有时不算 idle —— 那是「没有节点」，不是「没分流量」', () => {
+    // 两种状态要说不同的话：空线路该说「还没有节点」，
+    // 而 idle 说的是「节点在这儿，但你还没给它配权重」。
+    expect(isIdle({}, g, [])).toBe(false)
   })
 })

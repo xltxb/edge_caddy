@@ -262,7 +262,7 @@ const NOT_COMPARED = {
   'POST /deploys/preview': '要真实的 res_keys，而且预览结果取决于当前草稿',
   'POST /deploys': '真发一次配置到所有节点',
   'POST /deploys/:cfg/rollback': '真回滚',
-  'PUT /dns/weights': '改解析权重，会影响真实流量分配',
+  'PUT /dns/weights': '改解析权重，会影响真实流量分配（界面上走得到，f8e84d7 之前走不到）',
   'POST /certs/:domain/renew': '真去 ACME 签一次',
   'POST /certs/renew-check': '会触发一轮续期检查',
   'POST /alerts/test': '真往 Lark 群里发一张卡片',

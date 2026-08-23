@@ -50,19 +50,37 @@ export function resetNodes(): void {
  * 退出解析的节点 share 为 0，它的权重在该线路内的其余节点间**重新归一化** ——
  * 所以在命令面板 pause 一个节点，这一页的占比条会立刻重排。
  */
+/**
+ * 候选 = **配过权重的 ∪ 还没下线的节点**（契约 §8）。
+ *
+ * 这里原先只遍历 `nodeState.weights` —— 与真主控此前一模一样的闭环：节点得先在
+ * 权重表里才会出现，而写那张表的唯一入口是这一页，于是**新接入的节点永远进不了
+ * 解析**，而页面看上去完全正常，五条线路齐全、只是全空。
+ *
+ * mock 复刻了那个 bug，所以 dev 下也看不出来 —— 又一次「跟着一起错的替身」。
+ *
+ * 已下线的节点不进候选（给一台已退出的机器配权重没有意义），但它**配过权重就
+ * 仍然出现**：那份配置是人写下的意图，重新上线之后还要用。
+ */
 function buildLines() {
-  return Object.entries(nodeState.weights).map(([code, weights]) => {
-    const enabled = Object.entries(weights).filter(([id]) => {
-      const n = nodeState.nodes.find((x) => x.id === id)
-      return n?.dns_enabled === true
-    })
-    const total = enabled.reduce((s, [, w]) => s + w, 0)
+  return Object.keys(nodeState.weights).map((code) => {
+    const weights = nodeState.weights[code] ?? {}
+    const candidates = new Set([
+      ...Object.keys(weights),
+      ...nodeState.nodes.filter((n) => !n.drained_at).map((n) => n.id),
+    ])
+
+    const total = [...candidates]
+      .filter((id) => nodeState.nodes.find((x) => x.id === id)?.dns_enabled === true)
+      .reduce((s, id) => s + (weights[id] ?? 0), 0)
+
     return {
       code,
       name: LINE_NAMES[code] ?? code,
-      entries: Object.entries(weights).map(([id, weight]) => {
+      entries: [...candidates].map((id) => {
         const n = nodeState.nodes.find((x) => x.id === id)
         const on = n?.dns_enabled === true
+        const weight = weights[id] ?? 0
         return {
           node: id,
           weight,

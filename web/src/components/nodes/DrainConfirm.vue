@@ -28,7 +28,7 @@ const STEP_LABEL: Record<DrainStep['step'], string> = {
           「你确定吗」——它是那个 confirm 的来源，而且要说清会发生什么。
         -->
         <ol class="steps">
-          <li>从所有线路的 DNS 解析里摘除该节点</li>
+          <li>从所有解析线路里摘除该节点</li>
           <li>等待现有 {{ conns }} 条连接自然结束</li>
           <li>关闭它与主控之间的 gRPC 隧道</li>
         </ol>

@@ -94,3 +94,29 @@ export function isDivergent(
   }
   return false
 }
+
+/**
+ * 这个合并组上参与解析的节点权重加起来是不是 0。
+ *
+ * **权重全 0 = 这条解析线路没有任何节点承载流量。** 而旁边那句
+ * 「N / M 个节点参与解析」读起来像它在正常工作 —— 两句都对，只说前一句
+ * 会让人以为配好了。
+ *
+ * 这个状态是**常态而不是异常**：节点接入后会出现在全部五条解析线路上、
+ * 权重 0，那就是给它配权重的入口（契约 §8）。后端此前只列「已经在权重表里」
+ * 的节点，而写那张表的唯一入口就是那一页 —— 新接入的节点永远进不了解析，
+ * 而页面看上去完全正常。
+ *
+ * 只数**参与解析**的：一台被暂停的机器权重还留着，但它不承载流量，
+ * 把它算进来会让一条实际上没有出口的线路看起来有出口。
+ */
+export function isIdle(
+  weights: Record<string, Record<string, number>>,
+  group: LineInput,
+  nodes: { id: string; dnsEnabled: boolean }[],
+): boolean {
+  if (!nodes.length) return false
+  return nodes
+    .filter((n) => n.dnsEnabled)
+    .reduce((sum, n) => sum + mergedWeight(weights, group, n.id), 0) === 0
+}

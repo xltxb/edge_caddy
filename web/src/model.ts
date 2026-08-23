@@ -18,6 +18,16 @@ export interface EdgeNode {
   id: string
   city: string
   vendor: string
+  /**
+   * **中转线路**——机房卖的那条网络产品（`CN2 GIA` / `CMIN2`），说的是这台机器
+   * 怎么出网。自由文本，接入时人填。
+   *
+   * **与 DNS 的解析线路（`ct/cu/cm/tw/ov`）没有函数关系，不要试图互推。**
+   * 一台 CN2 GIA 的机器同时服务电信、联通、移动的访问者是常态；「哪台机器接
+   * 哪条解析线路的流量」是人下的调度决定（CONTEXT.md「中转线路」/「解析线路」，
+   * 契约 §8）。两边字段都叫 `line`，而**同名会制造一个不存在的承诺**——
+   * 我就是因此问出「映射在哪一步做」的。
+   */
   line: string
   ip: string
   status: NodeStatus

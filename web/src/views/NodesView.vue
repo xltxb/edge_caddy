@@ -20,7 +20,7 @@ const overview = useOverviewStore()
 const ui = useUiStore()
 
 const open = ref<Set<string>>(new Set())
-/** 节点搜索。与命令面板同一套匹配字段：id / 城市 / 服务商 / IP / 线路。 */
+/** 节点搜索。与命令面板同一套匹配字段：id / 城市 / 服务商 / IP / 中转线路。 */
 const query = ref('')
 const drainTarget = ref<string | null>(null)
 const addOpen = ref(false)
@@ -184,7 +184,7 @@ const LEVEL_COLOR: Record<string, string> = {
         v-model="query"
         class="search"
         type="search"
-        placeholder="搜节点名、城市、服务商、IP、线路"
+        placeholder="搜节点名、城市、服务商、IP、中转线路"
         aria-label="搜索节点"
       />
       <button class="primary" type="button" @click="addOpen = true">添加节点</button>
