@@ -35,6 +35,9 @@ import { fileURLToPath } from 'node:url'
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SRC = join(WEB, 'src')
 
+/** 字符串字面量。三种引号都要，因为文案里有中文引号、也有模板串。 */
+const LITERAL = /'([^'\\\n]|\\.)*'|"([^"\\\n]|\\.)*"|`([^`\\]|\\.)*`/g
+
 /**
  * 剥注释。三种都要剥，**而且 HTML 注释要整块剥**。
  *
@@ -51,7 +54,23 @@ function stripComments(text) {
     .replace(/\/\*[\s\S]*?\*\//g, blank)
     .replace(/<!--[\s\S]*?-->/g, blank)
     .split('\n')
-    .map((l) => (/^\s*(\/\/|\*)/.test(l) ? '' : l))
+    .map((l) => {
+      if (/^\s*(\/\/|\*)/.test(l)) return ''
+      /*
+       * 行尾的 `//`：**先把字符串遮掉再找它**。
+       *
+       * 直接 `split('//')[0]` 会把 `'http://x'` 拦腰截断，那时扫的是另一种
+       * 语言 —— 这是 check-requests 上踩过的坑，所以第一版干脆不剥行尾注释。
+       * 遮掉字符串之后就没有这个风险了，代价是四行。
+       *
+       * 量过：今天一处都没有（`// 见 '…'` 这种写法我没用过）。
+       * **但「今天是 0」会悄悄失效**，而它失效的样子是一条误报 —— 一个误报
+       * 就够让人开始跳过这个检查器的输出。
+       */
+      const masked = l.replace(LITERAL, (m) => '\u0000'.repeat(m.length))
+      const i = masked.indexOf('//')
+      return i === -1 ? l : l.slice(0, i)
+    })
     .join('\n')
 }
 
@@ -65,9 +84,6 @@ function walk(dir, out = []) {
 }
 
 const MARK = /\*\*|__/
-
-/** 字符串字面量。三种引号都要，因为文案里有中文引号、也有模板串。 */
-const LITERAL = /'([^'\\\n]|\\.)*'|"([^"\\\n]|\\.)*"|`([^`\\]|\\.)*`/g
 
 const findings = []
 let scanned = 0
@@ -104,6 +120,40 @@ for (const file of walk(SRC)) {
       }
     }
   }
+}
+
+/*
+ * 自检二：**字符串里出现 `/*` 或 `*​/` 时，这个扫描器就不能信了。**
+ *
+ * 剥块注释用的是正则，它分不清字符串里的 `/*` 和真的注释开头 —— 撞上一个就会
+ * 从那里一路吃到下一个 `*​/`，把中间的真代码整段抹掉。抹掉的部分不会报错，
+ * 它只是不再被检查：**一个静默的假阴**。
+ *
+ * 我是探针撞出来的：拿 `'http://x/**y**'` 当被试，结果字符串总数从 3151 掉到
+ * 3146 —— 加了一个反而少了五个。那一刻的第一反应是「尾注释那段写坏了」，
+ * 而真因在另一处。**破坏手段又一次没和断言对称。**
+ *
+ * 不写状态机（后端那边写了，他们的 Go 源码里这类字符串多）：这里量过是 0 处，
+ * 而 `src/` 下会出现 `/*` 的字符串基本只有 glob，那些在 scripts/ 和配置里，
+ * 不在扫描范围内。**但 0 会悄悄变成 1**，所以把它变成会响的：撞上就中止，
+ * 而不是继续报一个不作数的「干净」。
+ */
+const RAW_LITERAL = /'([^'\\\n]|\\.)*'|"([^"\\\n]|\\.)*"|`([^`\\]|\\.)*`/g
+const confusing = []
+for (const file of walk(SRC)) {
+  for (const m of readFileSync(file, 'utf8').matchAll(RAW_LITERAL)) {
+    if (m[0].includes('/*') || m[0].includes('*/')) {
+      confusing.push(`${relative(WEB, file)}: ${m[0].slice(0, 60)}`)
+    }
+  }
+}
+if (confusing.length) {
+  console.log('\n✗ 有字符串里带着 `/*` 或 `*/`，剥块注释的正则会被它骗过去：\n')
+  for (const c of confusing) console.log(`    ${c}`)
+  console.log('\n  被骗之后它会把一段真代码当注释抹掉 —— 那段就不再被检查了，')
+  console.log('  而且不会有任何提示。**下面的结论不作数。**')
+  console.log('  要么改掉那个字符串，要么把剥注释换成走完整个文件的状态机。\n')
+  process.exit(1)
 }
 
 /* ── 自检：一个字符串都没扫到就别报「干净」 ─────────────────────────── */

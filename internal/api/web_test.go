@@ -183,3 +183,53 @@ func TestMissingAssetIs404NotIndexHTML(t *testing.T) {
 		}
 	}
 }
+
+// **「不在」和「读不到」必须说成两句话。**
+//
+// 灰度上真实发生过：文件明明在（root 跑 `ls` 看得见 index.html、assets/），
+// 而主控咬定「静态文件不在」。真因是 tar 包顶层那个 `./` 带着 0700，
+// 解包时盖到了目标目录上，而主控跑在 `User=edge` 下——连目录都进不去。
+//
+// 原先的实现把 os.Stat 的 err 整个丢掉了，两种错走同一句话。
+//
+// **一句错误的诊断比没有诊断更贵：它给了人一个方向，而那个方向是反的。**
+// 「文件不在」把人送去 `ls`，`ls`（用 root 跑）显示文件都在，
+// 于是他去查解包、查路径、查版本——唯独不会去查权限，因为主控已经说了。
+//
+// 这条测试钉的是那个**分岔**，不是文案：报错里必须出现「权限」这个方向，
+// 且必须提醒 root 的 `ls` 说明不了问题。
+func TestUnreadableWebRootSaysPermissionNotMissing(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("以 root 跑时权限位不起作用，这条测不出东西 —— " +
+			"跳过而不是让它假绿")
+	}
+	dir := webRoot(t)
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) }) // 不还原 t.TempDir 删不掉
+
+	r, _ := newServerWithWeb(t, dir)
+	code, body := get(r, "/")
+	if code != http.StatusNotFound {
+		t.Fatalf("/ = %d", code)
+	}
+	if strings.Contains(body, "静态文件不在") {
+		t.Errorf("读不到不等于不在 —— 这句话会把人送去 ls，"+
+			"而 ls 会告诉他文件都在：%s", body)
+	}
+	for _, want := range []string{"权限", "ls", "EC_WEB_ROOT"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("报错里缺 %q —— 排查方向指不出来：%s", want, body)
+		}
+	}
+
+	// 目录恢复可读之后，同一个请求要能正常拿到 index.html。
+	// **没有这一条，上面那些断言在「serveWeb 对所有请求都报权限错」时也全绿。**
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := get(r, "/"); code != http.StatusOK || !strings.Contains(body, "<!doctype") {
+		t.Fatalf("权限恢复之后应当正常伺服 index.html，实际 %d %q", code, body)
+	}
+}

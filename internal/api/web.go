@@ -1,6 +1,9 @@
 package api
 
 import (
+	"errors"
+	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"path"
@@ -43,7 +46,7 @@ func (s *Server) serveWeb(root string) gin.HandlerFunc {
 		}
 
 		if root == "" {
-			s.notDeployed(c)
+			s.notDeployed(c, nil)
 			return
 		}
 
@@ -78,23 +81,57 @@ func (s *Server) serveWeb(root string) gin.HandlerFunc {
 		// 其余一律回 index.html：控制台是单页应用，`/nodes`、
 		// `/workbench/global:tls` 这些路径在服务端不存在，由前端路由接管。
 		if _, err := os.Stat(index); err != nil {
-			s.notDeployed(c)
+			s.notDeployed(c, err)
 			return
 		}
 		c.File(index)
 	}
 }
 
-// notDeployed 在前端产物不在时说清楚，而不是回一个空白页或 500。
+// notDeployed 在前端产物取不到时说清楚，而不是回一个空白页或 500。
 //
 // **「没部署前端」和「前端崩了」要分得开。** 主控可以只跑 API
 // （灰度时先起后端是常见做法），那时打开根路径的人需要知道
 // 缺的是什么、该怎么补——而不是对着一个 404 猜。
-func (s *Server) notDeployed(c *gin.Context) {
+//
+// **而「不在」和「读不到」也要分得开，这一条是用血换的。**
+//
+// 这里原先无论 os.Stat 报什么都说「静态文件不在」，err 被丢掉了。
+// 灰度上真实发生过：文件明明在（root `ls` 看得见），主控咬定它不在。
+// 真因是 tar 包顶层那个 `./` 带着 0700，解包时盖到了 /opt/edge/web 上，
+// 而主控跑在 User=edge 下——**连目录都进不去**。
+//
+// 那句「文件不在」把人直接送去 `ls`，而 `ls`（用 root 跑）会显示文件都在。
+// **一句错误的诊断比没有诊断更贵：它给了人一个方向，而那个方向是反的。**
+// 人会去查解包、查路径、查版本，唯独不会去查权限——因为主控已经"告诉"他了。
+func (s *Server) notDeployed(c *gin.Context, err error) {
 	c.Header("Content-Type", "text/plain; charset=utf-8")
+
+	// 权限问题单独成篇：它的排查方向跟「没解包」完全不同，
+	// 而两者在 `ls` 下看起来一模一样。
+	if errors.Is(err, fs.ErrPermission) {
+		c.String(http.StatusNotFound,
+			"控制台的静态文件读不到——不是不在，是没权限。\n\n"+
+				"主控从 EC_WEB_ROOT 找它们（当前：%q），系统报：%v\n\n"+
+				"注意用 root 跑 ls 会看到文件都在，那不说明主控读得到。\n"+
+				"主控跑在哪个用户下，就用哪个用户去试：\n"+
+				"  ls -ld %s\n"+
+				"  sudo -u <那个用户> test -r %s && echo 读得到 || echo 读不到\n\n"+
+				"最常见的成因：tar 包顶层目录带着 0700，解包时盖到了目标目录上。\n"+
+				"  sudo chown -R <那个用户> %s && sudo chmod 755 %s\n\n"+
+				"API 不受影响，/api/v1/* 照常工作。\n",
+			s.webRoot, err, s.webRoot, filepath.Join(s.webRoot, "index.html"),
+			s.webRoot, s.webRoot)
+		return
+	}
+
+	detail := ""
+	if err != nil {
+		detail = fmt.Sprintf("系统报：%v\n\n", err)
+	}
 	c.String(http.StatusNotFound,
 		"控制台的静态文件不在。\n\n"+
-			"主控从 EC_WEB_ROOT 找它们（当前：%q）。\n"+
+			"主控从 EC_WEB_ROOT 找它们（当前：%q）。\n%s"+
 			"把前端产物解包到那个目录，或者把 EC_WEB_ROOT 指过去。\n\n"+
-			"API 不受影响，/api/v1/* 照常工作。\n", s.webRoot)
+			"API 不受影响，/api/v1/* 照常工作。\n", s.webRoot, detail)
 }

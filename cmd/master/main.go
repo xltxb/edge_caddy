@@ -3,8 +3,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"os"
@@ -71,11 +73,23 @@ func main() {
 	if abs, err := filepath.Abs(cfg.WebRoot); err == nil {
 		cfg.WebRoot = abs
 	}
-	if _, err := os.Stat(filepath.Join(cfg.WebRoot, "index.html")); err != nil {
+
+	// **而「不在」和「读不到」要分开说。** 这里原先无论 os.Stat 报什么都说
+	// 「不在」，err 被丢掉了——灰度上真实发生过：文件都在（root `ls` 看得见），
+	// 而主控跑在 User=edge 下连目录都进不去，日志和页面都咬定「不在」。
+	// 那句话把人送去查解包，而问题在权限。
+	// 一句错的诊断比没有诊断更贵：它给了人一个方向，而那个方向是反的。
+	switch _, err := os.Stat(filepath.Join(cfg.WebRoot, "index.html")); {
+	case errors.Is(err, fs.ErrPermission):
+		log.Warn("控制台静态文件读不到（没权限，不是不在），主控只提供 API",
+			"web_root", cfg.WebRoot, "err", err,
+			"提示", "主控不是 root。用它的身份验：sudo -u <该用户> test -r <路径>；"+
+				"常见成因是 tar 包顶层目录带 0700，解包时盖到了目标目录上")
+	case err != nil:
 		log.Warn("控制台静态文件不在，主控只提供 API",
-			"web_root", cfg.WebRoot,
+			"web_root", cfg.WebRoot, "err", err,
 			"提示", "把前端产物解到那里，或者把 EC_WEB_ROOT 指过去")
-	} else {
+	default:
 		log.Info("控制台静态文件", "web_root", cfg.WebRoot)
 	}
 

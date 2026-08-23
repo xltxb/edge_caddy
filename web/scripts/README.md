@@ -119,6 +119,25 @@ pnpm check:shapes        # 8 个端点，需要真主控在 localhost:8080
 有一行专门渲染它，**那一行我在 dev 里一次都没见过**）、设置里少了两个 warn 阈值。
 还抓到真主控在下发列表项里回了契约没写的 `targets`。
 
+## dev server 和真主控伺服得一样吗
+
+```bash
+pnpm check:serving       # 6 条，需要真主控 + dev server 同时起着
+```
+
+e2e 跑的是 dev server，生产是主控伺服静态文件。两边的 SPA fallback 各有各的
+实现，而在此之前**没有任何东西比过它们**——两边都对着自己的想象做。
+
+量出来三条不一致，方向都是 dev 更宽松：`/assets/` 下不存在的 chunk、
+`/api/` 下不存在的端点、`/ws`，主控都 404，dev 都回落 index。
+
+**`/api/` 那条不是无害的**：它把「这个端点不存在」变成「返回了一段 HTML」，
+同一个 bug 在 dev 和生产上给出两种完全不同的症状。`GET /nodes/:id/logs`
+那次正是这样。dev 那侧已经对齐（`mocks/ws-plugin.ts` 最后那道中间件）。
+
+断言不写死期望值，写「两边一样」：规则是主控定的（后端 `web_test.go` 守着），
+主控哪天改了这里会红，而那正是我该知道的时刻。
+
 ## DNS 凭据配上之后（还没轮到）
 
 ```bash

@@ -14,6 +14,7 @@
     "dev:real": "vite --mode real",
     "check:premises": "node scripts/check-premises.mjs",
     "check:shapes": "node scripts/check-shapes.mjs",
+    "check:serving": "node scripts/check-serving.mjs",
     "check:requests": "node scripts/check-requests.mjs",
     "gen:requests": "node scripts/check-requests.mjs --emit",
     "check:probes": "node scripts/probe.mjs",

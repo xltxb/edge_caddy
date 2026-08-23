@@ -96,6 +96,38 @@ export function wsMockPlugin(): Plugin {
         )
       })
 
+      /*
+       * **最后一道：跟真主控一样，这三类不回落到 index.html。**
+       *
+       * Vite 的 SPA fallback 对任何未匹配路径都回 index，而主控的
+       * `internal/api/web.go` 分得很细（后端 `web_test.go` 守着）：
+       *
+       *   - `/api/...` 与 `/ws` 永不回落，直接 404
+       *   - `/assets/` 下找不到的文件直接 404 —— 回落会让一个 hash 变了的
+       *     chunk 返回 HTML，浏览器报「Unexpected token '<'」，而那句话
+       *     完全指不到真因
+       *   - 其余路径回落 index（SPA 路由）
+       *
+       * 三条量过都不一致，方向都是 dev 更宽松。而「更宽松」在 `/api/` 这条上
+       * 不是无害的：它把**「这个端点不存在」变成「返回了一段 HTML」**，
+       * 于是同一个 bug 在 dev 和生产上给出两种完全不同的症状。
+       * `GET /nodes/:id/logs` 那次就是这样 —— 真主控 404，而 dev 下它会拿到
+       * 一份 index.html。
+       *
+       * 这一段放在所有 mock 中间件**之后**：MSW 拦掉的请求根本不会到服务端，
+       * 上面那些 MUTABLE 路径也已经处理过了，落到这里的就是「两边都没实现」。
+       */
+      server.middlewares.use((req, res, next) => {
+        const url = req.url ?? ''
+        const p = url.split('?')[0] ?? ''
+        const blocked =
+          p.startsWith('/api/') || p === '/api' || p === '/ws' || p.startsWith('/assets/')
+        if (!blocked) return next()
+        res.statusCode = 404
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+        res.end(`404 —— 主控不会把 ${p} 回落到 index.html，dev 这里也不。\n`)
+      })
+
       const send = (frame: unknown) => {
         const text = JSON.stringify(frame)
         for (const ws of clients) {
