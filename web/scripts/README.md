@@ -195,12 +195,20 @@ pnpm build && pnpm pack      # check:dist + 打包 + 验包
 
 **在此之前这是我每次手敲的一串 bash，而灰度上撞到的那个 bug 正是这么混进来的。**
 
-包顶层那个 `./` 是 0700 —— `mktemp -d` 在 macOS 上的默认模式。灰度现场解出来
-是 `drwx------ root root`，主控跑在 `User=edge` 下连目录都进不去。
+灰度上 `namei -l` 指出来的是这个：
 
-（中间那一步**我复现不了**：本机量过，带不带 `--strip-components=1`，目标目录
-的模式都没被改。那依赖 Linux + GNU tar + root。现场结果是真的，机制我这边
-证实不了 —— 写在这里免得它看起来比实际确定。）
+```
+drwx------ 501  staff  opt        ← 就是它
+drwxr-xr-x edge edge   edge
+drwxr-xr-x edge edge   web
+```
+
+**被印上的是 `/opt` 本身，0700、属主 UID 501 / staff** —— 我这台 macOS 的账号，
+印在一台 Debian 上。解包时没带 `-C`，归档里那个 `./` 就对应到了 `/opt`。
+
+所以问题不只是模式，**是归档带着打包机器的身份出门**。两处一起改：顶层放
+具名目录 `edge-console/`（归档里不再有任何条目对应解包目标），
+`--uid 0 --gid 0 --uname root --gname root`（不带身份）。
 
 现场最刺眼的一幕：root 跑 `ls` 看到文件都在，而主控页面说「静态文件不在」。
 **两句话直接矛盾，因为看的人是 root，主控不是。**
