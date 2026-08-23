@@ -100,6 +100,11 @@ var unimplementedEndpoints = []string{}
 var contractMentionExemptions = map[string]string{
 	"PUT /routes/nope.com":                "错误码表里的例子，不是端点声明",
 	"POST /deploys/:cfg_version/rollback": "同一端点的另一种写法，实现里参数名是 :id",
+
+	// 这是 **Cloudflare 的** URL，不是我们的。契约里引它是为了说明
+	// account_id 为空时那个双斜杠长什么样 —— 扫描器分不出上游和自家，
+	// 而分不出是对的：它宁可多问一句，也不该猜。
+	"GET /accounts//load_balancers/pools": "上游（Cloudflare）的路径，出现在 account_id 必填那段的病症描述里",
 }
 
 func registered(r *gin.Engine) map[string]bool {

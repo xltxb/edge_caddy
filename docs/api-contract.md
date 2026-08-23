@@ -1659,10 +1659,24 @@ cursor 分页（§0.5），可选 `?operator=abiu`。倒序。
 | `domain` / `sub` | ✓ | ✓ |
 | `credential` | `ID,Token` | API Token 或 Global Key |
 | `credential_mode` | — | `api_token` \| `global_key` |
-| `zone_id` | — | ✓ |
-| `email` | — | 仅 `global_key` |
-| `account_id` | — | 可选 |
+| `zone_id` | — | **必填** |
+| `email` | — | **`global_key` 时必填** |
+| `account_id` | — | **必填** |
 | `clear` | ✓ | ✓ |（独立动作，见下）
+
+> `account_id` 这一行**此前写的是「可选」，那是错的**，前端的输入框因此
+> 标着「可空」。灰度上的症状：Cloudflare 只填 kind / domain / token 保存成功、
+> 设置页显示已配置，而推权重时回
+> `GET /accounts//load_balancers/pools` → 7003「Could not route to ...」。
+>
+> **那个双斜杠就是空字段**，而 Cloudflare 的错误消息不认识我们的字段名——
+> 它把人送去查 token 和权限。
+>
+> `account_id` / `zone_id` 都是拼进 URL 的路径段：加权调度用的 pool 是账号级的，
+> load balancer 挂在 zone 上。少任何一个都不是「功能弱一点」，是**整条推送不成立**。
+>
+> 校验（`PUT /settings` 返回 `1002` + `dns_provider.account_id`）与装配共用
+> `store.MissingFields`，`dnsctl` 那边另有一道就地拦截：拼出空路径段就不发。
 
 **每个字段独立判断：不给 = 不动，给了 = 设成那个值。**
 所以 `{"dns_provider":{}}` **什么也不改**（不是清空——这一行此前写反了，

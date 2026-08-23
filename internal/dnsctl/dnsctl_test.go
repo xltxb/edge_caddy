@@ -467,3 +467,36 @@ func TestCapabilitiesAreHonest(t *testing.T) {
 		}
 	}
 }
+
+// TestCloudflareRefusesEmptyPathSegment 钉的是**空路径段就地拦下，不发出去**。
+//
+// account_id 为空时 URL 会拼成 `/accounts//load_balancers/pools`，
+// 而 Cloudflare 回的是 7003「Could not route to ...，perhaps your object
+// identifier is invalid?」——它把人送去查 token 和权限，
+// 而真正的原因是一个字段没填。**远端的错误消息不认识我们的字段名。**
+//
+// 校验那一侧（store.MissingFields）现在会拦住这种配置，所以正常情况下
+// 走不到这里。这条守的是下一个被拼进 URL 的字段：那个判据在另一个包里，
+// 而这道防线就在拼接的旁边。
+func TestCloudflareRefusesEmptyPathSegment(t *testing.T) {
+	api := &fakeAPI{respond: map[string]string{}}
+	cf := dnsctl.NewCloudflare("", "zone", "cdn.example.com") // account_id 空
+	cf.Token = "tok"
+	cf.Base = api.server(t)
+
+	plan := dnssched.Build("cdn.example.com", dnssched.Weights{
+		"ct": {"a": 100}, "cu": {"a": 100}, "cm": {"a": 100}, "ov": {"a": 100},
+	}, []dnssched.NodeState{node("a", "1.1.1.1")})
+
+	err := cf.Sync(context.Background(), plan)
+	if err == nil {
+		t.Fatal("account_id 为空却没报错 —— 这个请求会被发出去，" +
+			"换回一句和「少填了一项」毫无关系的「路由不到」")
+	}
+	if !strings.Contains(err.Error(), "account_id") {
+		t.Errorf("报错没点名是哪个字段：%v", err)
+	}
+	if n := len(api.seen()); n != 0 {
+		t.Errorf("发出了 %d 个请求 —— 应该在拼接那一步就停住，一个都不发", n)
+	}
+}

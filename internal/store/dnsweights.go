@@ -62,6 +62,35 @@ func (c DNSProviderSettings) MissingFields() []string {
 	if c.Credential == "" && !c.CredentialOK {
 		missing = append(missing, "credential")
 	}
+
+	// **各家要的东西不一样，而这个判据必须知道这件事。**
+	//
+	// 灰度上撞到的：Cloudflare 只填了 kind / domain / token 就保存成功了，
+	// 而推权重时报 `GET /accounts//load_balancers/pools`——**那个双斜杠**
+	// 就是 account_id 为空。Cloudflare 报的是 7003「路由不到」，
+	// 一句和「你少填了一项」毫无关系的话。
+	//
+	// 上面三项是「哪家都要」，它们守不住这个：**一份配置可以三项齐全
+	// 而对这一家仍然不能用**。判据缺了服务商这一维，于是它对 Cloudflare
+	// 的回答一直是「够了」。
+	//
+	// 契约那张表把 account_id 写成「可选」，前端的输入框因此标着「可空」
+	// ——**是我写错了，而前端是照着做的**。表已改。
+	switch c.Kind {
+	case "cloudflare":
+		// 两个都是拼进 URL 的路径段：空了不会报「缺参数」，
+		// 会拼出 //，然后由对方回一句风马牛不相及的错。
+		if c.AccountID == "" {
+			missing = append(missing, "account_id") // 加权调度用的 pool 是账号级的
+		}
+		if c.ZoneID == "" {
+			missing = append(missing, "zone_id") // load balancer 挂在 zone 上
+		}
+		// Global API Key 模式要 email 配对；API Token 模式不要。
+		if c.CredentialMode == "global_key" && c.Email == "" {
+			missing = append(missing, "email")
+		}
+	}
 	return missing
 }
 

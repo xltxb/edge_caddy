@@ -318,20 +318,43 @@ func TestIncompleteDNSProviderIsRejected(t *testing.T) {
 		t.Errorf("被拒的配置不该留下痕迹：%s", got.Data)
 	}
 
-	// 二、**反过来：完整的配置照常收下。**
+	// 二、**通用三项齐全，而 Cloudflare 还差它自己要的那两项。**
+	//
+	// 这一段此前就是「完整的配置」，测试是绿的——**它相信的正是那个 bug**。
+	// 灰度上的症状：保存成功、设置页显示已配置，而推权重时 Cloudflare 回
+	// `/accounts//load_balancers/pools` 7003「路由不到」。那个双斜杠就是
+	// account_id 为空，而那句错误消息不认识我们的字段名。
+	_, half := do(t, r, "PUT", "/api/v1/settings", map[string]any{
+		"dns_provider": map[string]any{
+			"kind": "cloudflare", "domain": "example.com", "sub": "cdn",
+			"credential_mode": "api_token", "credential": "tok",
+		},
+	}, auth)
+	if half.Code != api.CodeValidation {
+		t.Fatalf("缺 account_id / zone_id 的 Cloudflare 配置应当以 1002 拒绝，"+
+			"实际 code=%d msg=%q", half.Code, half.Msg)
+	}
+	for _, f := range []string{"dns_provider.account_id", "dns_provider.zone_id"} {
+		if !strings.Contains(string(half.Data), f) {
+			t.Errorf("要点名缺的是 %s，实际 %s", f, half.Data)
+		}
+	}
+
+	// 三、**反过来：真正完整的配置照常收下。**
 	//
 	// 没有这一条，一个「无条件拒绝所有 dns_provider」的实现也能让上面全过。
 	_, ok := do(t, r, "PUT", "/api/v1/settings", map[string]any{
 		"dns_provider": map[string]any{
 			"kind": "cloudflare", "domain": "example.com", "sub": "cdn",
 			"credential_mode": "api_token", "credential": "tok",
+			"account_id": "acc123", "zone_id": "zone123",
 		},
 	}, auth)
 	if ok.Code != api.CodeOK {
 		t.Fatalf("完整的配置不该被拒：code=%d msg=%q", ok.Code, ok.Msg)
 	}
 
-	// 三、**只改别的设置、根本没碰 dns_provider 时不受影响。**
+	// 四、**只改别的设置、根本没碰 dns_provider 时不受影响。**
 	//
 	// 「一个字段都没填」是「还没开始配」，不是「配错了」——
 	// 把它也拒掉的话，一台还没配 DNS 的主控连心跳间隔都改不了。

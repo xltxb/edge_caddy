@@ -287,6 +287,21 @@ type cfEnvelope struct {
 }
 
 func (c *Cloudflare) call(ctx context.Context, method, path string, body, out any) error {
+	// **拼出空路径段就地拦下，别把它发出去。**
+	//
+	// account_id 为空时 "/accounts/"+id+"/load_balancers/pools" 会变成
+	// `/accounts//load_balancers/pools`，而 Cloudflare 回的是
+	// 7003「Could not route to ...，perhaps your object identifier is invalid?」
+	// —— 一句让人去查 token 和权限的话，而真正的原因是一个字段没填。
+	//
+	// 校验那一侧（store.MissingFields）现在会拦住这种配置，所以正常情况下
+	// 走不到这里。留着它是因为**下一个拼进 URL 的字段不会来问我**：
+	// 判据在别的包里，而这一行就在拼接的旁边。
+	if strings.Contains(path, "//") {
+		return fmt.Errorf("请求路径里有空的一段（%s）—— "+
+			"account_id 或 zone_id 没填，这个请求发出去只会换回一句「路由不到」", path)
+	}
+
 	var rdr io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
