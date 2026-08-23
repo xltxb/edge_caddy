@@ -87,6 +87,31 @@ export function canToggleDns(n: EdgeNode): { ok: boolean; reason: string } {
  * 前提要说「先做那件事」，确认要说「你确定吗」——写反了，人会以为自己在被
  * 劝阻，然后找地方跳过它。
  */
+/**
+ * 隧道那一格里，**跨时间**的那半句。返回 `null` 表示不必说。
+ *
+ * 徽标、`online`、心跳年龄全是**瞬时值**。隧道断开到重连只要 1–2 秒，而离线
+ * 判定要连续错过 9 秒才翻 down —— **一条每十分钟断一次的隧道，在它们上面全部
+ * 是健康的**（契约 §4）。灰度上真发生过，当时唯一的痕迹在 Agent 日志里。
+ *
+ * 三支各说各的，而**最要紧的是 null 那一支**：
+ *
+ *   `null`  数不出来 —— 要**明说**。留白会被读成「没问题」，显示 0 更糟。
+ *   `0`     不说话 —— 常态，占着地方会稀释掉真正要看的那一行。
+ *   `> 0`   说出次数。
+ *
+ * 这个字段的存在理由就是「在一切看起来正常时指出异常」，而 `0` 恰好是「一切
+ * 正常」的样子。**把数不出来渲染成 0，等于让它在自己失效的那一刻，伪装成它
+ * 最想否定的那个状态** —— 别的字段退化成 0 只是丢信息，这一个是主动说反话。
+ */
+export function reconnectNote(n: EdgeNode): string | null {
+  if (n.reconnects1h === null) return '断连次数数不出来（不是 0）'
+  if (n.reconnects1h > 0) {
+    return `过去 1 小时断连 ${n.reconnects1h} 次 —— 上面那几个字段都是此刻的值，看不出这个`
+  }
+  return null
+}
+
 export function canDelete(n: EdgeNode): { ok: boolean; reason: string } {
   if (n.drainedAt) return { ok: true, reason: '' }
   return {

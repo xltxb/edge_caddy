@@ -108,4 +108,27 @@ test.describe('节点元数据与删除', () => {
     await expect(dialog).toContainText('隧道证书')
     await expect(dialog.getByLabel('节点 ID')).toHaveCount(0)
   })
+
+  /*
+   * 这一条守的是**这个字段唯一的用途**：在别的字段全绿时说话。
+   *
+   * seed 里 node-jp-01 是那个场景的固定夹具 —— status ok、在线、心跳新鲜、
+   * 不漂移，四个字段全是健康的，而它过去一小时断了 4 次。灰度上真发生过
+   * （CDN 每十几分钟切一次长连接），当时界面上看不出任何异常。
+   *
+   * 配一条反面：node-hk-01 的 reconnects_1h 是 0，那一句**不该出现** ——
+   * 没有反面的话，一个「永远显示这句」的实现也能让上半条通过。
+   */
+  test('徽标全绿而隧道在反复断：详情里说得出来，而稳定的节点不说', async ({ page }) => {
+    await expand(page, 'node-jp-01')
+    const jp = page.locator('li', { hasText: 'node-jp-01' })
+    await expect(jp).toContainText('已连接')
+    await expect(jp).toContainText('过去 1 小时断连')
+    await expect(jp).toContainText('4')
+
+    await expand(page, 'node-hk-01')
+    const hk = page.locator('li', { hasText: 'node-hk-01' })
+    await expect(hk).toContainText('已连接')
+    await expect(hk).not.toContainText('过去 1 小时断连')
+  })
 })

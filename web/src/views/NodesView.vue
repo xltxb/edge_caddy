@@ -14,7 +14,7 @@ import { useUiStore } from '@/stores/ui'
 import { hbAgeSec, type EdgeNode } from '@/model'
 import { fmtClock, fmtConns, fmtHbAge } from '@/utils/format'
 import type { DrainStep } from '@/api/types'
-import { canDelete, canToggleDns, nodeFlags } from '@/nodes/flags'
+import { canDelete, canToggleDns, nodeFlags, reconnectNote } from '@/nodes/flags'
 
 const route = useRoute()
 const nodes = useNodesStore()
@@ -333,6 +333,17 @@ const LEVEL_COLOR: Record<string, string> = {
                     · 而状态是「{{ n.status === 'ok' ? '在线' : '异常' }}」，两者不一致；
                     短暂如此是判定的去抖窗口，持续如此要查主控
                   </span>
+                  <!--
+                    **跨时间的那一半，跟瞬时的那一半摆在一起。**
+
+                    上面那句「已连接 / 未连接」和左边的徽标、心跳年龄，全是**瞬时值**。
+                    隧道断开到重连只要 1–2 秒，而离线判定要 9 秒才翻 down ——
+                    **一条每十分钟断一次的隧道，在它们上面全部是健康的**（契约 §4）。
+                    灰度上真发生过，当时唯一的痕迹在 Agent 日志里，要人主动去翻。
+
+                    0 不显示：它是常态，占着地方会稀释掉真正要看的那一行。
+                  -->
+                  <span v-if="reconnectNote(n)" class="warn">· {{ reconnectNote(n) }}</span>
                 </dd>
               </dl>
 

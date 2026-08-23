@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canDelete, canToggleDns, nodeFlags } from './flags'
+import { canDelete, canToggleDns, nodeFlags, reconnectNote } from './flags'
 import type { EdgeNode } from '@/model'
 
 const node = (over: Partial<EdgeNode> = {}): EdgeNode => ({
@@ -10,6 +10,7 @@ const node = (over: Partial<EdgeNode> = {}): EdgeNode => ({
   ip: '203.0.113.7',
   status: 'ok',
   online: true,
+  reconnects1h: 0,
   cpu: 10,
   mem: 20,
   conns: 100,
@@ -161,5 +162,43 @@ describe('删记录的前提是「已下线」，不是「已离线」', () => {
     const r = canDelete(node({ drainedAt: null }))
     expect(r.reason).toContain('先下线')
     expect(r.reason).not.toMatch(/确定|不可撤销|谨慎|危险/)
+  })
+})
+
+describe('隧道断连次数：0 和「数不出来」必须分得开', () => {
+  /*
+   * 这一组守的是**一个假值的危害取决于它引不引起疑问**。
+   *
+   * 这个字段的存在理由是「在一切看起来正常时指出异常」，而 `0` 恰好是「一切
+   * 正常」的样子 —— 把数不出来渲染成 0（或者干脆不显示），等于让它在自己失效
+   * 的那一刻伪装成它最想否定的那个状态。而人**不会**去追问一个 0，
+   * 不像 `dns_actor` 那个 `"system"` 至少会让人问「那是谁」。
+   */
+  it('null：必须明说数不出来，而且要否掉 0 这个读法', () => {
+    const note = reconnectNote(node({ reconnects1h: null }))
+    expect(note).not.toBeNull()
+    expect(note).toContain('数不出来')
+    // **这一句挡的是「留白」和「说成 0」两种退化** —— 两者在界面上都读作「没问题」
+    expect(note).toContain('不是 0')
+  })
+
+  it('0：不说话 —— 常态占着地方会稀释掉真正要看的那一行', () => {
+    expect(reconnectNote(node({ reconnects1h: 0 }))).toBeNull()
+  })
+
+  it('大于 0：说出次数', () => {
+    expect(reconnectNote(node({ reconnects1h: 4 }))).toContain('4')
+  })
+
+  /*
+   * **徽标全绿时它仍然要说话** —— 那正是它唯一的用途。
+   *
+   * 这条挡的是「顺手给它加个 !online 之类的前置条件」：那会让它只在别的字段
+   * 已经报警时才出现，而它存在的意义恰恰是别的字段都不报警的那一刻。
+   * 灰度上真发生过：CDN 每十几分钟切一次长连接，status/online/hb_age_ms 全绿。
+   */
+  it('status ok + 在线 + 心跳新鲜，照样说 —— 那是它唯一的用途', () => {
+    const n = node({ status: 'ok', online: true, hbAgeMs: 300, reconnects1h: 4 })
+    expect(reconnectNote(n)).toContain('4')
   })
 })

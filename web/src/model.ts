@@ -44,6 +44,14 @@ export interface EdgeNode {
    * 变红。所以详情里只把两个事实并列摆出来，判断留给人。
    */
   online: boolean
+  /**
+   * 过去一小时隧道断了又接上几次。**null = 数不出来，不是 0。**
+   *
+   * 它是唯一一个能在徽标全绿时指出问题的字段 —— 隧道断开到重连只要 1–2 秒，
+   * 而离线判定要 9 秒才翻 down，所以一条每十分钟断一次的隧道，在 status /
+   * online / hbAgeMs 上全部是健康的。判断留给人，这里只把数摆出来。
+   */
+  reconnects1h: number | null
   cpu: number
   mem: number
   conns: number
@@ -86,6 +94,12 @@ export function fromNodeWire(w: NodeWire, stampedAt = Date.now()): EdgeNode {
     ip: w.public_ip,
     status: w.status,
     online: w.online ?? false,
+    /*
+     * `?? null` 同时兜住两件事：后端算不出来、以及主控太旧还没有这个字段。
+     * 对看界面的人来说两者一样 —— 这个数拿不到。**不能兜成 0**：0 是
+     * 「这条隧道很稳」，而那正是数不出来时最不该说的一句话。
+     */
+    reconnects1h: w.reconnects_1h ?? null,
     cpu: w.cpu,
     mem: w.mem,
     conns: w.conns,
