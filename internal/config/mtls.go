@@ -19,7 +19,7 @@ func ValidateMTLS(enabled bool) error {
 	if !enabled {
 		return nil
 	}
-	return fmt.Errorf("EC_MTLS 打开了，而控制台的 mTLS **还没有实现**：\n" +
+	return fmt.Errorf("EC_MTLS 打开了，而控制台的 mTLS 还没有实现：\n" +
 		"  ADR-0013 说它以 tls.Config.ClientAuth 实现，那一半是空的。\n" +
 		"  这个开关此前唯一的效果是把会话 Cookie 标成 Secure，\n" +
 		"  而那会让你在纯 HTTP 的主控上登录不上——一个跟 mTLS 无关的故障。\n" +

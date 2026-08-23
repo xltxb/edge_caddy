@@ -241,3 +241,35 @@ func TestSchemaErrorIsRejectedConsistently(t *testing.T) {
 		t.Fatalf("反复喂坏配置之后在跑的配置没存活：得到 %d %q", code, body)
 	}
 }
+
+// **这个客户端不复用连接，而那是一个有理由的选择，不是默认值。**
+//
+// Caddy 每一次写配置都会重启 admin 监听（实测，日志见 NewCaddyClient 的注释），
+// 所以这个客户端发出的每个写请求都会让自己刚用过的那条连接作废。
+// 旧监听是异步关掉的，于是有一个窗口：Go 从池里取出连接、正要写请求，
+// 那一头被关了——`Post ...: EOF`。全量并行跑时撞见过两次，
+// 两次都在 ApplyConfig 里紧跟 putEmptyApps 的那个 POST 上，
+// **而那是每一台全新机器首次下发必经的一步**。
+//
+// 这条断言是白盒的，它钉的不是行为而是**理由**：
+// 顺序跑复现不出那个竞态（30 次 0 失败，窗口拉宽到 80ms 仍是 0 失败），
+// 所以没有任何一条黑盒测试会在有人把 DisableKeepAlives 删掉时变红。
+//
+// **一个复现不出来的竞态，只能靠钉住那个消除它的决定。**
+// 白盒在这里不是偷懒，是唯一诚实的选项——换成「跑一百次都没错」那种测试，
+// 它平时全绿、回归之后大概率还是全绿，那才是假的保障。
+func TestCaddyClientDoesNotReuseConnections(t *testing.T) {
+	for _, admin := range []string{"http://127.0.0.1:2019", "unix//tmp/a.sock"} {
+		c := agent.NewCaddyClient(admin)
+		tr, ok := c.HTTP.Transport.(*http.Transport)
+		if !ok {
+			t.Fatalf("%s：Transport 不是 *http.Transport（%T），"+
+				"那就无从保证它不复用连接", admin, c.HTTP.Transport)
+		}
+		if !tr.DisableKeepAlives {
+			t.Errorf("%s：连接复用被打开了。Caddy 每次写配置都会重启 admin 监听，"+
+				"池子里的连接必然作废——复用它换来的不是性能，是一个偶发的 EOF，"+
+				"而它落在每台新机器首次下发那一步上", admin)
+		}
+	}
+}

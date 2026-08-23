@@ -85,7 +85,7 @@ func ValidateImport(domain string, certPEM, keyPEM []byte) (Imported, error) {
 	}
 	if d := time.Until(leaf.NotAfter); d < 14*24*time.Hour {
 		out.Warnings = append(out.Warnings,
-			fmt.Sprintf("这张证书 %.0f 天后到期。导入的证书**主控不会自动续期**，"+
+			fmt.Sprintf("这张证书 %.0f 天后到期。导入的证书主控不会自动续期，"+
 				"到期前要再导一次", d.Hours()/24))
 	}
 	return out, nil

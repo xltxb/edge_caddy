@@ -75,7 +75,7 @@ func New(t *testing.T) *Caddy {
 	if err != nil {
 		t.Fatalf("找不到 caddy 二进制：%v\n"+
 			"渲染器的集成测试要求本机有钉死版本的 Caddy（2.11.x）。"+
-			"这不与 ADR-0004 冲突——那条说的是**生产主控**不装 Caddy。", err)
+			"这不与 ADR-0004 冲突——那条说的是「生产主控」不装 Caddy。", err)
 	}
 
 	// 短路径：macOS 的 sun_path 只有 104 字节，t.TempDir() 给的路径远超它。
@@ -158,7 +158,7 @@ func New(t *testing.T) *Caddy {
 
 		if t.Failed() {
 			if exitedOnItsOwn {
-				t.Logf("caddy 进程在测试结束前**已经自己退出**（state=%v）—— "+
+				t.Logf("caddy 进程在测试结束前已经自己退出（state=%v）—— "+
 					"这多半就是失败的原因", cmd.ProcessState)
 			} else {
 				t.Log("caddy 进程直到测试结束仍然活着 —— 失败不是因为它死了")
@@ -227,10 +227,17 @@ func (c *Caddy) PostApp(name string, body []byte) (int, string) {
 	return resp.StatusCode, string(b)
 }
 
+// unixClient 与 agent.NewCaddyClient 用同一套设置，**包括不复用连接**。
+//
+// 理由写在 internal/agent/caddy.go 的 NewCaddyClient 上（Caddy 每次写配置
+// 都重启 admin 监听，池子里的连接必然作废）。这里跟着改，是因为
+// 这个 flake 恰恰是在这个包的测试里现身的——**测试替身和被测对象在
+// 连接复用这件事上必须一致，否则测试跑的是另一条路径。**
 func unixClient(sock string) *http.Client {
 	return &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
+			DisableKeepAlives: true,
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return (&net.Dialer{}).DialContext(ctx, "unix", sock)
 			},

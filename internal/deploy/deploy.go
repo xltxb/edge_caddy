@@ -382,7 +382,7 @@ func (s *Scheduler) effective(ctx context.Context, resKeys []string) ([]model.Ro
 		}
 		orphans = append(orphans, render.Issue{
 			ResKey: k, Field: "res_key",
-			Reason: "没有这个资源。草稿是**在已有资源上的改动**，没有底子合并不出东西；" +
+			Reason: "没有这个资源。草稿是「在已有资源上的改动」，没有底子合并不出东西；" +
 				"要新建请先建出资源本身，再改它的草稿",
 		})
 	}

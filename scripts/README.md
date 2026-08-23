@@ -10,6 +10,7 @@
 | `python3 scripts/probes.py --self-test` | 上面那个脚本自己还好使吗 | 改了 probes.py 之后 |
 | `python3 scripts/unread.py` | 有没有**写了但没人读**的 DB 列 / proto 字段 | 加了字段、关了功能之后 |
 | `python3 scripts/comments.py` | 三件：注释**首句在讲已经不成立的事**吗；陈述外部行为的理由**挂在会通知你的东西上**吗；**这份索引还准吗** | 写完注释之后、加删脚本之后 |
+| `python3 scripts/humantext.py` | 面向人的字符串里，有没有**渲染不出来的标记** | 写完 `msg` / `reason` 之后 |
 | `bash scripts/build.sh [版本号]` | 打后端的包（主控 + Agent，交叉编译 Linux amd64/arm64） | 要部署的时候 |
 | `bash deploy/edge-node_test.sh` | 部署脚本的那些承重约束还在吗 | 改了 `deploy/edge-node.sh` 之后 |
 
@@ -26,7 +27,8 @@
 
 **先证明自己不瞎。** 每个脚本都有装置自检：`gotest.py` 在「一条测试都没跑」
 时非零退出（编译失败、名字打错、全被 skip 都长成「0 失败」）；
-`unread.py` 读不到十万字节 Go 源码就报错；`comments.py` 找不到二十个文件就报错。
+`unread.py` 读不到十万字节 Go 源码就报错；`comments.py` 找不到二十个文件就报错；
+`humantext.py` 扫不到 20 个文件或 200 个字符串就报错。
 
 > 一次什么也没找到的扫描，要先证明它能找到什么。
 
@@ -35,7 +37,8 @@
 
 **盲区要说清，跟误报一样。** `unread.py` 的判据是「名字出现过吗」，
 所以 `at` / `id` / `msg` 这类短名会假阴性。不说的话，「0 项是新的」
-会被读成「确实没有新问题」。
+会被读成「确实没有新问题」。`humantext.py` 不看反引号原始字符串
+（正则、SQL、JSON 模板住在那里），也看不见拼接出来的标记。
 
 > 说清误报是在保护**真阳性**，说清盲区是在保护**真阴性**。两句都不是道歉。
 

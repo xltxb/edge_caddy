@@ -27,17 +27,46 @@ type CaddyClient struct {
 //
 // 支持后者不只是为了测试：Admin 走 unix socket 时它根本不占端口，
 // 也就不存在「谁都能连上回环 2019」这件事，姿态比 ADR-0010 里靠防火墙兜底更严。
+//
+// **不复用连接（DisableKeepAlives）。这不是保守，是这个端点的事实。**
+//
+// 实测：Caddy 每一次**写配置**都会重启 admin 监听。日志里是
+//
+//	PUT  /config/apps       → admin endpoint started
+//	POST /config/apps/http  → admin endpoint started
+//	POST /config/apps/pki   → admin endpoint started
+//	                        → stopped previous server（异步，滞后）
+//
+// 也就是说这个客户端发出的每一个写请求都会让**自己刚用过的那条连接作废**，
+// 连接池在这里从来就没有可复用的东西。而旧监听是异步关掉的，于是存在一个窗口：
+// Go 从池里取出一条连接、正要写请求，那一头被关了——`Post ...: EOF`。
+//
+// 这个 EOF 在全量并行跑时撞见过两次，两次都是 ApplyConfig 里紧跟 putEmptyApps
+// 的那个 POST。**而它是每一台全新机器首次下发必经的那一步**：空 Caddyfile
+// 的机器没有 apps 键，一定会走 putEmptyApps。
+//
+// 顺序跑复现不出来（30 次 0 失败，把窗口人为拉宽到 80ms 也是 0 失败）——
+// 因为窗口宽的时候 Go 反而能在取连接时就发现它已经死了，转而重新拨号。
+// 真正会出事的是**恰好在取出之后、写入之前**被关掉，那需要机器负载够重。
+//
+// 所以修法不是重试。**重试会把「连不上」和「被拒绝」揉成一件事，
+// 而 ADR-0005 的整套失败分类正建立在这两者的区分上。**
+// 不复用连接则是把那个窗口整个去掉：每次都新拨一条，没有池子里的陈货可取。
+// 代价是每个请求多一次 unix connect——一次下发也就几个请求。
 func NewCaddyClient(admin string) *CaddyClient {
 	c := &CaddyClient{Admin: admin, HTTP: &http.Client{Timeout: 10 * time.Second}}
 
 	if path, ok := strings.CutPrefix(admin, "unix/"); ok {
 		c.Admin = "http://caddy-admin" // 主机名只是占位，实际连的是 socket
 		c.HTTP.Transport = &http.Transport{
+			DisableKeepAlives: true,
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return (&net.Dialer{}).DialContext(ctx, "unix", path)
 			},
 		}
+		return c
 	}
+	c.HTTP.Transport = &http.Transport{DisableKeepAlives: true}
 	return c
 }
 
