@@ -330,11 +330,14 @@ func TestTLSPolicyHasNoDefaultEmail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pol.TLS.Email != "" {
-		t.Fatalf("不该替人编一个 ACME 邮箱，实际 %q", pol.TLS.Email)
-	}
-	// 其余枚举字段则必须有默认 —— 界面显示空会让人无从知道什么在生效。
-	if pol.TLS.MinVersion == "" || pol.TLS.KeyType == "" || pol.TLS.CA == "" {
+	// 枚举字段必须有默认 —— 界面显示空会让人无从知道什么在生效。
+	//
+	// （此前这里还断言「不该替人编一个 ACME 邮箱」。ca / email / key_type
+	// 三项随 ADR-0015 一起删了：它们只被校验、从不进渲染产物，
+	// 而它们的用途——主控签发证书——已经不存在。**那三项还是可编辑的**，
+	// 比一个恒为 false 的只读字段更坏：人会去改它，每一步都成功，
+	// 而什么也不会发生。）
+	if pol.TLS.MinVersion == "" {
 		t.Fatalf("枚举字段应当有默认值: %+v", pol.TLS)
 	}
 	if pol.Log.RateLimit {

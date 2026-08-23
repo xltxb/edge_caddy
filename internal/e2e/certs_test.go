@@ -335,18 +335,27 @@ func TestPolicyDefaultsReflectWhatIsActuallyRendered(t *testing.T) {
 	var p struct {
 		Spec struct {
 			MinVersion string `json:"min_version"`
-			KeyType    string `json:"key_type"`
-			CA         string `json:"ca"`
 			HTTP3      *bool  `json:"http3"`
 			HSTS       *bool  `json:"hsts"`
 			HSTSMaxAge int    `json:"hsts_max_age"`
+			// **这三个必须不在了**（ADR-0015）。它们只被校验、
+			// 从不进渲染产物，而它们的用途——主控签发证书——已经不存在。
+			KeyType string `json:"key_type"`
+			CA      string `json:"ca"`
+			Email   string `json:"email"`
 		} `json:"spec"`
 	}
 	if err := json.Unmarshal(e.Data, &p); err != nil {
 		t.Fatal(err)
 	}
-	if p.Spec.MinVersion == "" || p.Spec.KeyType == "" || p.Spec.CA == "" {
+	if p.Spec.MinVersion == "" {
 		t.Fatalf("枚举字段不该是空的 —— 界面会显示成「一个都没选」而无从说明真相: %+v", p.Spec)
+	}
+	// **不该出现的字段也要钉住。** 只钉「该有的都有」的话，
+	// 三个没有对象的字段会一直躺在响应里，而工作台会照着它们画表单——
+	// 人改了、下发了、每一步都成功，而什么也不会发生。
+	if p.Spec.KeyType != "" || p.Spec.CA != "" || p.Spec.Email != "" {
+		t.Errorf("ca / email / key_type 随 ADR-0015 一起删了，不该还在响应里: %+v", p.Spec)
 	}
 	if p.Spec.HTTP3 == nil || p.Spec.HSTS == nil {
 		t.Fatalf("开关字段应当有明确取值: %+v", p.Spec)
@@ -569,5 +578,50 @@ func TestImportRejectsCertForAnotherDomain(t *testing.T) {
 	list := r.mustDo("GET", "/certs", nil)
 	if contains(string(list.Data), "api.example.com") {
 		t.Errorf("被拒绝的证书不该进库：%s", list.Data)
+	}
+}
+
+// **列表要说出这张证书覆盖了什么。**
+//
+// 一张 `*.example.com` 在列表里看不出它覆盖什么，而那正是人想确认的第一件事
+// ——尤其在「主控不再签发、全靠外部平台推」之后：推错一张的后果要靠人眼看出来。
+//
+// 前端此前渲染的是 `scope` 和 `key_type` 两个字段，而**后端从来没返回过它们**
+// （certResp 里从第一天起就没有）。线上那两格一直是空的，
+// 而 mock 的 seed 提供了它们，dev 下一直看着正常 ——
+// **一个比真实更完整的替身，会让缺口在开发期隐形。**
+func TestCertListReportsWhatItCovers(t *testing.T) {
+	r := newRig(t)
+	certPEM, keyPEM := importableCert(t, "wild.example.com")
+	r.mustDo("PUT", "/certs/wild.example.com", map[string]any{
+		"cert_pem": string(certPEM), "key_pem": string(keyPEM),
+	})
+
+	e := r.mustDo("GET", "/certs", nil)
+	var d struct {
+		Items []struct {
+			Domain  string   `json:"domain"`
+			Domains []string `json:"domains"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Items) != 1 {
+		t.Fatalf("装置坏了：想要 1 张证书，实际 %d", len(d.Items))
+	}
+	got := d.Items[0]
+	if len(got.Domains) == 0 {
+		t.Fatal("列表要说出这张证书覆盖哪些域名 —— " +
+			"少了它，一张通配符证书在列表里跟单域名的长得一样")
+	}
+	var found bool
+	for _, x := range got.Domains {
+		if x == "wild.example.com" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("覆盖域名里应当有它自己，实际 %v", got.Domains)
 	}
 }

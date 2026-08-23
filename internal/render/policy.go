@@ -12,8 +12,8 @@ import (
 // 契约 §6.3 的 seed 值必须与这里一致，不一致就是文档和实现各说各话。
 var (
 	DefaultTLSPolicy = TLSPolicy{
-		CA: "letsencrypt", KeyType: "p256", MinVersion: "1.2",
-		HTTP3: true, HSTS: true, HSTSMaxAge: 63072000, OCSP: false,
+		MinVersion: "1.2",
+		HTTP3:      true, HSTS: true, HSTSMaxAge: 63072000, OCSP: false,
 	}
 	DefaultLogPolicy = LogPolicy{
 		Format: "json", Level: "INFO", RollSize: 50, RollKeep: 5,
@@ -21,13 +21,18 @@ var (
 	}
 )
 
+// TLSPolicy 里的每一项都**真的渲染进节点配置**。
+//
+// 此前还有 ca / email / key_type 三项，注释写着「主控签发证书时用的参数，
+// 不下发给节点」——而 ADR-0015 移除了主控签发，它们从此没有任何对象。
+//
+// 它们比一个恒为 false 的字段更坏：**那三项是可编辑的**。
+// 人会在工作台里把 CA 从 letsencrypt 改成 zerossl、按下发，
+// 每一步都成功，而什么也不会发生。
+//
+// 库里旧的 spec 还带着那三个键——ParsePolicies 用非严格 Unmarshal，
+// 它们会被静默忽略，不需要迁移。
 type TLSPolicy struct {
-	// CA / Email / KeyType 是**主控**签发证书时用的参数，不下发给节点。
-	CA      string `json:"ca,omitempty"`
-	Email   string `json:"email,omitempty"`
-	KeyType string `json:"key_type,omitempty"`
-
-	// 以下才是真正渲染进节点配置的。
 	MinVersion string `json:"min_version,omitempty"`
 	HTTP3      bool   `json:"http3"`
 	HSTS       bool   `json:"hsts"`
@@ -81,17 +86,6 @@ func validatePolicies(p Policies) []Issue {
 	default:
 		issues = append(issues, Issue{"global:tls", "spec.min_version", "只能是 1.2 或 1.3"})
 	}
-	switch p.TLS.KeyType {
-	case "", "p256", "p384", "rsa2048":
-	default:
-		issues = append(issues, Issue{"global:tls", "spec.key_type", "只能是 p256 / p384 / rsa2048"})
-	}
-	switch p.TLS.CA {
-	case "", "letsencrypt", "zerossl":
-	default:
-		issues = append(issues, Issue{"global:tls", "spec.ca", "只能是 letsencrypt 或 zerossl"})
-	}
-
 	switch p.Log.Format {
 	case "", "json", "console":
 	default:

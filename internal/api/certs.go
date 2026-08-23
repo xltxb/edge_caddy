@@ -19,6 +19,12 @@ type certResp struct {
 	Challenge string `json:"challenge"`
 	NotAfter  string `json:"not_after"`
 	DaysLeft  int    `json:"days_left"`
+	// Domains 是这张证书**实际覆盖**的域名（含通配符）。
+	//
+	// 一张 *.example.com 的证书在列表里看不出它覆盖什么，
+	// 而那正是人想确认的第一件事。**从证书本身读，不落库**：
+	// 存一份副本意味着两处真相，而两处迟早会分叉。
+	Domains []string `json:"domains"`
 
 	// **两列真相。**
 	//
@@ -36,7 +42,10 @@ func (s *Server) handleListCerts(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	// sealer 传 nil：这个端点不需要私钥，而私钥不该在不必要的地方出现。
-	certs, err := s.store.ListCerts(ctx, nil)
+	// **不叫 certs**：那会遮住同名的包，而这个函数要用 certs.DomainsOf。
+	// 遮蔽不报错，它只是让那个包在这个作用域里消失——
+	// 我为此写了一行编译不过的代码，然后花了一轮才看出原因。
+	list, err := s.store.ListCerts(ctx, nil)
 	if err != nil {
 		s.log.Error("读取证书失败", "err", err)
 		Fail(c, CodeDownstream, "读取证书失败")
@@ -63,10 +72,12 @@ func (s *Server) handleListCerts(c *gin.Context) {
 		loadedBy[r.Domain][r.NodeID] = true
 	}
 
-	items := make([]certResp, 0, len(certs))
-	for _, cert := range certs {
+	items := make([]certResp, 0, len(list))
+	for _, cert := range list {
 		item := certResp{
 			Domain: cert.Domain, Issuer: cert.Issuer, Challenge: cert.Challenge,
+			// 从证书本身读，不落库：存一份副本意味着两处真相，而两处迟早分叉。
+			Domains:  certs.DomainsOf(cert.CertPEM),
 			NotAfter: cert.NotAfter.Format(time.RFC3339),
 			DaysLeft: int(time.Until(cert.NotAfter).Hours() / 24),
 			// 期望覆盖的是**全部节点**：证书随每次下发内联带给每一台

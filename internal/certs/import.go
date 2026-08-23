@@ -3,6 +3,7 @@ package certs
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"strings"
 	"time"
@@ -115,4 +116,23 @@ func issuerName(c *x509.Certificate) string {
 		return c.Issuer.Organization[0]
 	}
 	return "未知签发者"
+}
+
+// DomainsOf 读出一张证书覆盖哪些域名。
+//
+// **不落库。** 证书本身就是这件事的唯一真相——存一份副本意味着两处，
+// 而两处迟早会分叉（导入时解析对了、后来换了张证书而副本没更新，
+// 界面就会说这张 `*.a.com` 覆盖的是 `b.com`）。
+//
+// 代价是每次列表都要解析 N 张证书，而 N 是域名数量，很小。
+func DomainsOf(certPEM []byte) []string {
+	blk, _ := pem.Decode(certPEM)
+	if blk == nil {
+		return nil
+	}
+	c, err := x509.ParseCertificate(blk.Bytes)
+	if err != nil {
+		return nil
+	}
+	return certDomains(c)
 }

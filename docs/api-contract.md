@@ -1546,9 +1546,9 @@ Cloudflare 的加权调度经 **Load Balancing**（独立付费产品）实现�
 // data.items[]
 {
   "domain": "api.example.com",
-  "issuer": "Let's Encrypt",
-  "challenge": "dns-01",
-  "auto_renew": true,
+  "issuer": "外部证书平台 CA",
+  "challenge": "imported",
+  "domains": ["api.example.com", "*.api.example.com"],
   "not_after": "2026-10-19T08:00:00+08:00",
   "days_left": 59,
   "expected_nodes": 6,
@@ -1557,9 +1557,15 @@ Cloudflare 的加权调度经 **Load Balancing**（独立付费产品）实现�
 }
 ```
 
+**没有 `auto_renew`**，理由见上一节。
+
+`domains` 是这张证书**实际覆盖**的域名（含通配符）——一张 `*.example.com`
+在列表里看不出它覆盖什么，而那正是人想确认的第一件事。
+它**从证书本身读、不落库**：存一份副本意味着两处真相，而两处迟早会分叉。
+
 **两列真相**，这是本端点最要紧的地方：
 
-- `expected_nodes` 是**主控账面**——主控签发了它，应当覆盖这么多节点。
+- `expected_nodes` 是**主控账面**——主控持有这张证书，应当覆盖这么多节点。
 - `loaded_nodes` / `missing_nodes` 是**节点回执**——Agent 上报的
   [证书清单](../CONTEXT.md)里真正加载了这张证书的节点。
 
@@ -1567,7 +1573,10 @@ Cloudflare 的加权调度经 **Load Balancing**（独立付费产品）实现�
 的模型里根本看不见，是这套设计换来的主要能力，UI 上值得显式呈现（`N / M 个节点`，
 不足时转 warning 并可展开列出 `missing_nodes`）。
 
-`days_left` 三档由前端着色，阈值前端定；后端只给天数。
+`days_left` 的着色**用下一节那两档**（30 / 14），不要另定一套。
+
+> 界面标的档位与告警的档位必须是同一套：不一致的话，一张界面上还是黄的证书
+> 会突然发来一条红色告警——而人会先去怀疑告警坏了。
 
 ### 到期提醒 —— 拆掉自动续期之后唯一的防线
 
