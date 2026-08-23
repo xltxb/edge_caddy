@@ -80,9 +80,7 @@ var requestBodies = map[string]bodySpec{
 
 	"PUT /dns/weights": {proto: weightsReq{}},
 
-	"PUT /certs/:p":           {proto: importCertReq{}},
-	"POST /certs/:p/renew":    {kind: bodyNone, why: "续期没有参数"},
-	"POST /certs/renew-check": {kind: bodyNone, why: "巡检没有参数"},
+	"PUT /certs/:p": {proto: importCertReq{}},
 
 	"PUT /settings":     {proto: systemReq{}},
 	"PUT /alerts":       {proto: alertsReq{}},

@@ -1,19 +1,22 @@
 package api
 
 import (
-	"errors"
 	"github.com/xltxb/edge_caddy/internal/certs"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/xltxb/edge_caddy/internal/store"
 )
 
 type certResp struct {
-	Domain    string `json:"domain"`
-	Issuer    string `json:"issuer"`
+	Domain string `json:"domain"`
+	Issuer string `json:"issuer"`
+	// Challenge 是「这张证书怎么来的」：imported（外部平台推进来的）
+	// 或 dns-01（ADR-0015 之前主控自己签的，历史数据）。
+	//
+	// **名字不好**：这个词在 ACME 里指校验方式，而 imported 恰恰是
+	// 「没有经过任何校验」。留着它是因为库里那一列就叫这个名字，
+	// 而现在改名要动迁移、契约、前端三处 —— 记在这里，别让它悄悄成为惯例。
 	Challenge string `json:"challenge"`
-	AutoRenew bool   `json:"auto_renew"`
 	NotAfter  string `json:"not_after"`
 	DaysLeft  int    `json:"days_left"`
 
@@ -64,9 +67,8 @@ func (s *Server) handleListCerts(c *gin.Context) {
 	for _, cert := range certs {
 		item := certResp{
 			Domain: cert.Domain, Issuer: cert.Issuer, Challenge: cert.Challenge,
-			AutoRenew: cert.AutoRenew,
-			NotAfter:  cert.NotAfter.Format(time.RFC3339),
-			DaysLeft:  int(time.Until(cert.NotAfter).Hours() / 24),
+			NotAfter: cert.NotAfter.Format(time.RFC3339),
+			DaysLeft: int(time.Until(cert.NotAfter).Hours() / 24),
 			// 期望覆盖的是**全部节点**：证书随每次下发内联带给每一台
 			// （ADR-0010），不存在「只给某几台」这回事。
 			ExpectedNodes: len(nodes),
@@ -82,40 +84,6 @@ func (s *Server) handleListCerts(c *gin.Context) {
 		items = append(items, item)
 	}
 	OK(c, gin.H{"items": items})
-}
-
-func (s *Server) handleRenewCert(c *gin.Context) {
-	domain := c.Param("domain")
-	setAuditTarget(c, domain)
-
-	if s.certs == nil {
-		Fail(c, CodeStateConflict, "证书签发未装配")
-		return
-	}
-	// 对**有路由但还没有证书**的域名也放行：那是首次签发。
-	// 只认已有证书的话，第一张证书就永远签不出来——而人配了一个域名，
-	// 本来就该有证书，不该还要先手动做点别的。
-	ctx := c.Request.Context()
-	_, certErr := s.store.GetCert(ctx, domain, nil)
-	_, routeErr := s.store.GetRoute(ctx, domain)
-	if errors.Is(certErr, store.ErrNotFound) && errors.Is(routeErr, store.ErrNotFound) {
-		Fail(c, CodeNotFound, "没有这个域名的证书，也没有对应的路由")
-		return
-	}
-
-	// 异步：ACME 签发要跟服务商往返，同步等会把 HTTP 请求拖很久。
-	// 结果经 WS 的 event 帧回报（契约 §9）。
-	s.certs.RenewAsync(domain)
-	OK(c, gin.H{"domain": domain, "accepted": true})
-}
-
-func (s *Server) handleRenewCheck(c *gin.Context) {
-	if s.certs == nil {
-		Fail(c, CodeStateConflict, "证书签发未装配")
-		return
-	}
-	n := s.certs.RenewDueAsync()
-	OK(c, gin.H{"accepted": true, "queued": n})
 }
 
 type importCertReq struct {
@@ -180,13 +148,12 @@ func (s *Server) handleImportCert(c *gin.Context) {
 	// 回的是「我们从这张证书里读出了什么」——那让人当场看得出
 	// 自己传的是不是想传的那张。
 	OK(c, gin.H{
-		"domain":     domain,
-		"issuer":     imp.Issuer,
-		"not_after":  imp.NotAfter.Format(time.RFC3339),
-		"days_left":  int(time.Until(imp.NotAfter).Hours() / 24),
-		"domains":    imp.Domains,
-		"auto_renew": false,
-		"warnings":   imp.Warnings,
-		"detail":     "已导入并下发到各节点",
+		"domain":    domain,
+		"issuer":    imp.Issuer,
+		"not_after": imp.NotAfter.Format(time.RFC3339),
+		"days_left": int(time.Until(imp.NotAfter).Hours() / 24),
+		"domains":   imp.Domains,
+		"warnings":  imp.Warnings,
+		"detail":    "已导入并下发到各节点",
 	})
 }

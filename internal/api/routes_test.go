@@ -67,8 +67,6 @@ var contractEndpoints = []string{
 	// §9 证书
 	"GET /api/v1/certs",
 	"PUT /api/v1/certs/:domain",
-	"POST /api/v1/certs/:domain/renew",
-	"POST /api/v1/certs/renew-check",
 	// §10 审计
 	"GET /api/v1/audit",
 	// §11 设置与告警

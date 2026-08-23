@@ -1,20 +1,23 @@
-// Package certs 是主控侧的证书签发与轮换。
+// Package certs 是主控侧的证书管理。
 //
-// **证书由主控集中签发**（ADR-0001）：边缘节点跑 apt 装的官方 Caddy，
-// 而官方包不含任何 DNS provider（caddy-dns/* 全是插件），也就做不了 DNS-01；
-// 退到 HTTP-01 在这个系统里同样不成立——域名按权重只解析到部分节点，
-// 轮换外的节点完不成校验，而节点恰恰需要在**进入轮换之前**就持有证书。
+// **主控不签发证书。** 证书由外部证书平台签好之后经 `PUT /certs/:domain`
+// 推进来，主控只负责三件事：存、经隧道内联下发到节点（ADR-0010）、
+// 在快到期时把这件事说出来。
 //
-// 签发结果经 gRPC 隧道内联下发（ADR-0010），DNS 服务商凭据只存在于主控一处。
+// 这推翻了 ADR-0001 的核心决定（「主控用 DNS-01 集中签发」），
+// 理由见 ADR-0015。而 ADR-0001 里那条**没有**被推翻的部分仍然成立：
+// 节点跑 apt 装的官方 Caddy、不持有 DNS 凭据、不自己申请证书。
+//
+// # 拆掉自动续期之后，到期提醒是唯一的防线
+//
+// 导入的证书没有任何东西会自动续。所以这个包里最要紧的不再是签发，
+// 是 ScanExpiry —— **它是「证书到期」这件事唯一会主动找人的地方**。
 package certs
 
 import (
 	"context"
-	"crypto/x509"
-	"encoding/pem"
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/xltxb/edge_caddy/internal/secret"
@@ -22,21 +25,21 @@ import (
 	"github.com/xltxb/edge_caddy/internal/ws"
 )
 
-// RenewBefore 是提前多久续期。
+// 到期的两个档位。**分两档是有意的。**
 //
-// Let's Encrypt 签 90 天，30 天的余量意味着连续失败一个月才会真的过期——
-// 而那期间每天都有一次告警。留得更短会让一次周末的服务商故障变成事故。
-const RenewBefore = 30 * 24 * time.Hour
+//	剩 WarnBefore  「安排一下」——界面标黄，不发告警
+//	剩 AlertBefore 「今天就得做」——界面标红，每天一条告警
+//
+// 合成一档的代价是：把「还早」和「来不及了」说成同一句话，
+// 于是前一种会被当成后一种忽略掉——而那正好训练人在真的来不及时也忽略。
+const (
+	WarnBefore  = 30 * 24 * time.Hour
+	AlertBefore = 14 * 24 * time.Hour
 
-// Issuer 是签发的出口。抽成接口是因为它是这套东西里**唯一无法在本地验证**
-// 的部分：真 ACME 需要一个公网可解析的域名与一个真实的服务商账号，
-// 而且会在 CA 那边留下真实记录。其余部分（下发、加载、回执）都被真 Caddy 验过。
-type Issuer interface {
-	// Issue 为一个域名签发证书，返回 PEM 与到期时间。
-	Issue(ctx context.Context, domain string) (certPEM, keyPEM []byte, notAfter time.Time, err error)
-	// Name 是签发者名字，写进证书页的「签发者」列。
-	Name() string
-}
+	// alertEvery 是同一张证书两次到期告警之间的最小间隔。
+	// 扫描每天跑一次，这个值只在主控频繁重启时起作用——而那是例行操作。
+	alertEvery = 20 * time.Hour
+)
 
 // Redeployer 在证书变化后把新证书推到节点上。
 //
@@ -48,155 +51,24 @@ type Redeployer func(ctx context.Context, reason string) error
 type Manager struct {
 	Store    *store.Store
 	Sealer   *secret.Sealer
-	Issuer   Issuer
 	Hub      *ws.Hub
 	Log      *slog.Logger
 	Redeploy Redeployer
+	// Alert 是到期告警的出口。**拆掉自动续期之后，它是唯一会主动找人的地方**
+	// ——留空的话证书会安静地过期。
+	Alert Alerter
+}
 
-	mu       sync.Mutex
-	inFlight map[string]bool
+// Alerter 与 health 那边同一个出口（alert.Notifier 实现）。
+type Alerter interface {
+	Notify(ctx context.Context, level, title, body string)
 }
 
 func New(m *Manager) *Manager {
 	if m.Log == nil {
 		m.Log = slog.Default()
 	}
-	m.inFlight = map[string]bool{}
 	return m
-}
-
-// RenewAsync 异步续期一个域名。ACME 要跟服务商往返，同步等会把 HTTP 请求拖很久。
-func (m *Manager) RenewAsync(domain string) {
-	m.mu.Lock()
-	if m.inFlight[domain] {
-		// 同一个域名不并发签两次：ACME 有速率限制，重复请求会把配额烧掉，
-		// 而配额耗尽的表现是「一周内都签不出证书」。
-		m.mu.Unlock()
-		return
-	}
-	m.inFlight[domain] = true
-	m.mu.Unlock()
-
-	go func() {
-		defer func() {
-			m.mu.Lock()
-			delete(m.inFlight, domain)
-			m.mu.Unlock()
-		}()
-		ctx := context.Background()
-		if err := m.renew(ctx, domain); err != nil {
-			m.Log.Error("续期失败", "domain", domain, "err", err)
-			m.event(ctx, "crit", fmt.Sprintf("证书 %s 续期失败：%v", domain, err))
-			return
-		}
-		m.event(ctx, "ok", fmt.Sprintf("证书 %s 已续期", domain))
-		if m.Redeploy != nil {
-			if err := m.Redeploy(ctx, "证书续期"); err != nil {
-				// 签下来了但没推下去：新证书躺在主控库里，节点上还是旧的。
-				// 这必须说出来，否则证书页会显示「已续期」而节点上没变。
-				m.Log.Error("续期后下发失败", "domain", domain, "err", err)
-				m.event(ctx, "warn",
-					fmt.Sprintf("证书 %s 已续期，但下发失败，节点上仍是旧证书：%v", domain, err))
-			}
-		}
-	}()
-}
-
-// RenewDueAsync 把所有快到期的证书排进续期，返回排了几个。
-func (m *Manager) RenewDueAsync() int {
-	ctx := context.Background()
-	due, err := m.due(ctx)
-	if err != nil {
-		m.Log.Error("检查到期证书失败", "err", err)
-		return 0
-	}
-	for _, d := range due {
-		m.RenewAsync(d)
-	}
-	return len(due)
-}
-
-func (m *Manager) due(ctx context.Context) ([]string, error) {
-	list, err := m.Store.ListCerts(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	var out []string
-	for _, c := range list {
-		if !c.AutoRenew {
-			continue
-		}
-		if time.Until(c.NotAfter) < RenewBefore {
-			out = append(out, c.Domain)
-		}
-	}
-	return out, nil
-}
-
-// EnsureFor 给还没有证书的域名签发。由下发流水线在新增路由后调用。
-func (m *Manager) EnsureFor(ctx context.Context, domains []string) {
-	for _, d := range domains {
-		if _, err := m.Store.GetCert(ctx, d, nil); err == nil {
-			continue
-		}
-		m.RenewAsync(d)
-	}
-}
-
-func (m *Manager) renew(ctx context.Context, domain string) error {
-	if m.Issuer == nil {
-		return fmt.Errorf("尚未配置证书签发（缺 ACME 账户或 DNS 服务商）")
-	}
-	if m.Sealer == nil {
-		return fmt.Errorf("没有可用的密封器，无法保存私钥（装配漏了 Sealer）")
-	}
-
-	certPEM, keyPEM, notAfter, err := m.Issuer.Issue(ctx, domain)
-	if err != nil {
-		return err
-	}
-	if notAfter.IsZero() {
-		// 签发者没给到期时间就从证书里读——到期时间是续期调度的唯一依据，
-		// 取不到会让这张证书永远不被续。
-		if notAfter, err = notAfterOf(certPEM); err != nil {
-			return fmt.Errorf("读取到期时间: %w", err)
-		}
-	}
-
-	return m.Store.PutCert(ctx, store.Cert{
-		Domain: domain, Issuer: m.Issuer.Name(), Challenge: "dns-01",
-		AutoRenew: true, CertPEM: certPEM, KeyPEM: keyPEM, NotAfter: notAfter,
-	}, m.Sealer)
-}
-
-func notAfterOf(certPEM []byte) (time.Time, error) {
-	blk, _ := pem.Decode(certPEM)
-	if blk == nil {
-		return time.Time{}, fmt.Errorf("不是合法的 PEM 证书")
-	}
-	c, err := x509.ParseCertificate(blk.Bytes)
-	if err != nil {
-		return time.Time{}, err
-	}
-	return c.NotAfter, nil
-}
-
-// Run 每天查一次到期。
-func (m *Manager) Run(ctx context.Context, every time.Duration) {
-	if every <= 0 {
-		every = 12 * time.Hour
-	}
-	t := time.NewTicker(every)
-	defer t.Stop()
-	m.RenewDueAsync() // 启动时先查一次：主控可能停了很久
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			m.RenewDueAsync()
-		}
-	}
 }
 
 func (m *Manager) event(ctx context.Context, kind, msg string) {
@@ -252,4 +124,93 @@ func (m *Manager) Import(ctx context.Context, domain string, imp Imported) error
 		return fmt.Errorf("证书已存下，但下发失败：%w", err)
 	}
 	return nil
+}
+
+// ScanExpiry 扫一遍所有证书的到期时间，该说的说出来。
+//
+// **拆掉自动续期之后，这是「证书到期」唯一会主动找人的地方。**
+// 导入的证书没有任何东西会自动续——它会安静地走到到期那一天，
+// 而那一天站点直接握不上手。
+//
+// 两个档位对应两种不同的动作，所以措辞和渠道都不同：
+//
+//	剩 30 天内  界面标黄。**不发告警**——「还早」发告警会训练人忽略这一类
+//	剩 14 天内  界面标红 + 每天一条告警。这是「今天就得做」
+//	已过期      crit 告警。站点此刻就是坏的
+//
+// 返回排查用的计数（黄、红、已过期），调用方记进日志。
+func (m *Manager) ScanExpiry(ctx context.Context) (warn, urgent, expired int) {
+	list, err := m.Store.ListCerts(ctx, nil)
+	if err != nil {
+		m.Log.Error("扫描证书到期失败", "err", err)
+		return
+	}
+	now := time.Now()
+	for _, c := range list {
+		left := c.NotAfter.Sub(now)
+		switch {
+		case left <= 0:
+			expired++
+		case left < AlertBefore:
+			urgent++
+		case left < WarnBefore:
+			warn++
+			continue // 黄档只在界面上标，不惊动人
+		default:
+			continue
+		}
+
+		// **同一张证书一天最多报一次。**
+		//
+		// 扫描每天跑一次，所以这个判断平时不起作用——它挡的是主控重启：
+		// 一晚上部署六次就会为同一张证书报六次警，而**一个重启就重复报警的
+		// 系统会教会人忽略那一类告警**，下次真有证书要过期时他们照旧会忽略。
+		// 跟 health 那边「库里已经是 down 的不再报离线」是同一条理由。
+		if c.ExpiryAlertedAt != nil && now.Sub(*c.ExpiryAlertedAt) < alertEvery {
+			continue
+		}
+
+		level, msg := "warn", fmt.Sprintf("证书 %s 还有 %d 天到期（%s）。"+
+			"主控不会自动续期，要从证书平台重新导入一张",
+			c.Domain, int(left.Hours()/24), c.NotAfter.Format("2006-01-02"))
+		if left <= 0 {
+			level, msg = "crit", fmt.Sprintf("证书 %s 已于 %s 过期 —— "+
+				"这个域名此刻握不上 TLS。从证书平台导入一张新的",
+				c.Domain, c.NotAfter.Format("2006-01-02"))
+		}
+
+		m.event(ctx, level, msg)
+		if m.Alert != nil {
+			m.Alert.Notify(ctx, level, "证书将到期 "+c.Domain, msg)
+		}
+		if err := m.Store.MarkExpiryAlerted(ctx, c.Domain); err != nil {
+			// 标记不上就会重复报警 —— 说出来，别让它安静地变成噪音源。
+			m.Log.Error("记录到期告警时间失败", "domain", c.Domain, "err", err)
+		}
+	}
+	return
+}
+
+// Run 每天扫一次到期。
+//
+// 启动时先扫一次：主控可能停了很久，而证书不会因为没人看就不到期。
+func (m *Manager) Run(ctx context.Context, every time.Duration) {
+	if every <= 0 {
+		every = 24 * time.Hour
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	if w, u, e := m.ScanExpiry(ctx); w+u+e > 0 {
+		m.Log.Info("证书到期扫描", "30天内", w, "14天内", u, "已过期", e)
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if w, u, e := m.ScanExpiry(ctx); w+u+e > 0 {
+				m.Log.Info("证书到期扫描", "30天内", w, "14天内", u, "已过期", e)
+			}
+		}
+	}
 }

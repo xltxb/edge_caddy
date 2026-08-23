@@ -67,22 +67,27 @@ func TestCertTwoColumnsOfTruth(t *testing.T) {
 		"domain": "secure.example.com", "upstream": r.upstream, "block_mode": "abort",
 	})
 
-	// 签发（测试签发者用内部 CA 代替真 ACME）。
-	r.mustDo("POST", "/certs/secure.example.com/renew", nil)
+	// 证书从外部平台导入（ADR-0015：主控不签发）。
+	certPEM, keyPEM := importableCert(t, "secure.example.com")
+	r.mustDo("PUT", "/certs/secure.example.com", map[string]any{
+		"cert_pem": string(certPEM), "key_pem": string(keyPEM),
+	})
 	before := r.waitCert("secure.example.com", func(c certItem) bool { return c.DaysLeft > 0 },
-		"证书被签发出来")
+		"证书进了主控的账")
 
-	// 主控账面上有了，但**还没下发**——节点上一张都没有。
-	if before.LoadedNodes != 0 {
-		t.Fatalf("还没下发时不该有节点回执，实际 loaded=%d", before.LoadedNodes)
+	// **「主控账面」与「节点回执」是两列，而回执要等下发。**
+	//
+	// 导入会自己触发一次下发（ADR-0010：证书随下发内联带上），
+	// 所以这里不断言「loaded 一定是 0」——那会变成一条跟时序赛跑的断言。
+	// 真正要钉的是下面那一条：**回执来自节点上一次真实的 TLS 握手**，
+	// 而不是复述主控下发的那份。
+	if before.ExpectedNodes != 1 {
+		t.Fatalf("应当知道这张证书该到几台机器上：%+v", before)
 	}
-	if before.ExpectedNodes != 1 || len(before.MissingNodes) != 1 {
-		t.Fatalf("应当报出缺哪一台：%+v", before)
-	}
-	if before.Challenge != "dns-01" {
-		// HTTP-01 在这个系统里不成立：域名按权重只解析到部分节点，
-		// 轮换外的节点完不成校验（ADR-0001）。
-		t.Errorf("challenge = %q，想要 dns-01", before.Challenge)
+	if before.Challenge != "imported" {
+		// **导入的证书不是通过任何 challenge 拿到的**，如实记成 imported。
+		// 记成 dns-01 会让人以为主控自己跑过一次校验（ADR-0015）。
+		t.Errorf("challenge = %q，想要 imported", before.Challenge)
 	}
 
 	// 下发之后，节点真的加载了 —— 回执来自一次真实的 TLS 握手。
@@ -113,56 +118,6 @@ func TestDeployWithoutCertsHasNoTLSApp(t *testing.T) {
 	// 明文那条路仍然通。
 	if code, body := r.curlVia("plain.example.com"); code != 200 || body != "UPSTREAM OK" {
 		t.Fatalf("得到 %d %q", code, body)
-	}
-}
-
-// 续期检查会把快到期的排进队列。
-func TestRenewCheckQueuesExpiringCerts(t *testing.T) {
-	r := newRig(t)
-	e := r.mustDo("POST", "/certs/renew-check", nil)
-	var d struct {
-		Accepted bool `json:"accepted"`
-		Queued   int  `json:"queued"`
-	}
-	if err := json.Unmarshal(e.Data, &d); err != nil {
-		t.Fatal(err)
-	}
-	if !d.Accepted {
-		t.Fatal("批量检查应当被接受")
-	}
-	if d.Queued != 0 {
-		t.Errorf("一张证书都没有时不该排队，实际 %d", d.Queued)
-	}
-}
-
-func TestRenewUnknownDomainIsNotFound(t *testing.T) {
-	r := newRig(t)
-	_, e := r.do("POST", "/certs/nope.example.com/renew", nil)
-	if e.Code == 0 {
-		t.Fatal("对不存在的证书续期应当失败")
-	}
-}
-
-// 证书跟着路由走：下发之后，路由域名自动拿到证书，不需要人手动点签发。
-func TestCertsFollowRoutesAutomatically(t *testing.T) {
-	r := newRig(t)
-	token, _ := r.issueToken("node-hk-01")
-	r.startAgent("node-hk-01", token, t.TempDir())
-	r.waitOnline("node-hk-01")
-
-	if len(r.certs()) != 0 {
-		t.Fatal("一开始不该有证书")
-	}
-
-	r.mustDo("POST", "/routes", map[string]any{
-		"domain": "auto.example.com", "upstream": r.upstream, "block_mode": "abort",
-	})
-	r.deployNow("route:auto.example.com")
-
-	got := r.waitCert("auto.example.com", func(c certItem) bool { return c.DaysLeft > 0 },
-		"路由域名自动拿到证书")
-	if got.Issuer == "" {
-		t.Error("应当记下签发者，证书页要显示它")
 	}
 }
 
@@ -541,11 +496,10 @@ func TestImportedCertReachesNodesAndIsNotAutoRenewed(t *testing.T) {
 		"cert_pem": string(certPEM), "key_pem": string(keyPEM),
 	})
 	var imp struct {
-		Domain    string   `json:"domain"`
-		Issuer    string   `json:"issuer"`
-		AutoRenew bool     `json:"auto_renew"`
-		Domains   []string `json:"domains"`
-		KeyPEM    string   `json:"key_pem"`
+		Domain  string   `json:"domain"`
+		Issuer  string   `json:"issuer"`
+		Domains []string `json:"domains"`
+		KeyPEM  string   `json:"key_pem"`
 	}
 	if err := json.Unmarshal(e.Data, &imp); err != nil {
 		t.Fatal(err)
@@ -564,9 +518,7 @@ func TestImportedCertReachesNodesAndIsNotAutoRenewed(t *testing.T) {
 	//
 	// 留着 true 的话，到期前 30 天续期扫描会挑中它，主控用 ACME 重签一张
 	// 覆盖掉导入的——而那不会有任何提示。
-	if imp.AutoRenew {
-		t.Error("导入的证书 auto_renew 必须是 false —— 主控续不了一张不是它签的证书")
-	}
+
 	list := r.mustDo("GET", "/certs", nil)
 	var d struct {
 		Items []struct {
@@ -584,9 +536,7 @@ func TestImportedCertReachesNodesAndIsNotAutoRenewed(t *testing.T) {
 			continue
 		}
 		found = true
-		if it.AutoRenew {
-			t.Error("列表里 auto_renew 也该是 false")
-		}
+
 		// challenge 说「它是怎么来的」——导入的不是通过任何 challenge 拿到的。
 		if it.Challenge != "imported" {
 			t.Errorf("challenge = %q，想要 imported", it.Challenge)

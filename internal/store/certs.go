@@ -15,12 +15,27 @@ import (
 // 证书建表，不是「从节点上报的清单聚合」（后端文档 §3 那条已被推翻）：
 // 主控是签发方，必须持有 PEM 才能内联下发（ADR-0010）。
 type Cert struct {
-	Domain    string    `json:"domain"`
-	Issuer    string    `json:"issuer"`
-	Challenge string    `json:"challenge"`
+	Domain    string `json:"domain"`
+	Issuer    string `json:"issuer"`
+	Challenge string `json:"challenge"`
+	// AutoRenew 现在**没有任何代码读它**（ADR-0015 移除了续期）。
+	// 留着列与字段是为了保住历史：库里那些 challenge='dns-01' 的行，
+	// 是 ADR-0015 之前主控自己签的。
+	//
+	// **它不在 API 响应里**——一个恒为 false 的字段会暗示「这个概念存在、
+	// 只是关着」，而它已经不存在了。
+	//
+	// （scripts/unread.py 看不见这一类：它的判据是「名字在代码里出现过吗」，
+	// 而这个名字在 Scan 和 Put 里都还在。**「没人读」与「读了但没用」
+	// 是两件事，而它只查得出前一件**。）
 	AutoRenew bool      `json:"auto_renew"`
 	NotAfter  time.Time `json:"not_after"`
 	UpdatedAt time.Time `json:"updated_at"`
+
+	// ExpiryAlertedAt 是上一次为这张证书的到期发过告警的时刻。
+	// **落库而不是留在内存里**：主控重启是例行操作，
+	// 而一个重启就重复报警的系统会教会人忽略那一类告警。
+	ExpiryAlertedAt *time.Time `json:"-"`
 
 	CertPEM []byte `json:"-"`
 	KeyPEM  []byte `json:"-"` // 明文只在装配下发载荷时出现
@@ -39,7 +54,8 @@ type CertNode struct {
 // 读接口（GET /certs）不需要它，而私钥不该在不必要的地方出现。
 func (s *Store) ListCerts(ctx context.Context, sealer *secret.Sealer) ([]Cert, error) {
 	rows, err := s.Pool.Query(ctx,
-		`SELECT domain, issuer, challenge, auto_renew, cert_pem, key_pem, not_after, updated_at
+		`SELECT domain, issuer, challenge, auto_renew, cert_pem, key_pem,
+		        not_after, updated_at, expiry_alerted_at
 		 FROM certs ORDER BY domain`)
 	if err != nil {
 		return nil, err
@@ -51,7 +67,7 @@ func (s *Store) ListCerts(ctx context.Context, sealer *secret.Sealer) ([]Cert, e
 		var c Cert
 		var sealed []byte
 		if err := rows.Scan(&c.Domain, &c.Issuer, &c.Challenge, &c.AutoRenew,
-			&c.CertPEM, &sealed, &c.NotAfter, &c.UpdatedAt); err != nil {
+			&c.CertPEM, &sealed, &c.NotAfter, &c.UpdatedAt, &c.ExpiryAlertedAt); err != nil {
 			return nil, err
 		}
 		if sealer != nil {
@@ -156,4 +172,14 @@ func (s *Store) ListCertReceipts(ctx context.Context) ([]CertNode, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// MarkExpiryAlerted 记下「刚刚为这张证书的到期发过告警」。
+//
+// 扫描每天跑一次，而主控重启会让扫描重新开始 —— 没有这个标记的话，
+// 一晚上部署六次就会为同一张证书报六次警。
+func (s *Store) MarkExpiryAlerted(ctx context.Context, domain string) error {
+	_, err := s.Pool.Exec(ctx,
+		`UPDATE certs SET expiry_alerted_at = now() WHERE domain = $1`, domain)
+	return err
 }

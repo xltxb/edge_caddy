@@ -139,8 +139,7 @@ func newRig(t *testing.T) *rig {
 	t.Cleanup(dnsAPI.Close)
 
 	dnsOrch := &dnsops.Orchestrator{Store: st, Sealer: sealer, BaseOverride: dnsAPI.URL}
-	certMgr := certs.New(&certs.Manager{Store: st, Sealer: sealer, Hub: hub, Issuer: testIssuer{}})
-	sched.EnsureCerts = certMgr.EnsureFor
+	certMgr := certs.New(&certs.Manager{Store: st, Sealer: sealer, Hub: hub})
 
 	srv := httptest.NewServer(api.New(api.Options{
 		Store: st, Hub: hub, Tunnel: tun, Deployer: sched,
@@ -440,27 +439,6 @@ func (r *rig) issueTokenFor(nodeID string) (token, caPin string) {
 		r.t.Fatal(err)
 	}
 	return d.Token, d.CAPin
-}
-
-// testIssuer 用内部 CA 代替真 ACME。
-//
-// 真 ACME 需要一个公网可解析的域名、一个真实的服务商账号，而且会在 CA 那边
-// 留下真实的签发记录与速率配额消耗。要验的是**下发、加载与回执**这条链路，
-// 它与证书由谁签无关——那正是把签发抽成接口的理由。
-type testIssuer struct{}
-
-func (testIssuer) Name() string { return "测试内部 CA" }
-
-func (testIssuer) Issue(_ context.Context, domain string) ([]byte, []byte, time.Time, error) {
-	ca, err := pki.GenerateCA(pki.KindTunnel)
-	if err != nil {
-		return nil, nil, time.Time{}, err
-	}
-	leaf, err := ca.SignServer(domain, []string{domain}, 90*24*time.Hour)
-	if err != nil {
-		return nil, nil, time.Time{}, err
-	}
-	return leaf.CertPEM, leaf.KeyPEM, time.Now().Add(90 * 24 * time.Hour), nil
 }
 
 // importableCert 造一张由「外部平台 CA」签出来的叶子证书，

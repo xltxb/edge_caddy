@@ -48,12 +48,6 @@ type Scheduler struct {
 	// 不需要另造 CRL/OCSP（内部 PKI 的吊销列表基本没人真部署，写了也是摆设）。
 	UpstreamCA *pki.CA
 
-	// EnsureCerts 在下发后为路由域名确保证书存在。
-	//
-	// 证书跟着路由走：人配了一个域名就该有证书，不该还要手动点一次签发。
-	// 做成回调是为了不让下发依赖证书包（那会成环）。
-	EnsureCerts func(ctx context.Context, domains []string)
-
 	// RetryBackoff 是第一次重试前的等待，此后翻倍。留空即用默认的 1 秒。
 	// 做成字段只为让重试策略能被单独测——真跑 1+2+4+8+16 秒的测试不会有人跑。
 	RetryBackoff time.Duration
@@ -244,15 +238,6 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 		deployID: deployID, cfgVersion: cfgVersion,
 		caddyJSON: cfg, verifyRules: verifyRules, counts: counts, nodes: needRetry,
 	})
-
-	if s.EnsureCerts != nil {
-		domains := make([]string, 0, len(routes))
-		for _, r := range routes {
-			domains = append(domains, r.Domain)
-		}
-		// 异步：ACME 要跟服务商往返，同步等会把下发拖很久。
-		go s.EnsureCerts(context.WithoutCancel(ctx), domains)
-	}
 
 	msg := fmt.Sprintf("配置 %s 下发完成，%d/%d 节点", cfgVersion, okCount, len(targets))
 	if len(needRetry) > 0 {

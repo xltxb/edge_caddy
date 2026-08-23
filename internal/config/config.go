@@ -70,11 +70,6 @@ type Master struct {
 	EdgeHTTPListen string
 	// EdgeHTTPSListen 是 TLS server 的监听地址。只在主控持有证书时才渲染那台。
 	EdgeHTTPSListen string
-	// ACMEEmail / ACMEDirectory 是签发证书用的 ACME 账户。
-	// Directory 留空即 Let's Encrypt 生产环境；首次接入建议先指向 staging——
-	// 那边的速率限制宽得多，签废了也不心疼。
-	ACMEEmail     string
-	ACMEDirectory string
 	// UpstreamCert / UpstreamKey 是节点回源时出示的客户端证书在**节点本机**的路径。
 	UpstreamCert string
 	UpstreamKey  string
@@ -113,8 +108,6 @@ func LoadMaster() (Master, error) {
 		EdgeHTTPListen:  env("EC_EDGE_HTTP_LISTEN", ":80"),
 		VerifyAddr:      env("EC_VERIFY_ADDR", "127.0.0.1:2020"),
 		EdgeHTTPSListen: env("EC_EDGE_HTTPS_LISTEN", ":443"),
-		ACMEEmail:       os.Getenv("EC_ACME_EMAIL"),
-		ACMEDirectory:   os.Getenv("EC_ACME_DIRECTORY"),
 		UpstreamCert:    env("EC_UPSTREAM_CERT", "/var/lib/edge-agent/edge-mtls.crt"),
 		UpstreamKey:     env("EC_UPSTREAM_KEY", "/var/lib/edge-agent/edge-mtls.key"),
 	}

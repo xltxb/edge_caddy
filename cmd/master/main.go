@@ -229,27 +229,19 @@ func main() {
 		},
 	}
 
-	dnsProvider, err := st.GetDNSProvider(ctx, sealer)
-	if err != nil {
-		log.Error("读取 DNS 服务商设置失败", "err", err)
-		os.Exit(1)
-	}
+	// **主控不签发证书**（ADR-0015）。它只存、只下发、只在快到期时说出来。
 	certMgr := certs.New(&certs.Manager{
-		Store: st, Sealer: sealer, Hub: hub, Log: log,
-		Issuer: &certs.ACMEIssuer{
-			Email:     cfg.ACMEEmail,
-			Directory: cfg.ACMEDirectory,
-			Provider:  dnsProvider,
-		},
-		// 证书随每次下发内联带上（ADR-0010），所以续期之后必须触发一次下发——
+		Store: st, Sealer: sealer, Hub: hub, Log: log, Alert: notifier,
+		// 证书随每次下发内联带上（ADR-0010），所以导入之后必须触发一次下发——
 		// 否则新证书会躺在库里，直到下一次有人改配置才下去。
 		Redeploy: func(ctx context.Context, reason string) error {
 			_, _, err := scheduler.Deploy(ctx, "system", nil)
 			return err
 		},
 	})
-	go certMgr.Run(ctx, 12*time.Hour)
-	scheduler.EnsureCerts = certMgr.EnsureFor
+	// 每天扫一次到期。**拆掉自动续期之后，这是「证书要过期了」
+	// 唯一会主动找人的地方** —— 漏了这一行，证书会安静地走到到期那一天。
+	go certMgr.Run(ctx, 24*time.Hour)
 
 	srv := api.New(api.Options{
 		Store: st, Hub: hub, Tunnel: tun, Health: monitor, Alerts: notifier, DNS: dnsOrch,

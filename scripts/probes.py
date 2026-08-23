@@ -143,16 +143,19 @@ PROBES = [
         "./internal/e2e/", "TestDrainedNodeIsRefusedUntilRejoined",
         "在线判定拿不到数据时必须炸",
     ),
-    Probe(
-        "导入证书-auto_renew 必须关",
-        "留成 true 的话，到期前 30 天续期扫描会挑中它，主控用 ACME 重签一张"
-        "**覆盖掉导入的那张** —— 而那不会有任何提示，人只会在某天发现签发者变了",
-        "internal/certs/manager.go",
-        "\t\tAutoRenew: false,",
-        "\t\tAutoRenew: true,",
-        "./internal/e2e/", "TestImportedCertReachesNodesAndIsNotAutoRenewed",
-        "auto_renew",
-    ),
+    # 「导入证书-auto_renew 必须关」删于 ADR-0015。
+    #
+    # 它保护的是：留成 true 的话，续期扫描会挑中这张导入的证书，
+    # **主控用 ACME 重签一张覆盖掉它**。而 ACME 和续期扫描都被移除了 ——
+    # **那个威胁模型不再存在**。
+    #
+    # 删掉而不是让它留着「反正也不红」：一条永远不会红的探针，
+    # 在清单上和一条真正在守着什么的探针长得一模一样，
+    # 而它会让「16/16 通过」这个数字虚高。
+    #
+    # 这一条是 ADR-0015 落地时**探针自己报出来的**：改完之后它没红，
+    # 而 probes.py 把「跑了但没红」单独报成一档。**如果它只报「通过」，
+    # 这条死探针会一直躺在清单里。**
     Probe(
         "导入证书-域名必须对得上",
         "证书本身完全有效，只是签的是别的域名 —— 浏览器报名称不符，"
