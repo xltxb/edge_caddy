@@ -848,3 +848,106 @@ func TestAgentVersionShowsUpOnNodes(t *testing.T) {
 		t.Logf("rig 带了版本：%q", d.Items[0].AgentVersion)
 	}
 }
+
+// **改元数据：能改的四项真的改了，改不了的那些真的挡住了。**
+func TestUpdateNodeMetaEditsOnlyWhatItShould(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	e := r.mustDo("PUT", "/nodes/node-hk-01", map[string]any{
+		"city": "新加坡", "vendor": "V.PS", "line": "CMIN2", "public_ip": "203.0.113.9",
+	})
+	if !strings.Contains(string(e.Data), "新加坡") {
+		t.Fatalf("响应里应当回显改后的值：%s", e.Data)
+	}
+
+	nodes := r.mustDo("GET", "/nodes", nil)
+	if !strings.Contains(string(nodes.Data), "新加坡") ||
+		!strings.Contains(string(nodes.Data), "203.0.113.9") {
+		t.Fatalf("列表里应当是改后的值：%s", nodes.Data)
+	}
+
+	// **node_id 改不了。** 它是隧道证书的 CN，改它等于换一台机器。
+	status, bad := r.do("PUT", "/nodes/node-hk-01", map[string]any{
+		"node_id": "node-别的", "city": "香港", "vendor": "v", "line": "l",
+		"public_ip": "203.0.113.9",
+	})
+	if status != 200 || bad.Code == api.CodeOK {
+		t.Fatalf("带 node_id 的请求应当被拒，实际 http=%d code=%d", status, bad.Code)
+	}
+	if !strings.Contains(bad.Msg, "node_id") {
+		t.Errorf("要点名那个不该出现的字段：%q", bad.Msg)
+	}
+
+	// **status 改不了**，同上：一个能改它的接口会让人以为
+	// 可以手工把一台死机器改成在线。
+	_, bad2 := r.do("PUT", "/nodes/node-hk-01", map[string]any{
+		"status": "ok", "city": "香港", "vendor": "v", "line": "l",
+		"public_ip": "203.0.113.9",
+	})
+	if bad2.Code == api.CodeOK {
+		t.Error("带 status 的请求应当被拒")
+	}
+
+	// 公网 IP 写错要在**存之前**挡住：它会被写进 DNS 记录，
+	// 而一个写错的值要到下次同步解析时才出事，那时人查的是服务商。
+	_, bad3 := r.do("PUT", "/nodes/node-hk-01", map[string]any{
+		"city": "香港", "vendor": "v", "line": "l", "public_ip": "不是IP",
+	})
+	if bad3.Code != api.CodeValidation {
+		t.Errorf("非法 public_ip 应当以 1002 拒绝，实际 code=%d", bad3.Code)
+	}
+	after := r.mustDo("GET", "/nodes", nil)
+	if strings.Contains(string(after.Data), "不是IP") {
+		t.Error("被拒的请求不该改动任何东西")
+	}
+}
+
+// **删节点必须先下线，而且要说清「只删了记录」。**
+//
+// 一台还连着的机器手里有隧道证书：删掉记录之后它会重连、会被按证书认出来、
+// 然后在一张不存在的行上写心跳 —— 一台**连着而看不见**的机器。
+func TestDeleteNodeRequiresDrainAndSaysWhatItDidNotDo(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	// 一、没下线就删 —— 拒，而且理由要说得出。
+	status, e := r.do("DELETE", "/nodes/node-hk-01", nil)
+	if status != 200 || e.Code == api.CodeOK {
+		t.Fatalf("还连着的节点不该能删，实际 http=%d code=%d", status, e.Code)
+	}
+	if !strings.Contains(e.Msg, "下线") {
+		t.Errorf("要说清前提是什么：%q", e.Msg)
+	}
+	if nodes := r.mustDo("GET", "/nodes", nil); !strings.Contains(string(nodes.Data), "node-hk-01") {
+		t.Fatal("被拒的删除不该动到任何东西")
+	}
+
+	// 二、下线之后可以删。
+	r.mustDo("POST", "/nodes/node-hk-01/drain", map[string]any{"confirm": true})
+	r.waitOffline("node-hk-01")
+	ok := r.mustDo("DELETE", "/nodes/node-hk-01", nil)
+
+	// **响应必须说清它没做什么。** 那台机器上的 Agent 与 Caddy 还在跑，
+	// 而人会以为点了删除就干净了。
+	if !strings.Contains(string(ok.Data), "uninstall") {
+		t.Errorf("要说清「只删了记录，机器上还得自己撤」：%s", ok.Data)
+	}
+
+	if nodes := r.mustDo("GET", "/nodes", nil); strings.Contains(string(nodes.Data), "node-hk-01") {
+		t.Fatalf("删完之后不该还在列表里：%s", nodes.Data)
+	}
+
+	// 三、**历史留得住。** 审计里那两条（下线、删除）不该跟着消失——
+	// 删掉一台机器不该让过去发生过的事从记录里没了。
+	audit := r.mustDo("GET", "/audit", nil)
+	for _, want := range []string{"下线节点", "删除节点"} {
+		if !strings.Contains(string(audit.Data), want) {
+			t.Errorf("审计里应当还留着 %q：%s", want, audit.Data)
+		}
+	}
+}

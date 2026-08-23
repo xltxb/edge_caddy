@@ -33,6 +33,9 @@ type Tunneler interface {
 type Healther interface {
 	CPUSeries(nodeID string) []int
 	Latest(nodeID string) (health.Sample, bool)
+	// Forget 丢掉一个节点的内存观测状态。删除节点时要调 ——
+	// 不调的话那份 CPU 序列会一直占着，而节点已经不存在了。
+	Forget(nodeID string)
 }
 
 type Server struct {
@@ -202,6 +205,8 @@ func New(o Options) *gin.Engine {
 	authed.POST("/nodes/:id/probe", s.handleNodeProbe)
 	authed.POST("/nodes/:id/drain", audited("下线节点", s.handleNodeDrain))
 	authed.POST("/nodes/:id/rejoin", audited("重新上线", s.handleNodeRejoin))
+	authed.PUT("/nodes/:id", audited("修改节点", s.handleUpdateNode))
+	authed.DELETE("/nodes/:id", audited("删除节点", s.handleDeleteNode))
 
 	authed.GET("/certs", s.handleListCerts)
 	authed.PUT("/certs/:domain", audited("导入证书", s.handleImportCert))

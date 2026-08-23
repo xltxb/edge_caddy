@@ -56,6 +56,8 @@ var requestBodies = map[string]bodySpec{
 	"POST /nodes/:p/probe":  {kind: bodyNone, why: "拨测没有参数"},
 	"POST /nodes/:p/drain":  {proto: drainReq{}},
 	"POST /nodes/:p/rejoin": {kind: bodyNone, why: "重新上线没有参数"},
+	"PUT /nodes/:p":         {proto: nodeMetaReq{}},
+	"DELETE /nodes/:p":      {kind: bodyNone, why: "删除只认路径；前提（必须先下线）由后端查，不靠请求体确认"},
 
 	"POST /routes":      {proto: model.Route{}},
 	"PUT /routes/:p":    {proto: model.Route{}},

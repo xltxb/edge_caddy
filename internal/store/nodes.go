@@ -214,3 +214,74 @@ func (s *Store) SetNodeDNS(ctx context.Context, nodeID string, enabled bool,
 		  WHERE id = $1`, nodeID, enabled, reason, actor)
 	return err
 }
+
+// UpdateNodeMeta 改一个节点的元数据。**只改人填的那几项。**
+//
+// `id` 不在里面：它是这台机器的身份，写在隧道证书的 CN 里（ADR-0009）。
+// 改它等于换一台机器，而那是「删掉再接一台」，不是「编辑」。
+//
+// status / dns_enabled / drained_at 也不在里面：那些是观察和意图，
+// 各有自己的写入路径（ADR-0014）。**一个能改 status 的编辑接口，
+// 会让人以为可以手工把一台死机器改成在线。**
+//
+// 返回 ErrNotFound —— 不存在与「改了但没变化」要分得开：
+// 前者是路径错了，后者是一次正常的空操作。
+func (s *Store) UpdateNodeMeta(ctx context.Context, spec NodeSpec) error {
+	tag, err := s.Pool.Exec(ctx,
+		`UPDATE edge_nodes SET city=$2, vendor=$3, line=$4, public_ip=$5 WHERE id=$1`,
+		spec.NodeID, spec.City, spec.Vendor, spec.Line, spec.PublicIP)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteNode 删掉一个节点的记录。
+//
+// **只删记录，不碰那台机器。** 机器上的 Agent 与 Caddy 还在跑，
+// 要真正撤掉得在那台机器上跑 `edge-node.sh uninstall`。
+// 这个区分要在界面上说清——否则人会以为点了删除机器就干净了。
+//
+// # 跟着删的与留下的
+//
+// `dns_weights` / `cert_nodes` / `node_logs` 由外键级联删除：它们是
+// **关于这个节点此刻的安排**，节点没了就没有意义。
+//
+// 而 `deploy_results` / `events` / `audit_logs` **没有外键，因此留着**。
+// 那是历史：「那次下发推到了哪几台」「谁在什么时候下线了它」——
+// 删掉一台机器不该让过去发生过的事从记录里消失。
+//
+// 这不是疏忽，是这张表设计时就分开的两类：**当前安排会跟着走，
+// 已经发生的事不会。**
+func (s *Store) DeleteNode(ctx context.Context, nodeID string) error {
+	tag, err := s.Pool.Exec(ctx, `DELETE FROM edge_nodes WHERE id = $1`, nodeID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// GetNode 读一个节点。不存在返回 ErrNotFound —— 与「读到了一行空值」分开：
+// 后者会让调用方以为节点在、只是没填。
+func (s *Store) GetNode(ctx context.Context, id string) (Node, error) {
+	var n Node
+	err := s.Pool.QueryRow(ctx,
+		`SELECT id, city, vendor, line, host(public_ip), status::text,
+		        cfg_version, dns_enabled, last_hb_at, created_at, drained_at,
+		        coalesce(dns_reason::text, ''), coalesce(dns_actor, ''), dns_changed_at,
+		        agent_version
+		 FROM edge_nodes WHERE id = $1`, id).
+		Scan(&n.ID, &n.City, &n.Vendor, &n.Line, &n.PublicIP,
+			&n.Status, &n.CfgVersion, &n.DNSEnabled, &n.LastHBAt, &n.CreatedAt,
+			&n.DrainedAt, &n.DNSReason, &n.DNSActor, &n.DNSChangedAt, &n.AgentVersion)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return n, ErrNotFound
+	}
+	return n, err
+}
