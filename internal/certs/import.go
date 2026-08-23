@@ -16,6 +16,12 @@ type Imported struct {
 	NotAfter time.Time
 	Issuer   string   // 证书里的签发者 CN，给人看
 	Domains  []string // 证书覆盖的全部域名（SAN）
+
+	// Leaf 是解出来的叶子证书。**留着它是为了让「覆盖不覆盖」只有一份判据**：
+	// 调用方要问「这张证书管不管得着 a.example.com」时用
+	// Leaf.VerifyHostname，与上面校验域名用的是同一个函数、同一套
+	// RFC 通配符规则。手写 strings 比对会在 *.example.com 上判错。
+	Leaf *x509.Certificate
 	// Warnings 是**不该拒绝、但人应当知道**的事。
 	//
 	// 拒绝一张能用的证书，代价是人在别处凑合（比如把证书直接 scp 到节点上，
@@ -71,6 +77,7 @@ func ValidateImport(domain string, certPEM, keyPEM []byte) (Imported, error) {
 		NotAfter: leaf.NotAfter,
 		Issuer:   issuerName(leaf),
 		Domains:  certDomains(leaf),
+		Leaf:     leaf,
 	}
 
 	// 5：只有叶子、没有中间证书。**不拒绝**——有些平台就是分开给的，
@@ -135,4 +142,27 @@ func DomainsOf(certPEM []byte) []string {
 		return nil
 	}
 	return certDomains(c)
+}
+
+// CoversAny 说这张证书管不管得着这批域名里的任何一个。
+//
+// **判据是 VerifyHostname，与导入时校验域名用的是同一个函数。**
+// 手写 strings 比对会在 *.example.com 上判错，而通配符证书正是最常见的那一类。
+//
+// 它回答的是一个具体问题：**这张证书推到节点上之后，会有人用到它吗？**
+//
+// 而这个问题不能问「有没有一条路由的域名等于它」：证书不是按路由挑的。
+// 主控把**全部**证书内联进每个节点（ADR-0010），Caddy 在握手时按 SNI 自己配对
+// ——所以一张 *.example.com 的证书会服务 a.example.com，哪怕没有任何一条
+// 路由叫 *.example.com。用「等于」做判据会拒掉一张真的用得上的证书。
+func (i Imported) CoversAny(domains []string) bool {
+	if i.Leaf == nil {
+		return false
+	}
+	for _, d := range domains {
+		if i.Leaf.VerifyHostname(d) == nil {
+			return true
+		}
+	}
+	return false
 }

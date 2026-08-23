@@ -1,10 +1,13 @@
 package api
 
 import (
-	"github.com/xltxb/edge_caddy/internal/certs"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/xltxb/edge_caddy/internal/certs"
 )
 
 type certResp struct {
@@ -143,6 +146,47 @@ func (s *Server) handleImportCert(c *gin.Context) {
 		FailValidation(c, err.Error(), []FieldError{
 			{ResKey: "cert:" + domain, Field: "cert_pem", Reason: err.Error()},
 		})
+		return
+	}
+
+	// **这张证书管得着我们服务的域名吗？管不着就拒。**
+	//
+	// 起因是三方证书平台的对接：它们那套语义要区分「这个域名不归这个 CDN
+	// 管，跳过不算失败」和「真的部署失败，要告警」。收下的话它们只看得到
+	// 200，两种情况混成一种。
+	//
+	// 而收下的代价不只是它们那边：这张证书会进到期扫描，**每天为一个
+	// 我们根本不服务的域名报警**——而到期告警是拆掉自动续期之后唯一
+	// 会主动找人的东西，往里掺噪音等于在削弱它。
+	//
+	// 判据用 CoversAny（VerifyHostname），**不是「有没有一条路由等于它」**：
+	// 证书不按路由挑，主控把全部证书内联进每个节点、Caddy 按 SNI 配对，
+	// 所以一张 *.example.com 服务着 a.example.com，哪怕没有路由叫那个名字。
+	//
+	// 守着这一条的是 TestWildcardCertIsAcceptedForTheHostsItCovers
+	// （internal/e2e）：把判据换成「名字相等」，它当场红。
+	// 没有那条的话，一个 route.Domain == domain 的实现也能让「拒绝陌生域名」
+	// 那条全绿，而它会拒掉通配符证书——**而通配符正是三方平台最常发的那一类**。
+	routes, err := s.store.ListRoutes(c.Request.Context())
+	if err != nil {
+		// **查不出来不能当成「不归我们管」。** 那会把一次数据库抖动
+		// 变成一句「这个域名不在这个 CDN 上」，而对方的语义是「跳过，不告警」
+		// —— 于是一次真的故障被静音了。
+		s.log.Error("读取路由清单失败", "domain", domain, "err", err)
+		Fail(c, CodeDownstream, "读不到路由清单，无法判断这个域名归不归本 CDN 管，"+
+			"这次导入没有执行")
+		return
+	}
+	served := make([]string, 0, len(routes))
+	for _, r := range routes {
+		served = append(served, r.Domain)
+	}
+	if !imp.CoversAny(served) {
+		Fail(c, CodeNotFound, fmt.Sprintf(
+			"这张证书覆盖的域名（%s）没有一个是本 CDN 在服务的。"+
+				"先在「路由」里建好站点再推证书 —— 顺序反过来的话，"+
+				"证书会存在这里等着一个永远不来的站点",
+			strings.Join(imp.Domains, ", ")))
 		return
 	}
 

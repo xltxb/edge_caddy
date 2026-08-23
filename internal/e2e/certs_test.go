@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -592,6 +593,11 @@ func TestImportRejectsCertForAnotherDomain(t *testing.T) {
 // **一个比真实更完整的替身，会让缺口在开发期隐形。**
 func TestCertListReportsWhatItCovers(t *testing.T) {
 	r := newRig(t)
+	// 先建站点：证书要覆盖得着我们在服务的域名才收（见
+	// TestImportRejectsCertForADomainWeDontServe）。
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "wild.example.com", "upstream": r.upstream, "block_mode": "abort",
+	})
 	certPEM, keyPEM := importableCert(t, "wild.example.com")
 	r.mustDo("PUT", "/certs/wild.example.com", map[string]any{
 		"cert_pem": string(certPEM), "key_pem": string(keyPEM),
@@ -623,5 +629,65 @@ func TestCertListReportsWhatItCovers(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("覆盖域名里应当有它自己，实际 %v", got.Domains)
+	}
+}
+
+// TestImportRejectsCertForADomainWeDontServe 钉的是 1003：
+// **这张证书覆盖不到任何一个我们在服务的域名时，拒绝。**
+//
+// 起因是三方证书平台的对接。它们那套语义要区分两件事：
+//
+//	这个域名不归这个 CDN 管   →  跳过，不算失败
+//	真的部署失败              →  告警
+//
+// 收下的话它们只看得到 200，两种混成一种。而收下的代价不只在它们那边：
+// 这张证书会进到期扫描，**每天为一个我们根本不服务的域名报警**——
+// 而拆掉自动续期之后，到期告警是唯一会主动找人的东西。
+func TestImportRejectsCertForADomainWeDontServe(t *testing.T) {
+	r := newRig(t)
+	// 建一个别的站点：**证明拒绝的理由是「覆盖不到」而不是「一条路由都没有」**。
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "served.example.com", "upstream": r.upstream, "block_mode": "abort",
+	})
+
+	certPEM, keyPEM := importableCert(t, "stranger.example.com")
+	_, e := r.do("PUT", "/certs/stranger.example.com", map[string]any{
+		"cert_pem": string(certPEM), "key_pem": string(keyPEM),
+	})
+	if e.Code != api.CodeNotFound {
+		t.Fatalf("不服务的域名应当报 1003，实际 code=%d msg=%q", e.Code, e.Msg)
+	}
+	if !strings.Contains(e.Msg, "stranger.example.com") {
+		t.Errorf("报错要说出这张证书覆盖的是什么，人才知道自己推错了哪张：%q", e.Msg)
+	}
+
+	// **被拒的那次什么也没存。** 存了一半的话，到期扫描照样会为它报警。
+	list := r.mustDo("GET", "/certs", nil)
+	if strings.Contains(string(list.Data), "stranger.example.com") {
+		t.Errorf("被拒的证书不该留下痕迹：%s", list.Data)
+	}
+}
+
+// TestWildcardCertIsAcceptedForTheHostsItCovers 是上一条的承重反面。
+//
+// **判据是「覆盖得着」，不是「名字相等」。** 证书不按路由挑：主控把全部
+// 证书内联进每个节点（ADR-0010），Caddy 在握手时按 SNI 自己配对——
+// 所以一张 *.example.com 的证书服务着 a.example.com，哪怕没有任何一条
+// 路由叫 *.example.com。
+//
+// 没有这一条，一个用 `route.Domain == certDomain` 实现的版本也能让上面那条全绿，
+// 而它会拒掉一张真的用得上的通配符证书——**而通配符正是三方平台最常发的那一类**。
+func TestWildcardCertIsAcceptedForTheHostsItCovers(t *testing.T) {
+	r := newRig(t)
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "a.example.com", "upstream": r.upstream, "block_mode": "abort",
+	})
+
+	certPEM, keyPEM := importableCert(t, "*.example.com")
+	_, e := r.do("PUT", "/certs/*.example.com", map[string]any{
+		"cert_pem": string(certPEM), "key_pem": string(keyPEM),
+	})
+	if e.Code != api.CodeOK {
+		t.Fatalf("通配符证书覆盖着 a.example.com，不该被拒：code=%d msg=%q", e.Code, e.Msg)
 	}
 }
