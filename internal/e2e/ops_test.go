@@ -1004,3 +1004,85 @@ func TestDeleteNodeRequiresDrainAndSaysWhatItDidNotDo(t *testing.T) {
 		}
 	}
 }
+
+// **被删掉的节点带着旧证书回来，必须被拒，而且要说清那台机器上要做什么。**
+//
+// 灰度上撞到的完整链条：
+//
+//	17:23:37  删除节点 node-hk-01          ← 记录没了
+//	18:11:39  签发接入Token node-hk-01     ← 想重新加回来
+//	之后      事件里一直「节点已接入」，而节点列表永远是 0 台
+//
+// 那台机器上的 Agent 还留着隧道证书（`edge-node.sh uninstall` 刻意保留
+// /var/lib/edge-agent）。它带着证书重连，被 identify() 按 CN 认出来，
+// 而心跳写库是 UPDATE、影响 0 行、**不报错** ——
+// 一台连着、在服务、而控制台上看不见的机器。
+//
+// **而新签的 Token 救不了**：Agent 优先用本地已有的证书，根本不走 Token 那条路。
+//
+// # 那道门是怎么自己把自己拆掉的
+//
+// handleDeleteNode 的前提是「必须先下线」，注释里写的正是要防这个幽灵。
+// 但**删除同时也删掉了下线标记** —— IsNodeDrained 查不到行时返回 false，
+// 于是重连时那道检查放行了。
+//
+// **一道以状态为前提的门，挡不住「那个状态连同记录一起没了」。**
+//
+// # 夹具
+//
+// `agent.Run` 跑到断开为止，**重连由调用方负责** —— 生产上是 systemd
+// Restart=always 重启整个进程，复用 /var/lib/edge-agent。所以这里也起
+// 第二个 Agent、指同一个 state 目录，那才是真实形态。
+// （第一版我以为 rig 会自己重连，两条测试都因此失败 —— 失败的是夹具，不是代码。）
+func TestDeletedNodeReconnectingWithOldCertIsRefused(t *testing.T) {
+	r := newRig(t)
+	stateDir := t.TempDir()
+	token, _ := r.issueToken("node-hk-01")
+	stop := r.startAgent("node-hk-01", token, stateDir)
+	r.waitOnline("node-hk-01")
+
+	r.mustDo("POST", "/nodes/node-hk-01/drain", map[string]any{"confirm": true})
+	r.waitOffline("node-hk-01")
+	r.mustDo("DELETE", "/nodes/node-hk-01", nil)
+	stop()
+
+	// 进程重启，复用同一个 state 目录 —— 里面那张隧道证书还在。
+	// Token 传空串：它已经用掉了，而 Agent 本来也会优先用证书。
+	r.startAgent("node-hk-01", "", stateDir)
+
+	deadline := time.Now().Add(6 * time.Second)
+	for time.Now().Before(deadline) {
+		nodes := r.mustDo("GET", "/nodes", nil)
+		if strings.Contains(string(nodes.Data), "node-hk-01") {
+			t.Fatalf("被删掉的节点靠一张旧证书回来了 —— "+
+				"它会在一张不存在的行上写心跳，而那个写入不报错：%s", nodes.Data)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+
+	// **而且要留下一条说得出办法的记录。**
+	//
+	// 这条错误只出现在节点的日志里，而看日志的人手上没有控制台的上下文。
+	ov := r.mustDo("GET", "/overview", nil)
+	if !strings.Contains(string(ov.Data), "edge-agent") {
+		t.Errorf("拒绝的理由要说清那台机器上要做什么（清掉 /var/lib/edge-agent 再重装），"+
+			"实际事件：%s", string(ov.Data)[:min(700, len(ov.Data))])
+	}
+}
+
+// **反过来：记录还在的时候，带证书重连必须照常放行。**
+//
+// 没有这一条，一个「无条件拒绝所有带证书的连接」的实现也能让上面那条通过
+// —— 而那会让每一台已接入的节点在下次重启时全部掉线。
+func TestKnownNodeReconnectingWithCertIsAllowed(t *testing.T) {
+	r := newRig(t)
+	stateDir := t.TempDir()
+	token, _ := r.issueToken("node-hk-01")
+	stop := r.startAgent("node-hk-01", token, stateDir)
+	r.waitOnline("node-hk-01")
+	stop()
+
+	// 同一个 state 目录、空 Token —— 走的就是「证书优先」那条路。
+	r.startAgent("node-hk-01", "", stateDir)
+	r.waitOnline("node-hk-01")
+}

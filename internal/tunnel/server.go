@@ -284,6 +284,25 @@ func (s *Server) identify(ctx context.Context, hello *edgev1.Hello) (string, *ed
 
 	if cn := clientCertCN(ctx); cn != "" {
 		// 老节点：身份由证书决定，不需要 Token，也不重新签发。
+		//
+		// **但证书不等于身份，记录才是。**
+		//
+		// 灰度上撞到的：节点被删掉之后，那台机器上的 Agent 还留着隧道证书
+		// （`edge-node.sh uninstall` 刻意保留 /var/lib/edge-agent）。
+		// 它带着证书重连，被这里按 CN 认出来，然后：
+		//
+		//	心跳写库是 UPDATE，影响 0 行，**不报错**
+		//	→ 事件里一直「节点已接入」，而 GET /nodes 永远是空的
+		//	→ 一台连着、在服务、而控制台上看不见的机器
+		//
+		// 这正是 handleDeleteNode 的注释里预言的那个幽灵。当时加的前提是
+		// 「删之前必须先下线」，而**删除同时也删掉了下线标记**——
+		// IsNodeDrained 查不到行时返回 false，于是那道门自己把自己拆了。
+		//
+		// 一道以状态为前提的门，挡不住「那个状态连同记录一起没了」。
+		if err := s.refuseIfUnknown(ctx, cn); err != nil {
+			return "", nil, err
+		}
 		if err := s.refuseIfDrained(ctx, cn); err != nil {
 			return "", nil, err
 		}
@@ -381,6 +400,31 @@ func (s *Server) refuseEnroll(ctx context.Context, nodeID, msg string, code code
 		s.log.Error("写接入被拒事件失败", "err", err)
 	}
 	return status.Error(code, msg)
+}
+
+// refuseIfUnknown 拒绝一张**没有记录背书**的证书。
+//
+// 证书还在而记录没了，只有一种来路：那个节点被删除过。而重新签发的
+// 接入 Token 救不了它——Agent 优先用本地已有的证书，根本不走 Token 那条路
+// （见 internal/agent 的 creds 选择）。所以人会看到：签了新 Token、
+// 重装了、事件里也一直「已接入」，而列表始终是空的。
+//
+// 措辞必须说出**那台机器上要做什么**。这条错误只出现在节点的日志里，
+// 而看日志的人手上没有控制台的上下文。
+func (s *Server) refuseIfUnknown(ctx context.Context, nodeID string) error {
+	_, err := s.opt.Store.GetNode(ctx, nodeID)
+	if errors.Is(err, store.ErrNotFound) {
+		return s.refuseEnroll(ctx, nodeID,
+			"接入被拒：主控上没有这个节点的记录（多半是被删除过），"+
+				"而本机还留着上一次的隧道证书。"+
+				"在这台机器上执行 systemctl stop edge-agent && rm -rf /var/lib/edge-agent，"+
+				"再用控制台新签的 Token 重装",
+			codes.PermissionDenied)
+	}
+	if err != nil {
+		return status.Errorf(codes.Internal, "查节点记录: %v", err)
+	}
+	return nil
 }
 
 func (s *Server) refuseIfDrained(ctx context.Context, nodeID string) error {
