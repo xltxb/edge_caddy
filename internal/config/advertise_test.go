@@ -100,3 +100,61 @@ func TestMTLSSwitchRefusesToPretend(t *testing.T) {
 		t.Errorf("应当指向 ADR-0013：%s", msg)
 	}
 }
+
+// **`wss://` 那种写法也要通过校验，而且要取得出正确的主机名。**
+//
+// 这条路是为了穿过只转发 80/443 的中间设施：灰度上主控域名挂在 Cloudflare
+// 后面，CDN 不代理 9000，节点装完一切正常然后永远不出现在控制台里。
+func TestAdvertiseAcceptsTunnelURL(t *testing.T) {
+	for _, v := range []string{
+		"wss://cdn.example.com",
+		"wss://cdn.example.com/api/v1/tunnel",
+		"wss://cdn.example.com:8443",
+		"ws://localhost:8080", // 本地调试
+	} {
+		if err := config.ValidateAdvertise(v); err != nil {
+			t.Errorf("%q 应当通过校验：%v", v, err)
+		}
+	}
+}
+
+// **主机名取错的后果不是「取错了」，是里层 TLS 报「证书不适用于该主机名」。**
+//
+// SplitHostPort 对 `wss://cdn.example.com` 会得出荒谬的结果，
+// 而它的症状出现在证书上——人会去查证书，那儿没有问题。
+func TestAdvertiseHostForSAN(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{"ec.example.com:9000", "ec.example.com"},
+		{"wss://cdn.example.com", "cdn.example.com"},
+		{"wss://cdn.example.com:8443", "cdn.example.com"},
+		{"wss://cdn.example.com/api/v1/tunnel", "cdn.example.com"},
+		{"localhost:9000", "localhost"},
+	} {
+		if got := config.AdvertiseHost(c.in); got != c.want {
+			t.Errorf("AdvertiseHost(%q) = %q，想要 %q —— "+
+				"它进服务端证书的 SAN，错了会表现成「证书不适用于该主机名」",
+				c.in, got, c.want)
+		}
+	}
+}
+
+// **URL 形式里填 IP 一样要拒。** 那条限制的理由（换地址那天不用挨台改节点）
+// 跟走哪条传输毫无关系，所以两种写法不能有一种漏掉。
+func TestAdvertiseRejectsIPInBothForms(t *testing.T) {
+	for _, v := range []string{"203.0.113.7:9000", "wss://203.0.113.7", "wss://203.0.113.7:443"} {
+		if err := config.ValidateAdvertise(v); err == nil {
+			t.Errorf("%q 是 IP，应当被拒", v)
+		}
+	}
+}
+
+// **`https://` 不能被默默当成 `wss://`。**
+//
+// 悄悄纠正的话，写错的人学不到那个区别，而下一次他会在别的地方
+// （比如 nginx 配置）再写错一遍——那时没有人纠正他。
+func TestAdvertiseRejectsHTTPScheme(t *testing.T) {
+	err := config.ValidateAdvertise("https://cdn.example.com")
+	if err == nil {
+		t.Fatal("https:// 应当被拒 —— 隧道走 wss://，两者不是一回事")
+	}
+}

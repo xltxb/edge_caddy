@@ -249,13 +249,27 @@ func (r *rig) issueToken(nodeID string) (token, caPin string) {
 
 // startAgent 起一个真 Agent，跑到测试结束。stateDir 复用可模拟「重启」。
 func (r *rig) startAgent(nodeID, token, stateDir string) context.CancelFunc {
+	return r.startAgentAt(r.tunnelAddr, nodeID, token, stateDir)
+}
+
+// startAgentOverWS 让节点走 **HTTP 面上那条隧道**（`ws://…/api/v1/tunnel`），
+// 而不是直连 gRPC 端口。
+//
+// 里层完全一样：同一套 mTLS、同一个内部 CA、同一个 CA pin、同一份 gRPC。
+// 所以这两条路径应当在**每一件事**上表现一致，而不只是「能连上」。
+func (r *rig) startAgentOverWS(nodeID, token, stateDir string) context.CancelFunc {
+	return r.startAgentAt("ws://"+strings.TrimPrefix(r.http.URL, "http://"),
+		nodeID, token, stateDir)
+}
+
+func (r *rig) startAgentAt(master, nodeID, token, stateDir string) context.CancelFunc {
 	r.t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	// 日志缓冲接上：不接的话 #26 那条链路在 e2e 里一次也走不到，
 	// 而它只在「Logs 非 nil」时才启动——跟 DNS 那次是同一个形状。
 	logs := &agent.LogBuffer{}
 	a := agent.New(agent.Config{
-		MasterAddr: r.tunnelAddr, NodeID: nodeID, Token: token, CAPin: r.caPin,
+		MasterAddr: master, NodeID: nodeID, Token: token, CAPin: r.caPin,
 		StateDir: stateDir, CaddyAdmin: r.caddy.AdminURL(),
 		TLSProbe:  "unix/" + r.caddy.TLSSocketPath(),
 		Heartbeat: 200 * time.Millisecond,

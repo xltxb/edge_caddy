@@ -235,6 +235,69 @@ die()  { printf '\033[1;31m错误:\033[0m %s\n' "$*" >&2; exit 1; }
 
 need_root() { [ "$(id -u)" = 0 ] || die "需要 root（用 sudo 跑）"; }
 
+# preflight_master 在**动这台机器之前**先确认它连得上主控的隧道端口。
+#
+# 少了这一步，装机会一路成功——装 Caddy、写 systemd 单元、起 Agent——
+# 然后节点**永远不出现在控制台里**，而这台机器上没有任何东西说得出为什么。
+# 人会去查 Token、查指纹、查防火墙，而问题可能只是那个域名被 CDN 代理了。
+#
+# **这不是启发式判断，是真前提**：连不上隧道端口，这次安装无论如何不可能工作。
+# 所以它拒绝继续，而不是警告一句然后接着装。
+preflight_master() {
+  local addr="$1" host port rest
+
+  case "$addr" in
+    wss://*|ws://*)
+      # 隧道走 HTTP 面：主机名后面可能带端口，也可能带路径。
+      # **不能用 ${addr%:*} 那一套**——`wss://cdn.example.com` 会被切成
+      # host="wss"，然后拿着 "wss" 去连，报的是「域名解析失败」，
+      # 而人会去查 DNS，那儿没有问题。
+      rest="${addr#*://}"
+      rest="${rest%%/*}"
+      case "$rest" in
+        *:*) host="${rest%:*}"; port="${rest##*:}" ;;
+        *)   host="$rest"
+             case "$addr" in wss://*) port=443 ;; *) port=80 ;; esac ;;
+      esac
+      ;;
+    *://*)
+      die "--master 的协议只能是 wss://（或本地调试用 ws://），实际是 ${addr%%://*}://"
+      ;;
+    *)
+      host="${addr%:*}"
+      port="${addr##*:}"
+      [ "${host}" != "$addr" ] || die "--master 要写成 host:port（如 ec.example.com:9000），或 wss://host（隧道走 443）"
+      ;;
+  esac
+
+  log "先确认连得上主控：${host}:${port}"
+  if command -v nc >/dev/null 2>&1; then
+    nc -z -w 5 "${host}" "${port}" 2>/dev/null && { log "  可连"; return 0; }
+  elif command -v timeout >/dev/null 2>&1; then
+    timeout 5 bash -c "exec 3<>/dev/tcp/${host}/${port}" 2>/dev/null && { log "  可连"; return 0; }
+  else
+    log "  跳过（没有 nc，也没有 timeout）—— 连不上的话装完节点不会出现在控制台里"
+    return 0
+  fi
+
+  # **变量一律写 ${...}**：`$port。` 里那个中文句号会被 bash 当成变量名的一部分
+  # （多字节字节 > 0x7F），报的是 `port?: unbound variable` —— 而这条报错出现在
+  # 一段本身就在处理「连不上」的代码里，很容易被读成网络问题。
+  die "连不上 ${host}:${port} —— 这次安装无论如何不会工作，所以在动这台机器之前停下。
+
+可能的原因，按撞见的频率排：
+
+  1) **那个域名被 CDN 代理了**（Cloudflare 橙云等）。CDN 只转发 80/443 那几个端口，
+     9000 不在里面 —— 节点连的是 CDN，不是你的主控。
+     主控的 EC_ADVERTISE 要指向一个**直连源站**的域名（Cloudflare 里是灰云 / DNS only），
+     跟控制台那个域名可以不是同一个。
+  2) 主控那台机器的防火墙 / 安全组没放行 ${port}。
+  3) 主控的 EC_GRPC_ADDR 只监听了回环（应当是 0.0.0.0:${port}）。
+
+在主控那台机器上验：  ss -lntp | grep ${port}
+从这台机器上验：      nc -vz ${host} ${port}"
+}
+
 do_install() {
   local master="" node_id="" token="" ca_pin="" agent_src="" http3=no
   while [ $# -gt 0 ]; do
@@ -257,6 +320,8 @@ do_install() {
   [ -n "$ca_pin" ]  || die "--ca-pin 必填 —— 没有它，接入首连无法确认对面就是你的主控"
 
   need_root
+  preflight_master "$master"
+
   local family
   family="$(os_family /etc/os-release)" || die "认不出这个发行版，请手动安装 Caddy 后再跑本脚本"
   log "发行版家族：$family"

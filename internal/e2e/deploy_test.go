@@ -417,3 +417,60 @@ func TestOrphanDraftIsRefusedNotSwallowed(t *testing.T) {
 		t.Fatalf("下发被拒之后草稿必须还在，人才有机会把它改对：%s", after.Data)
 	}
 }
+
+// **隧道走 HTTP 面那条路时，一切照旧。**
+//
+// 这条路存在的理由是灰度上撞到的：主控域名挂在 CDN 后面，而 CDN 只转发
+// 80/443——隧道那个独立端口的包根本到不了主控。节点装完一切正常，
+// 然后**永远不出现在控制台里**，而那台机器上没有任何东西说得出为什么。
+//
+// 换成 `wss://<主控域名>/api/v1/tunnel` 之后，隧道在中间设施眼里
+// 就是一条平平无奇的 443 连接。
+//
+// **而里层一个字节都没改**：同一套 mTLS、同一个内部 CA、同一个 CA pin、
+// 同一份 gRPC。节点身份仍然是客户端证书（ADR-0009），CDN 只看得见外层。
+// 那一点是承重的：下发走内联证书（ADR-0010），
+// **每个客户域名的私钥都在这条隧道里传**。
+//
+// 所以这条测试不满足于「连上了」——**接入、心跳、下发、真的过流量**
+// 四步全走一遍。只验第一步的话，一个握手成功而数据面不通的实现照样全绿，
+// 而那正是「机制建好了，没接到最该接的那个输出上」的形状。
+func TestTunnelOverHTTPCarriesEverything(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgentOverWS("node-hk-01", token, t.TempDir())
+
+	// 一、接入：节点得真的上线，而不只是 TCP 连上了。
+	r.waitOnline("node-hk-01")
+
+	// 二、下发：配置得真的到节点上。
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "ws.example.com", "upstream": r.upstream,
+		"block_mode": "abort", "body_max": "64MB",
+	})
+	r.deployNow()
+
+	// 三、数据面：请求得真的打到源站。
+	//
+	// **这一步是这条测试的重点。** 隧道只是控制面，而「控制面通了」
+	// 与「节点上的 Caddy 真的按新配置在服务」是两件事——
+	// 前者绿而后者红，正是这一天反复撞见的那个形状。
+	if code, body := r.curlVia("ws.example.com"); code != 200 || body != "UPSTREAM OK" {
+		t.Fatalf("经 HTTP 面接入的节点没能正常服务：得到 %d %q", code, body)
+	}
+
+	// 四、隧道端点不吃会话，但也不因此变成一个开放的入口。
+	//
+	// 认证在**里层**那次 mTLS 握手里（ADR-0009）。所以：不带 WebSocket
+	// 升级头的普通 GET 不该被当成隧道处理。
+	status, e := r.do("GET", "/tunnel", nil)
+	if status == http.StatusOK {
+		t.Error("普通 GET /tunnel 不该返回 200 —— 它只接受 WebSocket 升级")
+	}
+	// 而且要按契约回信封、把话说清。gorilla 默认写的是纯文本「Bad Request」，
+	// 那句话对一个把 wss:// 写成 https:// 的人毫无帮助——
+	// 他会去查请求体，而这个端点根本没有请求体。
+	if !strings.Contains(e.Msg, "WebSocket") {
+		t.Errorf("拒绝的理由要说清是什么请求才对，实际 msg=%q", e.Msg)
+	}
+}

@@ -24,6 +24,9 @@ var contractEndpoints = []string{
 	"GET /api/v1/auth/session",
 	// §2 实时
 	"GET /api/v1/ws",
+	// §2 节点隧道 —— **不是给浏览器的**，Agent 用它穿 443。
+	// 挂在鉴权组外面是有意的：认证在里层那次 mTLS 握手里（ADR-0009）。
+	"GET /api/v1/tunnel",
 	// §3 总览
 	"GET /api/v1/overview",
 	// §4 边缘节点

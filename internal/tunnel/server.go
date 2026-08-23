@@ -100,6 +100,11 @@ type Options struct {
 }
 
 type Server struct {
+	// wslis / wsOnce 是 WebSocket 那条入口用的（见 wstransport.go）。
+	// 懒装配：没人挂 HTTPHandler 就不会有那条 goroutine。
+	wslis  *chanListener
+	wsOnce sync.Once
+
 	edgev1.UnimplementedEdgeTunnelServer
 	opt  Options
 	log  *slog.Logger

@@ -114,5 +114,66 @@ has "$fw3" "443/udp" "开了 HTTP/3 才放行 443/udp"
 printf '\nCaddy Admin 钉在回环\n'
 has "$(caddy_admin_dropin)" "CADDY_ADMIN=127.0.0.1:2019" "drop-in 显式钉死 Admin 地址"
 
+printf '\n装机前的连通性检查\n'
+#
+# 这一条守的是**「在动这台机器之前先停下」**。
+#
+# 少了它，装机会一路成功——装 Caddy、写单元、起 Agent——然后节点永远不
+# 出现在控制台里，而这台机器上没有任何东西说得出为什么。灰度上真实撞到过：
+# 主控的域名被 Cloudflare 代理，CDN 只转发 80/443，9000 根本到不了主控。
+#
+# **不能用「装完再看有没有上线」代替**：那时错误已经散落在三个地方
+#（Agent 日志、systemd 状态、控制台的空列表），而没有一处说得出真因。
+
+# 端口格式错要当场拒，而不是拿一个空 port 去连。
+out="$( (preflight_master "ec.example.com") 2>&1 )"
+has "$out" "host:port" "--master 没写端口时点名格式"
+
+# 连不上时必须**拒绝继续**，并且报错里要给出可查的方向。
+# 用 127.0.0.1 上一个几乎不可能有人监听的端口。
+out="$( (preflight_master "127.0.0.1:59321") 2>&1 )"
+has "$out" "连不上" "连不上时拒绝安装"
+has "$out" "CDN" "报错点出「域名被 CDN 代理」这个最常见的成因"
+has "$out" "ss -lntp" "报错给出在主控那边怎么验"
+has "$out" "nc -vz" "报错给出在节点这边怎么验"
+
+# **反向：连得上就不该拦。** 没有这一条，上面四条在
+#「preflight 无条件失败」时也全绿——而那会让每一次安装都装不了。
+python3 -c 'import socket,sys,time,threading
+s=socket.socket(); s.bind(("127.0.0.1",0)); s.listen(1)
+print(s.getsockname()[1]); sys.stdout.flush()
+time.sleep(6)' > /tmp/ec-preflight-port.txt &
+sleep 1
+listen_port="$(head -1 /tmp/ec-preflight-port.txt 2>/dev/null)"
+if [ -n "$listen_port" ]; then
+  out="$( (preflight_master "127.0.0.1:$listen_port") 2>&1 )"
+  hasnt "$out" "连不上" "连得上时放行（否则上面几条在「无条件失败」时也全绿）"
+else
+  bad "连得上时放行" "装置坏了：没能起一个临时监听端口"
+fi
+wait 2>/dev/null
+
+# **wss:// 那种写法也要能解析出主机和端口。**
+#
+# 用 ${addr%:*} 那一套的话，`wss://cdn.example.com` 会被切成 host="wss"，
+# 然后拿着 "wss" 去连 —— 报的是「域名解析失败」，而人会去查 DNS，
+# 那儿没有问题。
+out="$( (preflight_master "wss://127.0.0.1:59322") 2>&1 )"
+has "$out" "127.0.0.1:59322" "wss://host:port 解析出主机和端口"
+hasnt "$out" "wss:" "主机名里不该混进协议头"
+
+# 不带端口时补默认值：wss → 443，ws → 80。
+out="$( (preflight_master "wss://cdn.invalid.example") 2>&1 )"
+has "$out" "cdn.invalid.example:443" "wss:// 不带端口时补 443"
+
+# 带路径也要能剥掉（安装命令里可能带 /api/v1/tunnel）。
+out="$( (preflight_master "wss://cdn.invalid.example/api/v1/tunnel") 2>&1 )"
+has "$out" "cdn.invalid.example:443" "wss:// 带路径时只取主机和端口"
+hasnt "$out" "/api" "路径不该混进主机名"
+
+# 别的协议要当场拒，而不是猜。
+out="$( (preflight_master "https://cdn.example.com") 2>&1 )"
+has "$out" "只能是 wss" "https:// 被明确拒绝，而不是悄悄当成 wss"
+
 printf '\n──────────\n通过 %d，失败 %d\n\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

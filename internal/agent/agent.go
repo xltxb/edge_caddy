@@ -90,7 +90,11 @@ func (a *Agent) Run(ctx context.Context) error {
 		return err
 	}
 
-	conn, err := grpc.NewClient(a.cfg.MasterAddr, grpc.WithTransportCredentials(creds))
+	target, opts, err := dialOptions(a.cfg.MasterAddr, creds)
+	if err != nil {
+		return err
+	}
+	conn, err := grpc.NewClient(target, opts...)
 	if err != nil {
 		return fmt.Errorf("连接主控: %w", err)
 	}

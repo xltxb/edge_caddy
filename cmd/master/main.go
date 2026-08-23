@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -180,10 +179,13 @@ func main() {
 	// 采到的数字偏低，而 24 小时后它会成为分母。
 	go (&traffic.Sampler{Store: st, Health: monitor, Log: log}).Run(ctx)
 
-	advertiseHost, _, err := net.SplitHostPort(cfg.Advertise)
-	if err != nil {
-		advertiseHost = cfg.Advertise
-	}
+	// **两种写法都得走 AdvertiseHost。**
+	//
+	// 这里原先直接 SplitHostPort，而 `wss://cdn.example.com` 走它会得出
+	// 一个荒谬的主机名 —— 后果是服务端证书的 SAN 里没有真正那个域名，
+	// 里层 TLS 握手报「证书不适用于该主机名」，而人会去查证书，
+	// 那儿没有问题。
+	advertiseHost := config.AdvertiseHost(cfg.Advertise)
 	tun, err := tunnel.New(tunnel.Options{
 		Store: st, CA: ca, Log: log,
 		Advertise: []string{advertiseHost, "127.0.0.1", "localhost"},

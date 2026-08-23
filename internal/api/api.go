@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/xltxb/edge_caddy/internal/alert"
@@ -24,6 +25,8 @@ type Tunneler interface {
 	Probe(ctx context.Context, nodeID string, timeout time.Duration) (tunnel.ProbeOutcome, error)
 	Disconnect(nodeID string) bool
 	Drain(ctx context.Context, nodeID string, timeout time.Duration) (tunnel.DrainOutcome, error)
+	// HTTPHandler 是隧道在 443 上的入口（见 internal/tunnel/wstransport.go）。
+	HTTPHandler() http.HandlerFunc
 }
 
 // Healther 是观测状态在 HTTP 面这一层的最小面貌。
@@ -145,6 +148,33 @@ func New(o Options) *gin.Engine {
 
 	// 公开：登录本身不能要求已登录。
 	v1.POST("/auth/login", Audit(o.Store, o.Log), audited("登录", s.handleLogin))
+
+	// **隧道挂在鉴权组外面，这是有意的，不是漏了。**
+	//
+	// 调用方是 Agent，它没有控制台会话，也不该有——它的身份是内部 CA 签发的
+	// 客户端证书，而那次握手发生在**这条 WebSocket 里面**（ADR-0009）。
+	// 在这里加会话检查等于要求节点先登录控制台，那是另一套身份。
+	//
+	// 所以这个端点「未鉴权」的准确说法是：**认证在里层，不在这里**。
+	// 升级成功不代表任何权限——里层握不出证书的连接，
+	// 在 identify() 那一步照样被拒。
+	//
+	// 它存在的理由：中间设施（CDN、企业代理）只转发 80/443，
+	// 隧道那个独立端口的包根本到不了主控。灰度上撞到过，
+	// 症状是节点装完一切正常、**永远不出现在控制台里**。
+	// **无条件注册**，跟下面那个 /ws 一样，理由也一样：条件注册意味着
+	// 装配漏了隧道时这个端点会静默 404，而 404 读起来是「主控版本太老、
+	// 没有这个端点」——节点那一侧会去查版本，而问题在装配。
+	//
+	// （这条注释是补上来的：我在下面 30 行写着这个理由，然后在这里
+	// 写了 `if o.Tunnel != nil`。**知道和用上是两回事。**）
+	v1.GET("/tunnel", func(c *gin.Context) {
+		if o.Tunnel == nil {
+			Fail(c, CodeStateConflict, "隧道未装配")
+			return
+		}
+		o.Tunnel.HTTPHandler()(c.Writer, c.Request)
+	})
 
 	authed := v1.Group("", Auth(o.Store, o.OpsBotToken), Audit(o.Store, o.Log))
 	authed.POST("/auth/logout", audited("登出", s.handleLogout))
