@@ -23,11 +23,28 @@ out="dist"
 #
 # 一个说「这个构建含未提交改动」而实际不含的版本戳，比没有版本戳更坏：
 # 它会让人去找一个不存在的差异。**版本戳的作用域必须和产物的作用域一致。**
+# **用 status --porcelain，不用 diff。**
+#
+# `git diff` 只看**已跟踪**文件。一个新建的 `internal/xxx.go` 会被编进二进制，
+# 而 `git diff` 一个字都不说 —— 包戳着一个干净的 commit，
+# 里面装着那个 commit 上根本不存在的代码。
+#
+# 这个方向比反过来坏得多：
+#
+#	说 dirty 而实际干净 → 让人去找一个不存在的差异，浪费一次排查
+#	说干净而实际脏     → 让人以为拿到的就是那一版，然后拿它上线
+#
+# 前者是噪音，后者是下一场事故的种子。
+#
+# （前端 agent 在他的 pack.mjs 里撞到了同一个形状，我照着去量自己的，
+# 一量就中。**同形状的另一个不会自己浮出来。**）
+#
+# --porcelain 会把未跟踪文件报成 `??`，而它尊重 .gitignore，
+# 所以构建产物不会误伤。
 mine="cmd internal proto go.mod go.sum scripts deploy"
 dirty=""
 # shellcheck disable=SC2086
-if ! git diff --quiet -- $mine 2>/dev/null || \
-   ! git diff --cached --quiet -- $mine 2>/dev/null; then
+if [ -n "$(git status --porcelain -- $mine 2>/dev/null)" ]; then
   dirty="-dirty"
 fi
 version="${1:-$(git describe --tags --always 2>/dev/null || echo dev)${dirty}}"
