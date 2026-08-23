@@ -905,6 +905,51 @@ func TestUpdateNodeMetaEditsOnlyWhatItShould(t *testing.T) {
 	}
 }
 
+// **改动跟解析无关时，`detail` 必须是空串。**
+//
+// 这条看起来是文案洁癖，实际上前端整个界面判据建在它上面：
+//
+//	dns_synced: true            → 解析真变了
+//	false 且 detail === ''      → 跟解析无关，**不是失败**，不上警示色
+//	false 且 detail 有话        → 解析该变而没变成，红字警示
+//
+// 前端因此完全不用自己比 IP（那个 IPv6 归一化的坑在他那边根本不存在）
+// ——**判据跟做决定的那一方同源**。
+//
+// 代价是这条约定必须成立。**哪天有人给「跟解析无关」也加一句友好的
+// detail（比如「本次未涉及解析」），界面就会把一次正常的编辑渲染成失败。**
+// 契约里写了这一条，而在这条测试之前没有任何东西守着它。
+func TestUnrelatedEditLeavesDetailEmpty(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	cur := r.mustDo("GET", "/nodes", nil)
+	if !strings.Contains(string(cur.Data), "203.0.113.7") {
+		t.Fatalf("装置坏了：夹具里的公网 IP 不是预期的那个：%s", cur.Data)
+	}
+
+	// 只改城市，public_ip 原样回填（四项必填，前端就是这么发的）。
+	e := r.mustDo("PUT", "/nodes/node-hk-01", map[string]any{
+		"city": "新加坡", "vendor": "v", "line": "l", "public_ip": "203.0.113.7",
+	})
+	var d struct {
+		DNSSynced bool   `json:"dns_synced"`
+		Detail    string `json:"detail"`
+	}
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.DNSSynced {
+		t.Error("没改 IP，不该说解析同步了")
+	}
+	if d.Detail != "" {
+		t.Errorf("跟解析无关时 detail 必须是空串，实际 %q —— "+
+			"前端按「detail 有话」判定为失败，一句友好的说明会被渲染成红字", d.Detail)
+	}
+}
+
 // **删节点必须先下线，而且要说清「只删了记录」。**
 //
 // 一台还连着的机器手里有隧道证书：删掉记录之后它会重连、会被按证书认出来、
@@ -917,8 +962,16 @@ func TestDeleteNodeRequiresDrainAndSaysWhatItDidNotDo(t *testing.T) {
 
 	// 一、没下线就删 —— 拒，而且理由要说得出。
 	status, e := r.do("DELETE", "/nodes/node-hk-01", nil)
-	if status != 200 || e.Code == api.CodeOK {
-		t.Fatalf("还连着的节点不该能删，实际 http=%d code=%d", status, e.Code)
+	// **钉住具体的 code，不只是「不是 0」。**
+	//
+	// 原先只断言 `!= CodeOK`，于是契约里那句「否则 3002」跟实现返回的 2001
+	// 不一致，**而两边的测试都绿着**——前端照契约把 mock 复刻成了 3002。
+	//
+	// 2001 是状态冲突；3002 是「节点不可达」，而这里拒绝的理由恰恰是
+	// 那台机器**还连着**。两句话正好说反。
+	if status != 200 || e.Code != api.CodeStateConflict {
+		t.Fatalf("还连着的节点该以 2001（状态冲突）拒绝，实际 http=%d code=%d",
+			status, e.Code)
 	}
 	if !strings.Contains(e.Msg, "下线") {
 		t.Errorf("要说清前提是什么：%q", e.Msg)
