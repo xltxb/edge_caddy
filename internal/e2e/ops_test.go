@@ -530,6 +530,16 @@ func TestDrainedNodeIsNotADeployTarget(t *testing.T) {
 	r.mustDo("POST", "/nodes/node-b/drain", map[string]any{"confirm": true})
 	r.waitOffline("node-b")
 
+	// **先把路由建出来，再改它的草稿。**
+	//
+	// 这里原先只写草稿、不建资源，而它能过**正是因为那个 bug**：
+	// 没有 live 底子的草稿被静默跳过，下发照常成功，于是 targets 断言照样成立。
+	// 一条测试靠着「产品悄悄吞掉了它的输入」而通过——
+	// 跟 dnssched 那 8 条夹具是同一族：**测试描述的动作，产品本不该允许。**
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "drained.example.com", "upstream": "127.0.0.1:1111",
+		"block_mode": "abort", "body_max": "64MB",
+	})
 	r.mustDo("PUT", "/drafts/route:drained.example.com", map[string]any{"upstream": r.upstream})
 	e := r.mustDo("POST", "/deploys", map[string]any{
 		"res_keys": []string{"route:drained.example.com"},

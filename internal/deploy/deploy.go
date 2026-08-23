@@ -95,9 +95,15 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 		log = slog.Default()
 	}
 
-	routes, rules, pol, err := s.effective(ctx, resKeys)
+	routes, rules, pol, orphans, err := s.effective(ctx, resKeys)
 	if err != nil {
 		return Result{}, nil, err
+	}
+	// **孤儿草稿要在触达任何东西之前就拦下来。**
+	// 让它走下去的话，这次下发会成功、而那份草稿会被 DeleteDrafts 删掉——
+	// 人写的东西没了，且他收到的是「成功」。
+	if len(orphans) > 0 {
+		return Result{}, orphans, nil
 	}
 
 	certs, err := s.certsForRender(ctx)
@@ -273,25 +279,33 @@ func eventKind(ok, fail int) string {
 }
 
 // effective = 基线 + **本次勾选**的草稿。未勾选的草稿不参与本次渲染。
-func (s *Scheduler) effective(ctx context.Context, resKeys []string) ([]model.Route, []model.Rule, render.Policies, error) {
+//
+// 第四个返回值是**勾了、而底下没有资源**的那些 res_key。它们必须被说出来：
+// 草稿是「在已有资源上的改动」（Partial），没有底子就合并不出东西，
+// 而下面三个循环都是「遍历 live、有草稿就套上去」——**没有对应 live 的草稿
+// 会被静默跳过**。下发照常成功，随后 DeleteDrafts 把那份草稿删掉。
+//
+// 也就是：写了一条新规则、预览说没问题、下发说成功，然后什么都没有、草稿也没了。
+// **成功的假象里最贵的一种：它同时是数据丢失。**
+func (s *Scheduler) effective(ctx context.Context, resKeys []string) ([]model.Route, []model.Rule, render.Policies, []render.Issue, error) {
 	var pol render.Policies
 	liveRoutes, err := s.Store.ListRoutes(ctx)
 	if err != nil {
-		return nil, nil, pol, fmt.Errorf("读取路由: %w", err)
+		return nil, nil, pol, nil, fmt.Errorf("读取路由: %w", err)
 	}
 	// 渲染需要共享密钥的明文：校验端点要拿它验签。它只出现在下发的载荷里，
 	// 不经任何读接口回显。
 	liveRules, err := s.Store.ListRules(ctx, s.Sealer)
 	if err != nil {
-		return nil, nil, pol, fmt.Errorf("读取访问规则: %w", err)
+		return nil, nil, pol, nil, fmt.Errorf("读取访问规则: %w", err)
 	}
 	livePolicies, err := s.Store.ListPolicies(ctx)
 	if err != nil {
-		return nil, nil, pol, fmt.Errorf("读取全局策略: %w", err)
+		return nil, nil, pol, nil, fmt.Errorf("读取全局策略: %w", err)
 	}
 	drafts, err := s.Store.ListDrafts(ctx)
 	if err != nil {
-		return nil, nil, pol, fmt.Errorf("读取草稿: %w", err)
+		return nil, nil, pol, nil, fmt.Errorf("读取草稿: %w", err)
 	}
 
 	selected := map[string]bool{}
@@ -304,13 +318,16 @@ func (s *Scheduler) effective(ctx context.Context, resKeys []string) ([]model.Ro
 			patches[d.ResKey] = d.Patch
 		}
 	}
+	// used 记的是「这份草稿找到了它的底子」。没被记上的就是孤儿，见函数末尾。
+	used := map[string]bool{}
 
 	routes := make([]model.Route, 0, len(liveRoutes))
 	for _, r := range liveRoutes {
 		if p, ok := patches["route:"+r.Domain]; ok {
+			used["route:"+r.Domain] = true
 			merged, err := mergeInto(r, p)
 			if err != nil {
-				return nil, nil, pol, fmt.Errorf("合并 %s 的草稿: %w", r.Domain, err)
+				return nil, nil, pol, nil, fmt.Errorf("合并 %s 的草稿: %w", r.Domain, err)
 			}
 			r = merged
 		}
@@ -320,10 +337,11 @@ func (s *Scheduler) effective(ctx context.Context, resKeys []string) ([]model.Ro
 	rules := make([]model.Rule, 0, len(liveRules))
 	for _, r := range liveRules {
 		if p, ok := patches["rule:"+r.ID]; ok {
+			used["rule:"+r.ID] = true
 			secretPlain := r.Secret // 草稿里不会有密钥，合并不能把它弄丢
 			merged, err := mergeInto(r, p)
 			if err != nil {
-				return nil, nil, pol, fmt.Errorf("合并规则 %s 的草稿: %w", r.ID, err)
+				return nil, nil, pol, nil, fmt.Errorf("合并规则 %s 的草稿: %w", r.ID, err)
 			}
 			merged.Secret = secretPlain
 			r = merged
@@ -335,9 +353,10 @@ func (s *Scheduler) effective(ctx context.Context, resKeys []string) ([]model.Ro
 	for _, p := range livePolicies {
 		spec := p.Spec
 		if patch, ok := patches["global:"+p.ID]; ok {
+			used["global:"+p.ID] = true
 			merged, err := mergeInto(p, patch)
 			if err != nil {
-				return nil, nil, pol, fmt.Errorf("合并策略 %s 的草稿: %w", p.ID, err)
+				return nil, nil, pol, nil, fmt.Errorf("合并策略 %s 的草稿: %w", p.ID, err)
 			}
 			spec = merged.Spec
 		}
@@ -345,10 +364,39 @@ func (s *Scheduler) effective(ctx context.Context, resKeys []string) ([]model.Ro
 	}
 	pol, err = render.ParsePolicies(specs[model.PolicyTLS], specs[model.PolicyLog])
 	if err != nil {
-		return nil, nil, pol, err
+		return nil, nil, pol, nil, err
 	}
 
-	return routes, rules, pol, nil
+	// **勾了、而底下没有资源的草稿，在这里被点名。**
+	//
+	// 上面三个循环都是「遍历 live、有草稿就套上去」，所以一份没有 live 底子的
+	// 草稿走完这一段之后，什么痕迹也不会留下。而调用方随后会删掉它。
+	//
+	// 报成校验问题（而不是自己造一个新的错误通道）是有意的：预览的
+	// validation.ok 会转假、下发用 1002 拒绝执行——**而下发被拒，
+	// DeleteDrafts 就跑不到，那份草稿因此活下来**。人还能把它改对。
+	orphans := make([]render.Issue, 0)
+	for _, k := range sortedKeys(patches) {
+		if used[k] {
+			continue
+		}
+		orphans = append(orphans, render.Issue{
+			ResKey: k, Field: "res_key",
+			Reason: "没有这个资源。草稿是**在已有资源上的改动**，没有底子合并不出东西；" +
+				"要新建请先建出资源本身，再改它的草稿",
+		})
+	}
+
+	return routes, rules, pol, orphans, nil
+}
+
+func sortedKeys(m map[string]json.RawMessage) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // mergeInto 把 Partial 叠加到一个资源上。
@@ -476,10 +524,12 @@ func (s *Scheduler) Preview(ctx context.Context, resKeys []string) (Preview, err
 	if err != nil {
 		return p, fmt.Errorf("读取访问规则: %w", err)
 	}
-	afterRoutes, afterRules, afterPol, err := s.effective(ctx, resKeys)
+	afterRoutes, afterRules, afterPol, orphans, err := s.effective(ctx, resKeys)
 	if err != nil {
 		return p, err
 	}
+	// orphans 在下面与渲染问题合并——**不能在这里赋值**，
+	// 那一段是 p.Validation.Errors = issues，会把这里写的整个盖掉。
 	livePolicies, err := s.Store.ListPolicies(ctx)
 	if err != nil {
 		return p, fmt.Errorf("读取全局策略: %w", err)
@@ -509,9 +559,16 @@ func (s *Scheduler) Preview(ctx context.Context, resKeys []string) (Preview, err
 		p.Before = &before
 	}
 
-	if b, issues := render.Render(afterRoutes, afterRules, nil, afterPol, s.Render); len(issues) > 0 {
+	// **孤儿草稿与渲染问题合在一起报。** 两者对人是同一件事：
+	// 「这次下发不会照你想的那样发生」，分成两个字段只会让界面多一条分支，
+	// 而那条分支迟早有一边忘了显示。
+	//
+	// 注意顺序：孤儿在前。渲染问题说的是「这条资源哪里配错了」，
+	// 而孤儿说的是「这条资源根本不存在」——后者是前者的前提，先看它。
+	b, issues := render.Render(afterRoutes, afterRules, nil, afterPol, s.Render)
+	p.Validation.Errors = append(append(p.Validation.Errors, orphans...), issues...)
+	if len(p.Validation.Errors) > 0 {
 		p.Validation.OK = false
-		p.Validation.Errors = issues
 	} else {
 		p.Validation.OK = true
 		after := string(b)
@@ -550,7 +607,7 @@ func (s *Scheduler) RepushNode(ctx context.Context, nodeID string) (string, stri
 		return "", "", nil, fmt.Errorf("还没有基线，先完成一次下发")
 	}
 
-	routes, rules, pol, err := s.effective(ctx, nil) // 不带草稿：基线就是不含草稿的那一份
+	routes, rules, pol, _, err := s.effective(ctx, nil) // 不带草稿：基线就是不含草稿的那一份（因此不会有孤儿）
 	if err != nil {
 		return "", "", nil, err
 	}

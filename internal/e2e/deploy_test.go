@@ -3,6 +3,7 @@ package e2e_test
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -335,5 +336,84 @@ func TestDeployCommitsDraftIntoLive(t *testing.T) {
 	r.deployNow()
 	if code, body := r.curlVia("live.example.com"); code != 200 || body != "UPSTREAM OK" {
 		t.Fatalf("空下发之后配置被推回了旧值：得到 %d %q", code, body)
+	}
+}
+
+// **一份没有底子的草稿，下发时要被拦下来——而不是连人写的东西一起吞掉。**
+//
+// 草稿是「在已有资源上的改动」（Partial）。而 effective 里三个循环都是
+// 「遍历 live、有草稿就套上去」，所以一份没有对应 live 资源的草稿会被**静默跳过**。
+// 随后 DeleteDrafts 按 res_keys 无条件删。
+//
+// 修之前实测的完整过程：
+//
+//	写草稿 rule:brand-new  → GET /drafts 看得到，界面显示「待下发」
+//	预览                    → 完全不提它，validation.ok = true
+//	下发                    → 返回成功，有 cfg_version 和 deploy_id
+//	之后                    → 草稿没了，GET /rules 是空的
+//
+// **成功的假象里最贵的一种：它同时是数据丢失。**
+//
+// 修法是把它接到已有的校验通道上，而不是造一个新的错误类型：预览的
+// validation.ok 转假、下发用 1002 拒绝执行——**而下发被拒，DeleteDrafts
+// 就跑不到，那份草稿因此活下来**。人还能把它改对。
+//
+// **第三条断言（草稿还在）在今天的实现里是骑在第二条上的**：正因为下发被拒，
+// 删草稿那一步才跑不到。探针也证实了这点——破坏拦截时红的是第二条，
+// 第三条根本没跑到。
+//
+// 留着它不是为了今天，是为了**「报了警但继续做」**那种改法：哪天有人觉得
+// 「孤儿草稿只该提醒、不该挡住整次下发」，第二条会跟着改，而第三条会拦住他——
+// 提醒完照样把人写的东西删掉，比什么都不提醒更坏。
+func TestOrphanDraftIsRefusedNotSwallowed(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	r.mustDo("PUT", "/drafts/rule:brand-new", map[string]any{
+		"name": "新规则", "type": "ip_whitelist", "enabled": true,
+		"apply_to": []string{}, "spec": map[string]any{"ips": []string{"1.2.3.4"}},
+	})
+
+	// 一、预览必须说出来，并且点名是哪个 res_key。
+	prev := r.mustDo("POST", "/deploys/preview",
+		map[string]any{"res_keys": []string{"rule:brand-new"}})
+	var p struct {
+		Validation struct {
+			OK     bool `json:"ok"`
+			Errors []struct {
+				ResKey string `json:"res_key"`
+				Reason string `json:"reason"`
+			} `json:"errors"`
+		} `json:"validation"`
+	}
+	if err := json.Unmarshal(prev.Data, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Validation.OK {
+		t.Fatal("预览说没问题 —— 而这次下发什么也不会发生，草稿还会被删掉")
+	}
+	var named bool
+	for _, e := range p.Validation.Errors {
+		if e.ResKey == "rule:brand-new" {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("校验问题里要点名是哪个 res_key，实际 %+v", p.Validation.Errors)
+	}
+
+	// 二、下发要被拒（1002），不是「成功但什么也没做」。
+	status, e := r.do("POST", "/deploys", map[string]any{"res_keys": []string{"rule:brand-new"}})
+	if status != http.StatusOK || e.Code != api.CodeValidation {
+		t.Fatalf("下发应当以 1002 拒绝，实际 http=%d code=%d msg=%s", status, e.Code, e.Msg)
+	}
+
+	// 三、**草稿必须还在。** 前两条都过而这条不过，是最坏的结果：
+	// 人看到了错误提示，回头却发现自己写的东西已经没了。
+	after := r.mustDo("GET", "/drafts", nil)
+	if !strings.Contains(string(after.Data), "rule:brand-new") {
+		t.Fatalf("下发被拒之后草稿必须还在，人才有机会把它改对：%s", after.Data)
 	}
 }
