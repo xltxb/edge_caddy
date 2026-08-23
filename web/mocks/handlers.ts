@@ -53,7 +53,31 @@ export const handlers = [
 
 
   /* ── 7. 下发 ── */
-  http.get(`${BASE}/deploys`, () => paged(seed.deploys)),
+  /*
+   * 列表只吐契约 §7.3 的那几个字段。
+   *
+   * `seed.deploys` 里存的是**详情**那一份（§7.4 才有 `phase` / `results` /
+   * `target_count` / `targets`），原先整个吐出来，于是 dev 里的列表项比真主控
+   * 富得多 —— 而一个更富的替身，会让「从列表里读详情字段」这种写法一路绿到
+   * 发布。这是 check-shapes 抓出来的。
+   */
+  http.get(`${BASE}/deploys`, () =>
+    paged(
+      seed.deploys.map((d) => ({
+        id: d.id,
+        cfg_version: d.cfg_version,
+        operator: d.operator,
+        res_keys: d.res_keys,
+        ok_count: d.ok_count,
+        fail_count: d.fail_count,
+        is_baseline: d.is_baseline,
+        created_at: d.created_at,
+        // 真主控在列表项里也回 targets，而契约 §7.3 的字段表里没有它。
+        // 这里照真主控来（check-shapes 是拿它比的），缺口已报给 backend。
+        targets: d.targets,
+      })),
+    ),
+  ),
 
   // 注意：下发相关的端点（preview / 创建 / 单次详情）**都不在这里**，
   // 由 Vite 插件在 Node 侧处理 —— 进度要经 WS 推回来，而 MSW 活在浏览器里

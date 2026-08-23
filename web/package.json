@@ -13,6 +13,7 @@
     "e2e": "playwright test",
     "dev:real": "vite --mode real",
     "check:premises": "node scripts/check-premises.mjs",
+    "check:shapes": "node scripts/check-shapes.mjs",
     "check:probes": "node scripts/probe.mjs",
     "check:probes:self": "node scripts/probe.mjs --self-test",
     "check:templates": "node scripts/check-templates.mjs",

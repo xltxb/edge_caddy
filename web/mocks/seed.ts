@@ -302,6 +302,13 @@ export interface AuditWire {
 }
 
 let auditSeq = 1837
+/*
+ * 每条都带 `detail` —— 审计页有一行专门渲染它。
+ *
+ * 原先一个都没给，而那一行是 `v-if="a.detail"`，于是**它的渲染我在 dev 里一次
+ * 都没见过**，真主控上却每条都有。一个比真实世界更贫瘠的替身，会让本该被看见
+ * 的东西一直不出现。check-shapes 抓出来的。
+ */
 const au = (
   sec: number,
   operator: string,
@@ -309,15 +316,27 @@ const au = (
   target: string,
   src_ip: string | null,
   result: AuditResult,
-): AuditWire => ({ id: auditSeq--, at: ago(sec), operator, action, target, src_ip, result })
+  detail?: string,
+): AuditWire => ({
+  id: auditSeq--,
+  at: ago(sec),
+  operator,
+  action,
+  target,
+  src_ip,
+  result,
+  // exactOptionalPropertyTypes：`detail: undefined` 与「没有 detail」不是一回事，
+  // 而真主控是后者 —— 不给就是键不在
+  ...(detail === undefined ? {} : { detail }),
+})
 
 export const audit: AuditWire[] = [
-  au(5, 'system', '暂停解析', 'node-us-01', null, 'ok'),
-  au(232, 'abiu', '下发配置', BASELINE, '203.0.113.7', 'partial'),
-  au(370, 'abiu', '修改路由', 'api.example.com', '203.0.113.7', 'ok'),
+  au(5, 'system', '暂停解析', 'node-us-01', null, 'ok', '连续 3 次心跳超时，自动退出解析'),
+  au(232, 'abiu', '下发配置', BASELINE, '203.0.113.7', 'partial', '5 成功 / 1 失败'),
+  au(370, 'abiu', '修改路由', 'api.example.com', '203.0.113.7', 'ok', 'body_max 4MB → 8MB'),
   au(1_766, 'abiu', '登录', '—', '203.0.113.7', 'ok'),
-  au(2_649, 'ops-bot', '续期证书', 'cdn.example.com', '127.0.0.1', 'ok'),
-  au(5_856, 'abiu', '下发配置', PREV, '203.0.113.7', 'ok'),
+  au(2_649, 'ops-bot', '续期证书', 'cdn.example.com', '127.0.0.1', 'ok', '有效期至 2026-11-19'),
+  au(5_856, 'abiu', '下发配置', PREV, '203.0.113.7', 'ok', '6 成功 / 0 失败'),
   au(7_181, 'zhang', '登录', '—', '198.51.100.24', 'fail'),
   au(7_198, 'zhang', '登录', '—', '198.51.100.24', 'fail'),
   au(45_720, 'ops-bot', '下发配置', 'cfg-91d4f0', '127.0.0.1', 'ok'),
@@ -332,6 +351,9 @@ export const settings: SettingsWire & Record<string, unknown> = {
   heartbeat_interval_s: 3,
   offline_threshold_count: 3,
   auto_drop_dns: true,
+  // 契约 §11：决定一台节点什么时候进 warn。真主控回这两个，mock 原先漏了
+  warn_cpu_pct: 80,
+  warn_mem_pct: 90,
   // 凭证只写入不回显：这里永远没有明文，只有「配没配」
   dns_provider: { kind: 'cloudflare', domain: 'example.com', sub: '', credential_mode: 'api_token', configured: true },
   ops_bot_token_configured: true,
