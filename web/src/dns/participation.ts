@@ -58,7 +58,7 @@ export function participation(dnsEnabled: boolean, who: DnsWho): Participation {
     return {
       kind: 'auto',
       text: '离线，系统已自动摘除',
-      hint: '权重保留着。**先去修那台机器** —— 它心跳没了，把解析开回来只会把流量送过去。',
+      hint: '权重保留着。先去修那台机器 —— 它心跳没了，把解析开回来只会把流量送过去。',
     }
   }
 

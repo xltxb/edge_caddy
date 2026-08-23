@@ -22,6 +22,7 @@
     "check": "node scripts/test.mjs",
     "check:fast": "node scripts/test.mjs --fast",
     "check:comments": "node scripts/check-comments.mjs",
+    "check:humantext": "node scripts/check-humantext.mjs",
     "check:anchors": "node scripts/check-anchors.mjs",
     "check:certs": "node scripts/check-certs.mjs",
     "check:dist": "node scripts/check-dist.mjs"
