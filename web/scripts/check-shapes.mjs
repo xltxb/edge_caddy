@@ -212,19 +212,41 @@ const CASES = [
     path: '/settings',
     init: { method: 'PUT', body: '{}' },
   },
+  /*
+   * `PUT /alerts` 也在这里，而且它是被这张表**漏掉过一次**的那个。
+   *
+   * 设置页白屏修完之后，告警页还带着一模一样的 bug —— 同样把 `PUT` 的返回值
+   * 当成新状态，而真主控同样回 `data: null`。它逃掉不是因为难，是因为这张表
+   * 当时只列了出事的那一个。**修完一个 bug，同形状的另一个不会自己浮出来。**
+   *
+   * 不像 settings 能发空 body：alerts 的三个字段是必填的，空 body 会被 1002
+   * 挡在校验层，那时看到的是错误响应的形状，不是这个端点的形状。所以先 GET
+   * 一份现值再原样写回 —— **是一次真的写**，会留一条审计。
+   */
+  {
+    name: 'PUT /alerts（现值原样写回）',
+    path: '/alerts',
+    init: { method: 'PUT' },
+    bodyFromGet: '/alerts',
+  },
 ]
 
 const rows = []
 for (const c of CASES) {
   let m, r
+  const init = { ...c.init }
+  if (c.bodyFromGet) {
+    const cur = await real(c.bodyFromGet)
+    init.body = JSON.stringify(cur.body?.data ?? {})
+  }
   try {
-    m = await mock(c.path, c.init)
+    m = await mock(c.path, init)
   } catch (e) {
     rows.push({ name: c.name, err: `mock 侧失败：${e.message}` })
     continue
   }
   try {
-    r = await real(c.path, c.init)
+    r = await real(c.path, init)
   } catch (e) {
     rows.push({ name: c.name, err: `真主控侧失败：${e.message}` })
     continue

@@ -55,6 +55,13 @@ const STEPS = [
     args: ['scripts/check-comments.mjs'],
     ranRe: /(\d+) 个复盘块/,
   },
+  {
+    // 不需要真主控：它只比源码与登记表，以及那份导给后端的 JSON 有没有过期
+    name: '写请求的字段清单',
+    cmd: 'node',
+    args: ['scripts/check-requests.mjs'],
+    ranRe: /(\d+) 处写请求/,
+  },
   ...(fast
     ? []
     : [

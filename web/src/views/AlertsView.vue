@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { http, errorText } from '@/api/http'
 import type { AlertTestWire, AlertsWire, NotifyLevel } from '@/api/types'
+import type { AlertsPutBody } from '@/api/requests'
 import { useUiStore } from '@/stores/ui'
 
 /**
@@ -61,13 +62,26 @@ async function save(): Promise<void> {
   if (!form.value) return
   saving.value = true
   try {
-    const body: Record<string, unknown> = { ...form.value }
+    /*
+     * **`PUT /alerts` 回的是 `data: null`，不是新的告警设置。**
+     *
+     * 这里原先把返回值赋给 `saved` 和 `form` —— 保存成功之后整页会变空白，
+     * 而 toast 说「告警设置已保存」。它确实保存了，只是界面把自己清掉了。
+     *
+     * 和设置页那个是同一个 bug，同一天写下的。设置页那个是在真主控上撞出来的；
+     * 这一个直到我拿 `check:shapes` 的思路把每个「响应被当成状态用」的端点
+     * 逐个去问真主控才发现 —— **一个 bug 修完，同形状的另一个不会自己浮出来**。
+     *
+     * body 现在有类型（`AlertsPutBody`），不再是 `Record<string, unknown>` ——
+     * 那正是设置页往外发只读状态位的原因。
+     */
+    const body: AlertsPutBody = { ...form.value }
     if (newWebhook.value) body.webhook_url = newWebhook.value
     if (newLark.value) body.lark_webhook = newLark.value
-    saved.value = await http.put<AlertsWire>('/alerts', body)
-    form.value = JSON.parse(JSON.stringify(saved.value)) as AlertsWire
+    await http.put('/alerts', body)
     newWebhook.value = ''
     newLark.value = ''
+    await load()
     ui.toast('ok', '告警设置已保存')
   } catch (e) {
     ui.toast('warn', '保存失败', errorText(e, ''))

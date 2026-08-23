@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { http, errorText } from '@/api/http'
 import type { DnsProviderFields, SettingsWire } from '@/api/types'
+import type { SettingsPutBody } from '@/api/requests'
 import { useUiStore } from '@/stores/ui'
 
 /**
@@ -103,7 +104,7 @@ async function save(): Promise<void> {
      * `master_endpoint` 也不发：它只读，`PUT` 带它一律 1002 —— 那个地址进了主控
      * 服务端证书的 SAN，运行时改不了。
      */
-    const body: Record<string, unknown> = {
+    const body: SettingsPutBody = {
       heartbeat_interval_s: form.value.heartbeat_interval_s,
       offline_threshold_count: form.value.offline_threshold_count,
       auto_drop_dns: form.value.auto_drop_dns,

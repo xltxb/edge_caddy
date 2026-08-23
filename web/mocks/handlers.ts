@@ -178,10 +178,30 @@ export const handlers = [
   }),
 
   http.get(`${BASE}/alerts`, () => ok(seed.alerts)),
+  /*
+   * 回 `null`，跟真主控一样 —— 和 `PUT /settings` 同一件事。
+   *
+   * 这里原先回完整对象，而界面把返回值当成新状态赋回去；真主控回 null，于是
+   * 保存成功后整页空白。设置页那个是在真主控上撞出来的，**这一个是
+   * `check:shapes` 在用例表里补上 `PUT /alerts` 之后当场抓住的**。
+   *
+   * 凭证只写入不回显：`webhook_url` / `lark_webhook` 带了就是替换（标记为已配置），
+   * 不带就是保持不变；它们本身永远不回显。
+   */
   http.put(`${BASE}/alerts`, async ({ request }) => {
-    const b = (await request.json()) as Record<string, unknown>
-    Object.assign(seed.alerts, b)
-    return ok(seed.alerts)
+    const b = (await request.json()) as {
+      notify_level?: typeof seed.alerts.notify_level
+      lark?: { at_all_on_crit?: boolean }
+      webhook_url?: string
+      lark_webhook?: string
+    }
+    if (b.notify_level) seed.alerts.notify_level = b.notify_level
+    if (b.lark?.at_all_on_crit !== undefined) {
+      seed.alerts.lark.at_all_on_crit = b.lark.at_all_on_crit
+    }
+    if (b.webhook_url) seed.alerts.webhook.url_configured = true
+    if (b.lark_webhook) seed.alerts.lark.webhook_configured = true
+    return ok(null)
   }),
   http.post(`${BASE}/alerts/test`, async ({ request }) => {
     const b = (await request.json()) as { channel?: string }

@@ -1,0 +1,193 @@
+{
+  "说明": "前端会往每个写端点发的字段名。由 src/api/requests.ts 生成 —— 那份清单与 TS 类型由类型检查器钉在一起，改了接口不同步清单编译不过，所以这份 JSON 不会过期。只有字段名，没有语义：取值对不对这里管不了。",
+  "生成自": "web/scripts/check-requests.mjs --emit",
+  "endpoints": {
+    "POST /auth/login": {
+      "required": [
+        "username",
+        "password"
+      ],
+      "optional": []
+    },
+    "POST /auth/logout": {
+      "required": [],
+      "optional": []
+    },
+    "POST /nodes/:id/push": {
+      "required": [],
+      "optional": []
+    },
+    "POST /nodes/:id/rejoin": {
+      "required": [],
+      "optional": []
+    },
+    "POST /nodes/:id/probe": {
+      "required": [],
+      "optional": []
+    },
+    "POST /nodes/:id/dns": {
+      "required": [
+        "enabled"
+      ],
+      "optional": []
+    },
+    "POST /nodes/:id/drain": {
+      "required": [
+        "confirm"
+      ],
+      "optional": []
+    },
+    "POST /nodes/token": {
+      "required": [
+        "node_id",
+        "city",
+        "vendor",
+        "line",
+        "public_ip"
+      ],
+      "optional": []
+    },
+    "POST /routes": {
+      "required": [
+        "domain",
+        "upstream",
+        "block_mode",
+        "mtls",
+        "compress",
+        "body_max",
+        "whitelist"
+      ],
+      "optional": []
+    },
+    "PUT /rules/:id": {
+      "required": [
+        "name",
+        "type",
+        "enabled",
+        "apply_to",
+        "spec"
+      ],
+      "optional": [
+        "secret"
+      ]
+    },
+    "DELETE /rules/:id": {
+      "required": [],
+      "optional": []
+    },
+    "PUT /drafts/:key": {
+      "required": [],
+      "optional": [],
+      "dynamic": "资源 spec 的 Partial，键取自 src/workbench/fields.ts 的字段表"
+    },
+    "DELETE /drafts": {
+      "required": [],
+      "optional": []
+    },
+    "POST /deploys/preview": {
+      "required": [
+        "res_keys"
+      ],
+      "optional": []
+    },
+    "POST /deploys": {
+      "required": [
+        "res_keys"
+      ],
+      "optional": []
+    },
+    "POST /deploys/:cfg/rollback": {
+      "required": [],
+      "optional": []
+    },
+    "PUT /dns/weights": {
+      "required": [
+        "lines"
+      ],
+      "optional": []
+    },
+    "POST /certs/:domain/renew": {
+      "required": [],
+      "optional": []
+    },
+    "POST /certs/renew-check": {
+      "required": [],
+      "optional": []
+    },
+    "PUT /alerts": {
+      "required": [
+        "notify_level",
+        "webhook",
+        "lark"
+      ],
+      "optional": [
+        "webhook_url",
+        "lark_webhook"
+      ]
+    },
+    "POST /alerts/test": {
+      "required": [
+        "channel"
+      ],
+      "optional": []
+    },
+    "PUT /settings": {
+      "required": [],
+      "optional": [
+        "heartbeat_interval_s",
+        "offline_threshold_count",
+        "auto_drop_dns",
+        "dns_provider",
+        "ops_bot_token"
+      ]
+    }
+  },
+  "nested": {
+    "PUT /settings#dns_provider": {
+      "required": [],
+      "optional": [
+        "kind",
+        "domain",
+        "sub",
+        "credential_mode",
+        "zone_id",
+        "account_id",
+        "email",
+        "credential"
+      ]
+    },
+    "PUT /settings#dns_provider.clear": {
+      "required": [
+        "clear"
+      ],
+      "optional": []
+    },
+    "PUT /dns/weights#lines[]": {
+      "required": [
+        "code",
+        "entries"
+      ],
+      "optional": []
+    },
+    "PUT /dns/weights#lines[].entries[]": {
+      "required": [
+        "node",
+        "weight"
+      ],
+      "optional": []
+    },
+    "PUT /alerts#webhook": {
+      "required": [
+        "url_configured"
+      ],
+      "optional": []
+    },
+    "PUT /alerts#lark": {
+      "required": [
+        "webhook_configured",
+        "at_all_on_crit"
+      ],
+      "optional": []
+    }
+  }
+}
