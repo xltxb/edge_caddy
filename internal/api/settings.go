@@ -236,10 +236,21 @@ type alertsReq struct {
 	AtAllOnCrit *bool   `json:"at_all_on_crit"`
 }
 
+// handlePutAlerts 保存告警设置。
+//
+// **请求体是平的，跟 GET 的形状不一样**（契约 §11）。GET 里只有
+// `url_configured: true/false`，没有地方放 webhook 地址——凭证只写入不回显——
+// 所以 PUT 的字段集必然与 GET 不同。
+//
+// 契约原先把两个端点并成一个代码块，前端照着发了 GET 的形状：
+// `at_all_on_crit` 包在 `lark` 里，而这里它在顶层。ShouldBindJSON 静默丢掉，
+// 返回 code 0，界面显示「已保存」——**那个开关从来没存进去过**。
+//
+// 所以这里跟 PUT /settings 一样用严格绑定：形状发错了当场说出哪个字段不认识。
 func (s *Server) handlePutAlerts(c *gin.Context) {
 	var req alertsReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		Fail(c, CodeBadParam, "请求格式错误")
+	if err := bindStrict(c, &req); err != nil {
+		Fail(c, CodeBadParam, err.Error())
 		return
 	}
 	ctx := c.Request.Context()
@@ -286,8 +297,8 @@ type testAlertReq struct {
 
 func (s *Server) handleTestAlert(c *gin.Context) {
 	var req testAlertReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		Fail(c, CodeBadParam, "请求格式错误")
+	if err := bindStrict(c, &req); err != nil {
+		Fail(c, CodeBadParam, err.Error())
 		return
 	}
 	setAuditTarget(c, req.Channel)

@@ -25,8 +25,8 @@ type principalResp struct {
 
 func (s *Server) handleLogin(c *gin.Context) {
 	var req loginReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		Fail(c, CodeBadParam, "请求格式错误")
+	if err := bindStrict(c, &req); err != nil {
+		Fail(c, CodeBadParam, err.Error())
 		return
 	}
 	// 记的是**被尝试的**用户名，成功失败都记。失败时它正是审计页要提示的东西。

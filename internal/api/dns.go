@@ -58,8 +58,8 @@ type weightsReq struct {
 // 那是最糟的一种不一致，因为看起来一切正常。
 func (s *Server) handlePutDNSWeights(c *gin.Context) {
 	var req weightsReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		Fail(c, CodeBadParam, "请求格式错误")
+	if err := bindStrict(c, &req); err != nil {
+		Fail(c, CodeBadParam, err.Error())
 		return
 	}
 	if s.dns == nil {

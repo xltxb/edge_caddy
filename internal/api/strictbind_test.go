@@ -115,3 +115,159 @@ func TestClearRejectsBeingMixedWithOtherFields(t *testing.T) {
 		t.Fatalf("混着给应当被拒，实际 code=%d msg=%q", e.Code, e.Msg)
 	}
 }
+
+// **`PUT /alerts` 的请求体是平的，跟 `GET` 的形状不一样。**
+//
+// 契约原先把两个端点并成一个代码块、一份 JSON，读起来就是「PUT 发 GET 那个形状」。
+// 前端照着做了：`at_all_on_crit` 包在 `lark` 里发过来，而后端的结构体里它在顶层。
+// ShouldBindJSON 静默丢掉，返回 code 0，界面显示「已保存」——
+// **「严重时 @所有人」这个开关从来没存进去过**。
+//
+// 而 `notify_level` 恰好两边都在顶层，所以「改级别 → 保存 → 真的变了」验得通。
+// **过的那一半掩护了没过的那一半**，这是这类 bug 最难被发现的形态。
+//
+// PUT 的字段集**必然**与 GET 不同：GET 里只有 `url_configured: true/false`，
+// 凭证不回显，没有地方放 webhook 地址。既然必然不同，就让它明显不同。
+func TestAlertsPutBodyIsFlatAndStrict(t *testing.T) {
+	r, _ := newServer(t)
+	ck := login(t, r)
+	auth := func(req *http.Request) { req.AddCookie(ck) }
+
+	// 一、平的形状真的存进去了——**特别是 at_all_on_crit**。
+	_, ok := do(t, r, "PUT", "/api/v1/alerts", map[string]any{
+		"notify_level":   "crit",
+		"lark_webhook":   "https://open.larksuite.com/hook/x",
+		"at_all_on_crit": true,
+	}, auth)
+	if ok.Code != api.CodeOK {
+		t.Fatalf("平的形状不该被拒：code=%d msg=%q", ok.Code, ok.Msg)
+	}
+	_, got := do(t, r, "GET", "/api/v1/alerts", nil, auth)
+	if !strings.Contains(string(got.Data), `"at_all_on_crit":true`) {
+		t.Errorf("at_all_on_crit 应当真的存进去了：%s", got.Data)
+	}
+	if !strings.Contains(string(got.Data), `"webhook_configured":true`) {
+		t.Errorf("lark_webhook 应当真的存进去了：%s", got.Data)
+	}
+
+	// 二、GET 的形状发过来要**当场被拒**，不能默默吞掉。
+	//
+	// 这条断言盯的不是「拒绝」本身，是**拒绝里点了名**：发错形状的人需要知道
+	// 是哪个字段不认识，否则他会以为是整个请求格式坏了，去查别的地方。
+	_, e := do(t, r, "PUT", "/api/v1/alerts", map[string]any{
+		"notify_level": "warn",
+		"lark":         map[string]any{"at_all_on_crit": false},
+	}, auth)
+	if e.Code == api.CodeOK {
+		t.Fatal("GET 的形状得到了 code 0 —— at_all_on_crit 被丢掉了，" +
+			"而界面会显示「已保存」")
+	}
+	if !strings.Contains(e.Msg, "lark") {
+		t.Errorf("要点名那个不认识的字段：%q", e.Msg)
+	}
+
+	// 三、被拒的那次**什么也没改**。
+	//
+	// 这条是前两条都盖不住的：一个「先存一半、再报错」的实现能同时通过
+	// 上面两条，而它留下的是最糟的状态——报了错，值却变了。
+	_, after := do(t, r, "GET", "/api/v1/alerts", nil, auth)
+	if !strings.Contains(string(after.Data), `"notify_level":"crit"`) {
+		t.Errorf("被拒的请求不该改动任何东西，级别应当还是 crit：%s", after.Data)
+	}
+	if !strings.Contains(string(after.Data), `"at_all_on_crit":true`) {
+		t.Errorf("被拒的请求不该改动任何东西：%s", after.Data)
+	}
+}
+
+// **`ops_bot_token` 不是设置端点能改的东西。**
+//
+// 契约原先写的是「`PUT` 时不带凭证字段 = 保持不变；带了就是替换。
+// `ops_bot_token_configured` 同理」——**「同理」是假的**。它只从环境变量
+// `EC_OPS_BOT_TOKEN` 读，主控启动时装进鉴权中间件。前端照着那句话做了个输入框，
+// 而这个端点是严格绑定的，于是用户一在那个框里打字，**整个设置保存就崩**。
+//
+// 不做成可改的，理由不是「还没做」：它是**免登录调用主控的凭证**。
+// 让一个已登录会话去铸一把长期钥匙，跟改 CA、改监听地址是同一类事——
+// 属于部署面，不属于控制台。所以这条测试钉的是**它被拒**，不是它还没实现。
+func TestOpsBotTokenIsNotSettableViaAPI(t *testing.T) {
+	r, _ := newServer(t)
+	ck := login(t, r)
+	auth := func(req *http.Request) { req.AddCookie(ck) }
+
+	_, e := do(t, r, "PUT", "/api/v1/settings",
+		map[string]any{"ops_bot_token": "whatever"}, auth)
+	if e.Code == api.CodeOK {
+		t.Fatal("ops_bot_token 不该能通过 API 设置 —— 它是免登录调用主控的凭证")
+	}
+	if !strings.Contains(e.Msg, "ops_bot_token") {
+		t.Errorf("要点名那个字段：%q", e.Msg)
+	}
+
+	// 只读回显还在：界面需要知道「配没配」，只是改不了。
+	_, got := do(t, r, "GET", "/api/v1/settings", nil, auth)
+	if !strings.Contains(string(got.Data), "ops_bot_token_configured") {
+		t.Errorf("只读回显应当还在：%s", got.Data)
+	}
+}
+
+// **每一个绑定结构体的写端点都要拒未知字段，不是只有 PUT /settings。**
+//
+// `bindStrict` 写好之后，很长一段时间**只挂在一个端点上**——而它解决的那个问题
+// （写错的 key 得到 code 0）在每个写端点上都成立。这是「机制建好了，
+// 但没接到最该接的那些输出上」在我自己代码里的又一例，
+// 而 `PUT /alerts` 就是从那个缺口漏过去的。
+//
+// 所以断言的对象是**每一个**，清单从 `requestBodies` 里来，
+// 而那张表由 `TestEveryWriteRouteHasARequestBodySpec` 盯着与路由表一致。
+// 新加一个写端点忘了用严格绑定，这条会红。
+//
+// 断言的不是「被拒了」而是**「报错里点了那个字段的名」**：
+// 前者一个 404 也满足（路径参数是假的），后者只有 bindStrict 做得到。
+//
+// 顺带钉住一条顺序：**绑定要发生在任何依赖状态的检查之前**。
+// 「你发了一个不存在的字段」不需要查库、不需要装配、不需要那台机器在线就能知道，
+// 而先报状态问题会把人支到完全无关的方向去。
+// closedPathParam 列出路径参数取值来自**闭集**的端点。见下面用它的地方。
+var closedPathParam = map[string]string{
+	"PUT /policies/:p": "tls", // 只有 tls 与 log 两条全局策略
+}
+
+func TestEveryWriteEndpointRejectsUnknownFields(t *testing.T) {
+	r, _ := newServer(t)
+	ck := login(t, r)
+	auth := func(req *http.Request) { req.AddCookie(ck) }
+
+	eps := api.StructBodyEndpoints()
+	if len(eps) < 10 {
+		t.Fatalf("装置坏了：只拿到 %d 个绑定结构体的写端点", len(eps))
+	}
+
+	const bogus = "字段名写错了"
+	for _, ep := range eps {
+		method, path, _ := strings.Cut(ep, " ")
+		// 路径参数默认填**不存在**的值：绑定发生在查库之前，所以它们不需要真实存在，
+		// 而填真实存在的值会让「先查库再绑定」的实现看起来也是对的。
+		//
+		// 例外是**闭集**的路径参数（`/policies/:id` 只有 tls 与 log 两个合法值）。
+		// 那种校验不依赖任何状态，跟绑定同属「不查库就能判」的一层，谁先谁后都对；
+		// 拿一个非法值去探它，量的就不再是这条测试声称要量的东西了。
+		if v, ok := closedPathParam[ep]; ok {
+			path = strings.ReplaceAll(path, ":p", v)
+		} else {
+			path = strings.ReplaceAll(path, ":p", "不存在的东西")
+		}
+		if ep == "POST /auth/login" {
+			continue // 登录本身不带会话，单独由 TestUnknownFieldIsRejectedNotIgnored 一族覆盖
+		}
+		_, e := do(t, r, method, "/api/v1"+path, map[string]any{bogus: 1}, auth)
+		if e.Code == api.CodeOK {
+			t.Errorf("%s：发了一个契约里没有的字段，却得到 code 0 —— "+
+				"那个值被静默丢掉了，而调用方会以为成功了", ep)
+			continue
+		}
+		if !strings.Contains(e.Msg, bogus) {
+			t.Errorf("%s：报错没点名那个字段，得到的是 %q —— "+
+				"绑定要发生在任何依赖状态的检查之前，否则人会被支到别处去查", ep, e.Msg)
+		}
+	}
+}

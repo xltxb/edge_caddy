@@ -135,13 +135,15 @@ func (s *Server) handleImportCert(c *gin.Context) {
 	domain := c.Param("domain")
 	setAuditTarget(c, domain)
 
-	if s.certs == nil {
-		Fail(c, CodeStateConflict, "证书管理未装配")
+	// **先绑定，再看装配。** 「你发了一个契约里没有的字段」不需要查任何状态就能知道，
+	// 而先报「证书管理未装配」会把人支到部署配置上去查一个根本不在那儿的问题。
+	var req importCertReq
+	if err := bindStrict(c, &req); err != nil {
+		Fail(c, CodeBadParam, err.Error())
 		return
 	}
-	var req importCertReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		Fail(c, CodeBadParam, "请求格式错误")
+	if s.certs == nil {
+		Fail(c, CodeStateConflict, "证书管理未装配")
 		return
 	}
 	if req.CertPEM == "" || req.KeyPEM == "" {

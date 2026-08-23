@@ -26,8 +26,8 @@ func (s *Server) handleListRoutes(c *gin.Context) {
 
 func (s *Server) handleCreateRoute(c *gin.Context) {
 	var r model.Route
-	if err := c.ShouldBindJSON(&r); err != nil {
-		Fail(c, CodeBadParam, "请求格式错误")
+	if err := bindStrict(c, &r); err != nil {
+		Fail(c, CodeBadParam, err.Error())
 		return
 	}
 	setAuditTarget(c, r.Domain)
@@ -116,8 +116,8 @@ func (s *Server) handleUpdateRoute(c *gin.Context) {
 	setAuditTarget(c, domain)
 
 	var r model.Route
-	if err := c.ShouldBindJSON(&r); err != nil {
-		Fail(c, CodeBadParam, "请求格式错误")
+	if err := bindStrict(c, &r); err != nil {
+		Fail(c, CodeBadParam, err.Error())
 		return
 	}
 	// 路径里的域名是权威的：改域名等于删一条建一条，不是「编辑」。
@@ -233,8 +233,8 @@ func (s *Server) handleUpsertRule(c *gin.Context) {
 	setAuditTarget(c, id)
 
 	var req ruleReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		Fail(c, CodeBadParam, "请求格式错误")
+	if err := bindStrict(c, &req); err != nil {
+		Fail(c, CodeBadParam, err.Error())
 		return
 	}
 	req.Rule.ID = id
@@ -316,8 +316,8 @@ func (s *Server) handlePutPolicy(c *gin.Context) {
 		return
 	}
 	var p model.Policy
-	if err := c.ShouldBindJSON(&p); err != nil {
-		Fail(c, CodeBadParam, "请求格式错误")
+	if err := bindStrict(c, &p); err != nil {
+		Fail(c, CodeBadParam, err.Error())
 		return
 	}
 	p.ID = id

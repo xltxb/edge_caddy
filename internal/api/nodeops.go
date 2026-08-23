@@ -120,8 +120,14 @@ func (s *Server) handleNodeDNS(c *gin.Context) {
 	setAuditTarget(c, nodeID)
 
 	var req dnsToggleReq
-	if err := c.ShouldBindJSON(&req); err != nil || req.Enabled == nil {
-		Fail(c, CodeBadParam, "请求格式错误，需要 enabled 字段")
+	// 两件事分开报。原先它们并在一个条件里，于是「字段名写错了」和
+	// 「没带 enabled」得到同一句话——而前者要改的是 key，后者要加的是字段。
+	if err := bindStrict(c, &req); err != nil {
+		Fail(c, CodeBadParam, err.Error())
+		return
+	}
+	if req.Enabled == nil {
+		Fail(c, CodeBadParam, "需要 enabled 字段：true 恢复解析，false 暂停解析")
 		return
 	}
 	// 动作名要跟着方向变：审计页上「暂停解析」和「恢复解析」是两件事，
@@ -184,8 +190,16 @@ func (s *Server) handleNodeDrain(c *gin.Context) {
 	setAuditTarget(c, nodeID)
 
 	var req drainReq
-	if err := c.ShouldBindJSON(&req); err != nil || !req.Confirm {
-		// 必须显式确认。下线会让一台机器彻底退出，误点的代价不对称。
+	if err := bindStrict(c, &req); err != nil {
+		Fail(c, CodeBadParam, err.Error())
+		return
+	}
+	// 必须显式确认。下线会让一台机器彻底退出，误点的代价不对称。
+	//
+	// **这一条要单独判**：把它和绑定失败并在一个条件里，
+	// 「confirm 拼错了」就会得到「需要显式确认」——而那句话会让人再点一次确认，
+	// 方向正好是错的。
+	if !req.Confirm {
 		Fail(c, CodeBadParam, "下线需要显式确认（confirm: true）")
 		return
 	}

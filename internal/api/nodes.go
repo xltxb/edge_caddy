@@ -164,8 +164,8 @@ type tokenReq struct {
 
 func (s *Server) handleIssueToken(c *gin.Context) {
 	var req tokenReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		Fail(c, CodeBadParam, "请求格式错误")
+	if err := bindStrict(c, &req); err != nil {
+		Fail(c, CodeBadParam, err.Error())
 		return
 	}
 	// 已下线的节点不该拿到新 Token。挡在这里是为了把话说明白 ——

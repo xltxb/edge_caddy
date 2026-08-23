@@ -696,6 +696,25 @@ Agent 断了就重连，只断开是个假动作：三秒后隧道又开了，�
 三类资源共用一套草稿机制（§6.4），`res_key` 格式：
 `route:<domain>` / `rule:<id>` / `global:<id>`。
 
+### 6.0 两条编辑路径，控制台只走其中一条
+
+改一个资源有两条路：
+
+1. **草稿路**：`PUT /drafts/:key` → `POST /deploys/preview` → `POST /deploys`。
+   **控制台一律走这条**（唯一例外见下）。
+2. **直改路**：`PUT /routes/:domain`、`DELETE /routes/:domain`、`PUT /policies/:id`。
+
+> 控制台的唯一例外是 `PUT /rules/:id`，且只为**共享密钥**：草稿是全局可见的
+> （`GET /drafts` 列出所有人的草稿），凭证不能进去。
+
+**直改路目前没有任何界面客户端。这不是遗漏，别当死代码删掉。**
+它是 `EC_OPS_BOT_TOKEN` 那个免登录调用者的入口——批量脚本要的正是「直接改一条」。
+
+而它**没有绕过下发流水线**：这两条路改的都是主控这边的**期望配置**，
+节点在 `POST /deploys` 之前拿不到任何东西。审计照写、`deploys/preview` 照样出 diff、
+按 `cfg_version` 回滚照样管用。直改路少掉的只有**草稿那一层**——
+也就是「改了但还没打算发」这个中间状态，脚本本来就不需要它。
+
 ### 6.1 反代路由
 
 `GET /routes` → `data.items[]`；`PUT /routes/:domain`；`DELETE /routes/:domain`。
@@ -1382,9 +1401,17 @@ cursor 分页（§0.5），可选 `?operator=abiu`。倒序。
   由前端算出来实时显示（这是设置页的联动提示，不需要后端给）。
 - **凭证只写入不回显**。`dns_provider` 里永远没有明文，只有 `configured: true/false`
   与 `credential_mode`（`api_token` | `global_key`，两者字段不同，前端表单据此切换）。
-  `PUT` 时不带凭证字段 = 保持不变；带了就是替换。`ops_bot_token_configured` 同理。
+  `PUT` 时不带凭证字段 = 保持不变；带了就是替换。
+- **`ops_bot_token` 不是这个端点能改的东西。** 它只从环境变量 `EC_OPS_BOT_TOKEN` 读，
+  在主控启动时装进鉴权中间件；`GET /settings` 的 `ops_bot_token_configured` 是**只读回显**，
+  `PUT` 里发 `ops_bot_token` 会被严格绑定当场拒掉。
 
-### `GET /alerts` / `PUT /alerts`
+  > 这一条原先写成「`ops_bot_token_configured` 同理」，跟凭证那一句并列——
+  > 前端照着它做了个输入框，而后端从来没有这个字段。它是免登录调用主控的凭证，
+  > 让一个已登录会话去铸一把长期钥匙，跟改 CA、改监听地址是同一类事，
+  > 属于部署面，不属于控制台。
+
+### `GET /alerts`
 
 ```json
 {
@@ -1395,6 +1422,34 @@ cursor 分页（§0.5），可选 `?operator=abiu`。倒序。
 ```
 
 `notify_level`：`all`（全部）| `warn`（异常及以上）| `crit`（仅严重）。**渠道共用**这一个级别。
+
+### `PUT /alerts`
+
+**请求体是平的，和 `GET` 的形状不一样**，四个字段都可省，省掉 = 保持不变：
+
+```json
+{
+  "notify_level": "crit",
+  "webhook_url": "https://...",      // 空串 = 保持不变
+  "lark_webhook": "https://...",     // 空串 = 保持不变
+  "at_all_on_crit": true
+}
+```
+
+`data` 是 `null`——这个端点不回显保存后的状态，要新状态就重新 `GET`。
+
+> **为什么不做成和 `GET` 一样的形状。** `GET` 里只有 `url_configured: true/false`，
+> 没有地方放 webhook 地址（凭证只写入不回显，PRD §7），所以 `PUT` 的字段集**必然**
+> 和 `GET` 不同。那么两种写法：一种是形状明显不同（平的），一种是形状看着一样、
+> 里面的字段名不一样（`webhook.url` vs `webhook.url_configured`）。
+>
+> 这一段原先把两个端点并成一个代码块，读起来就是「PUT 发 GET 那个形状」。
+> 前端照着做了，于是 `at_all_on_crit` 被包在 `lark` 里发过来，后端的结构体里
+> 它在顶层——`encoding/json` 静默丢掉，返回 `code: 0`，界面显示「已保存」，
+> 而「严重时 @所有人」这个开关**从来没存进去过**。
+>
+> **看着一样而实际不一样的形状，比明显不一样的形状更容易骗到人。** 现在是平的，
+> 并且这个端点改用严格绑定：发错形状会当场报出哪个字段不认识，而不是默默吞掉。
 
 ### `POST /alerts/test`
 

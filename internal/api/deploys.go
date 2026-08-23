@@ -16,8 +16,8 @@ type deployReq struct {
 
 func (s *Server) handleDeploy(c *gin.Context) {
 	var req deployReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		Fail(c, CodeBadParam, "请求格式错误")
+	if err := bindStrict(c, &req); err != nil {
+		Fail(c, CodeBadParam, err.Error())
 		return
 	}
 	if s.deployer == nil {
@@ -65,8 +65,8 @@ func (s *Server) handleDeploy(c *gin.Context) {
 // 才用 1002 拒绝执行（api-contract §7.1）。
 func (s *Server) handlePreview(c *gin.Context) {
 	var req deployReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		Fail(c, CodeBadParam, "请求格式错误")
+	if err := bindStrict(c, &req); err != nil {
+		Fail(c, CodeBadParam, err.Error())
 		return
 	}
 	if s.deployer == nil {
