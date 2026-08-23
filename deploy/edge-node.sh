@@ -441,7 +441,7 @@ do_uninstall() {
 usage() {
   cat <<USAGE
 用法：
-  $0 install --master <host:port> --node-id <id> --token <一次性> --ca-pin <sha256>
+  $0 install --master <wss://host 或 host:port> --node-id <id> --token <一次性> --ca-pin <sha256>
              [--agent-bin <路径>] [--http3]
   $0 verify
   $0 uninstall

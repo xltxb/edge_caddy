@@ -9,10 +9,16 @@
 命令里的 `./edge-node.sh` 和 `--agent-bin ./edge-agent` **都是相对路径**，
 它们都假定文件已经在当前目录。**谁也不负责把它们送上去。**
 
+这两个文件都在**主控那个包**里（`linux-amd64/` 下），所以最省事的是从主控机器推：
+
 ```bash
-# 从开发机推过去，或者用你惯用的任何方式
-scp deploy/edge-node.sh edge-agent root@node-hk-01:/root/
+# 在主控机器上，解开后端包的那个目录里
+scp linux-amd64/edge-node.sh linux-amd64/edge-agent root@node-hk-01:/root/
 ```
+
+架构要对得上：节点是 arm64 就用 `linux-arm64/` 里那个 `edge-agent`
+（脚本本身两边通用）。**推错架构的症状是 `Exec format error`**，
+出现在 Agent 起不来那一刻，而不是推的时候。
 
 > 这一段先前只写了二进制那一半。脚本自己那一半没人写——**因为写文档的人
 > 手上就有它**，于是「它怎么上去的」这个问题从来没出现过。
@@ -26,13 +32,30 @@ scp deploy/edge-node.sh edge-agent root@node-hk-01:/root/
 
 ```bash
 sudo ./edge-node.sh install \
-  --master ec.internal:9000 \
+  --master wss://cdn.example.com \
   --node-id node-hk-01 \
   --token ec_1f9a… \
   --ca-pin 9e8f22a3430a2f859aee5b47… \
   --agent-bin ./edge-agent
 sudo ./edge-node.sh verify   # ← 控制台的 verify_cmd 字段，别跳过
 ```
+
+`--master` 的值来自主控的 `EC_ADVERTISE`，两种写法：
+`wss://cdn.example.com`（穿 443，域名可以在 CDN 后面）
+或 `ec.internal:9000`（直连隧道端口）。**你不用选，控制台给你哪个就是哪个。**
+
+### 装之前它会先试连一次主控
+
+`install` 的第一件事是确认这台机器**连得上**主控的隧道地址。连不上就拒绝安装，
+并点名最常见的三个成因（域名被 CDN 代理、防火墙没放行、主控只绑了回环）。
+
+> **这不是启发式判断，是真前提**：连不上隧道，这次安装无论如何不可能工作。
+> 所以它拒绝继续，而不是警告一句然后接着装。
+>
+> 少了这一步，装机会一路成功——装 Caddy、写单元、起 Agent——然后节点
+> **永远不出现在控制台里**，而这台机器上没有任何东西说得出为什么。
+> 人会去查 Token、查指纹、查防火墙，而问题可能只是那个域名被 CDN 代理了。
+> 灰度上就是这么撞的。
 
 `install_cmd` 是**一条要执行的命令**，不是「两个值的来源」——Token 与 CA 指纹
 在响应里另有 `token` 与 `ca_pin` 两个字段，要单独取值就取那两个。
@@ -80,6 +103,46 @@ sudo ./edge-node.sh verify   # ← 控制台的 verify_cmd 字段，别跳过
 - `443/udp` —— **只在开了 HTTP/3 时**。无条件开一个 UDP 端口是白送攻击面；
   而漏了它的症状很隐蔽：HTTP/3 握不上会静默回落到 TCP，用户只觉得「有点慢」。
 - **2019 与 2020 一个都不放行。**
+
+### 装完之后：怎么知道它真的好了
+
+**装完不等于接进来了。** 三层各看一眼，从近到远：
+
+```bash
+systemctl status edge-agent --no-pager     # 1. 进程活着吗
+journalctl -u edge-agent -n 30 --no-pager  # 2. 它说自己连上了吗
+```
+
+第二条里要看到 `接入完成，已取得隧道证书`，之后是周期性的 `配置已应用`。
+看到反复重连的话，日志会带上 HTTP 状态码，
+而那个码直接指方向：
+
+| 日志里 | 多半是 |
+|---|---|
+| `HTTP 404` | 主控版本太老（没有 `/api/v1/tunnel`），或者反代没转这个路径 |
+| `HTTP 502` | 反代转到了一个没在听的地方 |
+| `HTTP 401` | 那个端点被鉴权挡住了——它不该被挡，认证在隧道里层 |
+| 连不上 / 超时 | 网络层。装机时那道 preflight 本该拦住，除非是装完之后才变的 |
+
+3. **最后去控制台看**。节点列表里出现它、状态是在线，才算真的接进来了。
+
+> **前两层绿而第三层空，是最值得停下来的组合。** 它意味着 Agent 认为
+> 自己连上了而主控不这么认为——查主控的日志，那边会说是哪一步拒的
+> （Token 用过了、节点已下线、指纹对不上）。
+
+### 装完之后想拆掉
+
+```bash
+sudo ./edge-node.sh uninstall
+```
+
+它停服务、删单元、删凭据文件和 Caddy 的 drop-in。**Caddy 本身不动。**
+
+**但它刻意保留 `/var/lib/edge-agent`**，里面有隧道证书。理由写在脚本里：
+卸载多半是在排障时跑的，而那时候把身份一起弄丢会让处境更糟——
+重新接入要再签一个一次性 Token，而人手上未必有。
+
+确实要清干净就手动 `rm -rf /var/lib/edge-agent`，**那之后必须重新签 Token**。
 
 ### 两条承重的约束
 
@@ -177,6 +240,16 @@ export EC_WEB_ROOT=/opt/edge/web
 直到第一台节点连不上。与 `EC_SECRET_KEY` 同一条。
 
 本地开发用 `localhost:9000`——它是主机名不是 IP，能过校验。
+
+**两种写法**（详见 [控制台部署.md](控制台部署.md) 第 3 步）：
+
+| 写法 | 节点走哪条 |
+|---|---|
+| `wss://cdn.example.com` | 隧道走 HTTP 面上的 `/api/v1/tunnel`，穿 443 |
+| `ec.internal:9000` | 直连 gRPC 端口 |
+
+它**原样进安装命令**，所以改这一个变量就够了——不需要第二个「模式」开关。
+**一个开关和一个地址能互相矛盾，一个地址不能自相矛盾。**
 
 ### `EC_HTTP_ADDR` 绑错地方不会有任何东西报警
 
