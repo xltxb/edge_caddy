@@ -1,6 +1,8 @@
 package api_test
 
 import (
+	"encoding/json"
+	"github.com/xltxb/edge_caddy/internal/store"
 	"os"
 	"regexp"
 	"strings"
@@ -190,6 +192,48 @@ func TestUnimplementedEndpointsAreReallyAbsent(t *testing.T) {
 		if have[e] {
 			t.Errorf("%s 标着未实现，却注册了 —— 要么把它从 unimplementedEndpoints "+
 				"挪进 contractEndpoints，要么它是个不该存在的桩", e)
+		}
+	}
+}
+
+// **列表项的字段集要与契约 §7.3 那张表一致。**
+//
+// `GET /deploys` 的列表项是**直接序列化仓储结构体**的，而详情是手工拼的
+// ——于是给 store.Deploy 加一个字段，列表会**静默多出一个契约没写的键**，
+// 而没有任何东西会红。`targets` 就是这么漏出去的（前端拿 mock 与真主控
+// 比形状才发现）。
+//
+// 这条钉的是那个漏法本身：结构体变了、契约没跟，这里就红。
+func TestDeployListItemFieldsMatchContract(t *testing.T) {
+	// 契约 §7.3 那张表里的键。
+	want := map[string]bool{
+		"id": true, "cfg_version": true, "operator": true, "res_keys": true,
+		"ok_count": true, "fail_count": true, "targets": true,
+		"is_baseline": true, "created_at": true,
+	}
+
+	b, err := json.Marshal(store.Deploy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	// 装置自检：序列化得真的产出了东西，否则下面两个循环都会空转。
+	if len(got) < 5 {
+		t.Fatalf("只序列化出 %d 个键 —— 这不是我们以为的东西", len(got))
+	}
+
+	for k := range got {
+		if !want[k] {
+			t.Errorf("列表项多出一个契约 §7.3 没写的键 %q —— "+
+				"给 store.Deploy 加字段会静默漏进这个响应", k)
+		}
+	}
+	for k := range want {
+		if _, ok := got[k]; !ok {
+			t.Errorf("契约 §7.3 写了 %q 而列表项没有它", k)
 		}
 	}
 }
