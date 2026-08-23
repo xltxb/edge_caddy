@@ -340,24 +340,64 @@ async function clearProvider(): Promise<void> {
           </div>
         </div>
 
+        <!--
+          **Zone ID 与 Account ID 两种凭证方式都必填**（契约 §11）。
+
+          `account_id` 此前被关在 `global_key` 分支里，而且占位符写着「可空」——
+          于是 **api_token 模式下界面上根本没有这个输入框**，人填不了它。
+          灰度上的症状：只填 kind / domain / token 保存成功、设置页显示已配置，
+          而推权重时 Cloudflare 回
+          `GET /accounts//load_balancers/pools` → 7003「Could not route to ...」。
+
+          **那个双斜杠就是空字段**，而 Cloudflare 的错误消息不认识我们的字段名，
+          它把人送去查 token 和权限 —— 离真因最远的两个地方。
+
+          两个都是拼进 URL 的路径段：加权调度用的 pool 是账号级的，
+          load balancer 挂在 zone 上。少任何一个都不是「功能弱一点」，
+          是**整条推送不成立**。
+
+          契约那张表当时把 `account_id` 写成「可选」，这个框是照它做的 ——
+          **契约里的一句错会被忠实地复制出去**。
+        -->
         <div v-if="kindNow === 'cloudflare'" class="row">
           <label for="dns-zone">Zone ID</label>
           <div class="ctl">
-            <input id="dns-zone" v-model="dnsEdit.zone_id" class="text mono" placeholder="留空 = 不改动" />
+            <input
+              id="dns-zone"
+              v-model="dnsEdit.zone_id"
+              class="text mono"
+              :placeholder="form.dns_provider.configured ? '留空 = 不改动' : '必填'"
+            />
           </div>
         </div>
 
+        <div v-if="kindNow === 'cloudflare'" class="row">
+          <label for="dns-account">Account ID</label>
+          <div class="ctl">
+            <input
+              id="dns-account"
+              v-model="dnsEdit.account_id"
+              class="text mono"
+              :placeholder="form.dns_provider.configured ? '留空 = 不改动' : '必填'"
+            />
+            <p class="note">
+              加权调度的 pool 是账号级的 —— 少了它，推权重时 Cloudflare 会回
+              「路由不到」，而那句话不会提到这个字段。
+            </p>
+          </div>
+        </div>
+
+        <!-- email 只有 Global Key 模式要（契约 §11），它才是真的按模式分的那个 -->
         <template v-if="kindNow === 'cloudflare' && cfMode === 'global_key'">
           <div class="row">
             <label for="dns-email">账号邮箱</label>
             <div class="ctl">
-              <input id="dns-email" v-model="dnsEdit.email" class="text" placeholder="Global Key 模式必填" />
-            </div>
-          </div>
-          <div class="row">
-            <label for="dns-account">Account ID</label>
-            <div class="ctl">
-              <input id="dns-account" v-model="dnsEdit.account_id" class="text mono" placeholder="可空" />
+              <input
+                id="dns-email"
+                v-model="dnsEdit.email"
+                class="text"
+                :placeholder="form.dns_provider.configured ? '留空 = 不改动' : 'Global Key 模式必填'"
+              />
             </div>
           </div>
         </template>

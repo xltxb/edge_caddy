@@ -781,9 +781,17 @@ export interface DnsProviderWire {
  *
  * 两家服务商需要的字段不一样，界面据此切换（契约 §11）：
  *   dnspod      kind + domain + sub + credential（形如 `ID,Token`）
- *   cloudflare  上面这些 + credential_mode，再加
- *               api_token  → zone_id
- *               global_key → email + zone_id（account_id 可选）
+ *   cloudflare  上面这些 + credential_mode + **zone_id + account_id（两种模式都必填）**
+ *               global_key 再加 email
+ *
+ * **`account_id` 这里此前写着「可选」，那是错的**，而设置页那个输入框是照它做的
+ * —— 于是 api_token 模式下界面上根本没有那个框。灰度上的症状：保存成功、
+ * 设置页显示已配置，而推权重时 Cloudflare 回
+ * `GET /accounts//load_balancers/pools` → 7003「Could not route to ...」。
+ * 那个双斜杠就是空字段，而它的错误消息不认识我们的字段名。
+ *
+ * 两个都是拼进 URL 的路径段（pool 是账号级的，load balancer 挂在 zone 上），
+ * 少任何一个是**整条推送不成立**，不是「功能弱一点」。
  *
  * `credential` 留空 = 保持不变，带了 = 替换。
  */
