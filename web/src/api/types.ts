@@ -682,8 +682,20 @@ export interface DnsProviderPatch {
 }
 
 export interface SettingsWire {
-  /** 必须是域名不是 IP，后端校验，违反返回 code 1001。 */
+  /**
+   * 主控**真正在用**的那个地址，**只读**（契约 §11：`PUT` 带它一律 `1002`）。
+   *
+   * 契约 §11 写清了运行时改不了的理由：这个地址进了主控**服务端证书的 SAN**，
+   * 而证书是启动时签的 —— 改设置改不了证书，那时节点会连上一个证书里没有它
+   * 的地址，握手直接失败。「必须是域名不是 IP」那条规则移到了启动时
+   * （`EC_ADVERTISE` 填 IP 主控拒绝启动）。
+   *
+   * （它此前是可写的，而那是个假字段：存进库、读出来，**而拼安装命令用的是
+   * `EC_ADVERTISE`** —— 人改那一栏，节点的连接地址一个字没变。）
+   */
   master_endpoint: string
+  /** 恒为 true。写出来是为了界面不必靠约定去猜它能不能编辑。 */
+  master_endpoint_readonly: boolean
   heartbeat_interval_s: number
   offline_threshold_count: number
   auto_drop_dns: boolean

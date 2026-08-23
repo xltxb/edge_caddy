@@ -81,20 +81,55 @@ export const handlers = [
 
   /* ── 11. 设置与告警 ── */
   http.get(`${BASE}/settings`, () => ok(seed.settings)),
+  /*
+   * 这个 handler 曾经在四处比真主控宽松，于是四个 bug 只在真机上出现：
+   *
+   * 1. **它回完整的 settings 对象，真主控回 `data: null`。** 界面把返回值当成新
+   *    状态赋给了 form —— dev 下一切正常，真机上保存成功后整页空白。
+   * 2. **它收顶层 `dns_credential`。** 真主控从来不认这个 key，凭证在
+   *    `dns_provider.credential` 里；我按 mock 的样子发了很久，主控静默丢弃、
+   *    回 `code: 0`，看起来一直是成功的。
+   * 3. **它 `Object.assign` 全盘照收。** 真主控现在 `DisallowUnknownFields`，
+   *    多一个 key 就是 1001。
+   * 4. 它还在校验 `master_endpoint` —— 那个字段现在是只读的（契约 §11）。
+   *
+   * **一个比真东西宽容的 mock 不是「够用」，是藏 bug 的地方。** 宁可它更严。
+   */
   http.put(`${BASE}/settings`, async ({ request }) => {
     const b = (await request.json()) as Record<string, unknown>
-    // master_endpoint 必须是域名不是 IP（契约 §11）
-    const ep = String(b.master_endpoint ?? '')
-    if (/^\d{1,3}(\.\d{1,3}){3}(:\d+)?$/.test(ep)) {
-      return fail(1001, '主控接入地址必须是域名，不能是 IP')
+
+    const ALLOWED = new Set([
+      'heartbeat_interval_s',
+      'offline_threshold_count',
+      'auto_drop_dns',
+      'warn_cpu_pct',
+      'warn_mem_pct',
+      'dns_provider',
+      'ops_bot_token',
+    ])
+    const unknown = Object.keys(b).filter((k) => !ALLOWED.has(k))
+    if (unknown.length) {
+      return fail(1001, `请求里有契约没有的字段 ${unknown.map((k) => `"${k}"`).join('、')}`)
     }
+
+    const dns = b.dns_provider as Record<string, unknown> | undefined
+    delete b.dns_provider
     Object.assign(seed.settings, b)
-    // 凭证只写入不回显：带了就是替换（标记为已配置），不带就是保持不变
-    if (b.dns_credential) {
-      seed.settings.dns_provider = { ...seed.settings.dns_provider, configured: true }
+
+    // 不带 dns_provider = 不动它（契约 §11）。带了就逐字段合并。
+    if (dns) {
+      const cur = seed.settings.dns_provider
+      seed.settings.dns_provider = {
+        kind: (dns.kind as typeof cur.kind) ?? cur.kind,
+        domain: (dns.domain as string) ?? cur.domain,
+        sub: (dns.sub as string) ?? cur.sub,
+        credential_mode: (dns.credential_mode as typeof cur.credential_mode) ?? cur.credential_mode,
+        // 凭证只写入不回显：带了就是替换，不带就是保持不变
+        configured: dns.credential ? true : cur.configured,
+      }
     }
-    delete (seed.settings as Record<string, unknown>).dns_credential
-    return ok(seed.settings)
+
+    return ok(null)
   }),
 
   http.get(`${BASE}/alerts`, () => ok(seed.alerts)),

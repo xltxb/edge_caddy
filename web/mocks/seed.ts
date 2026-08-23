@@ -328,6 +328,7 @@ export const audit: AuditWire[] = [
 
 export const settings: SettingsWire & Record<string, unknown> = {
   master_endpoint: 'ec.internal:9000',
+  master_endpoint_readonly: true,
   heartbeat_interval_s: 3,
   offline_threshold_count: 3,
   auto_drop_dns: true,
