@@ -128,7 +128,20 @@ func (s *Server) handlePutDNSWeights(c *gin.Context) {
 		Fail(c, CodeDownstream, "保存成功但读取失败")
 		return
 	}
-	OK(c, gin.H{"domain": plan.Domain, "lines": plan.Lines})
+
+	// **把这次推的结果一起回出去。**
+	//
+	// 这里原先只回 {domain, lines}：推成功了没有任何一句话说，
+	// 而「尚未配置服务商」那一支只写了一行日志就往下走了——
+	// 于是保存按钮在「推上去了」和「只存在本地」两种情况下**长得一模一样**。
+	//
+	// 答案该出现在按下按钮的地方。它与 GET 那边同源（都读 dns_sync），
+	// 所以不会出现「保存时说推上去了、刷新后徽标说没有」这种自相矛盾。
+	sync, serr := s.store.GetDNSSync(ctx)
+	if serr != nil {
+		s.log.Error("读取解析同步状态失败", "err", serr)
+	}
+	OK(c, gin.H{"domain": plan.Domain, "lines": plan.Lines, "dns_sync": sync})
 }
 
 func fieldPath(a string, i int, b string) string {

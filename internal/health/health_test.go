@@ -2,6 +2,7 @@ package health_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -16,12 +17,19 @@ import (
 type recordingAlerter struct {
 	mu   sync.Mutex
 	sent []string
+	// bodies 是告警正文 —— **人真正读到的那段话**。
+	//
+	// 它此前被丢掉了，于是这个包里没有任何一条测试断言过它，
+	// 而这份代码里关于「措辞必须与实际发生的事一致」的注释有好几处。
+	// **被反复叮嘱的那件事，恰恰一条测试都没有。**
+	bodies []string
 }
 
-func (a *recordingAlerter) Notify(_ context.Context, level, title, _ string) {
+func (a *recordingAlerter) Notify(_ context.Context, level, title, body string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.sent = append(a.sent, level+"|"+title)
+	a.bodies = append(a.bodies, body)
 }
 
 func (a *recordingAlerter) all() []string {
@@ -30,15 +38,26 @@ func (a *recordingAlerter) all() []string {
 	return append([]string(nil), a.sent...)
 }
 
+func (a *recordingAlerter) allBodies() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.bodies...)
+}
+
 type fakeDNS struct {
 	mu       sync.Mutex
 	detached []string
 	attached []string
+	// detachErr 让测试造出「服务商配好了，而这次摘不掉」这一档。
+	detachErr error
 }
 
 func (d *fakeDNS) Detach(_ context.Context, id string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.detachErr != nil {
+		return d.detachErr
+	}
 	d.detached = append(d.detached, id)
 	return nil
 }
@@ -177,8 +196,19 @@ func TestEventDoesNotClaimDNSChangedWhenNoProvider(t *testing.T) {
 	if contains(msg, "已暂停 DNS 解析") {
 		t.Fatalf("没有配置服务商时不该声称解析被暂停了: %q", msg)
 	}
-	if !contains(msg, "未变动") {
-		t.Fatalf("应当说清解析没被动过: %q", msg)
+	// **措辞从「未变动」改成了「仍指向这台机器」。**
+	//
+	// 前者说的是「什么没发生」，后者说的是「后果是什么」——而人被半夜叫醒时
+	// 需要知道的是后者：流量还在往一台死机器上打。
+	//
+	// 这条断言原先钉的是那个词，不是它要守的性质。钉词的代价是：
+	// 措辞一改进它就红，而红的不是行为。所以改成钉性质：
+	// **说清解析没被摘掉，并且说出为什么**。
+	if !contains(msg, "仍指向这台机器") {
+		t.Fatalf("应当说清解析没被摘掉: %q", msg)
+	}
+	if !contains(msg, "未配置服务商") {
+		t.Fatalf("应当说出为什么没摘掉 —— 原因不止一种，而它们指向不同的动作: %q", msg)
 	}
 }
 
@@ -531,4 +561,38 @@ func deref(p *string) string {
 		return "<nil>"
 	}
 	return *p
+}
+
+// TestOfflineAlertSaysWhyDNSWasNotDetached 钉的是**「摘不掉」的原因要说对**。
+//
+// 这里原先无论什么错都说「未配置服务商」。灰度上真实发生过：
+// 服务商配好了，而库里的权重五条线不一致、纯 DNS 表达不了，
+// 于是每次摘除都失败——**而告警把人送去配一个已经配好的东西**。
+//
+// 一句错的诊断比没有诊断更贵：它给了人一个方向，而那个方向是反的。
+//
+// 判据是「它说出了真正的原因」，不是「它报了错」——后者原先也满足。
+func TestOfflineAlertSaysWhyDNSWasNotDetached(t *testing.T) {
+	a := &recordingAlerter{}
+	d := &fakeDNS{detachErr: errors.New("五条线必须配置相同的节点与权重")}
+	m, _ := newMonitor(t, a, d)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go m.Run(ctx)
+
+	m.Observe(hb(12))
+	waitFor(t, 3*time.Second, func() bool { return len(a.all()) > 0 })
+
+	got := a.allBodies()[0]
+	if strings.Contains(got, "未配置服务商") {
+		t.Errorf("服务商是配好的，却说「未配置服务商」—— "+
+			"这会把人送去配一个已经配好的东西：%q", got)
+	}
+	if !strings.Contains(got, "五条线") {
+		t.Errorf("没说出真正的原因：%q", got)
+	}
+	if !strings.Contains(got, "仍指向这台机器") {
+		t.Errorf("要说清解析没被摘掉 —— 人被叫醒时流量还在往这台死机器上打：%q", got)
+	}
 }

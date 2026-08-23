@@ -705,3 +705,55 @@ func TestSyncDetailNamesTheRecordItWrote(t *testing.T) {
 			"而记录在 cdn.cdn.example.com，两边都对而对不上账", d.Detail)
 	}
 }
+
+// TestSavingWeightsSaysWhetherItPushed 钉的是**保存权重也要说出推没推**。
+//
+// 这里原先只回 `{domain, lines}`：推成功了没有任何一句话说，
+// 而「尚未配置服务商」那一支只写了一行日志就往下走——
+// 于是保存按钮在「推上去了」和「只存在本地」两种情况下**长得一模一样**。
+//
+// 而这两种的处置完全不同：前者什么都不用做，后者要去配服务商。
+func TestSavingWeightsSaysWhetherItPushed(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	body := map[string]any{"lines": []map[string]any{
+		{"code": "ct", "entries": []map[string]any{{"node": "node-hk-01", "weight": 100}}},
+	}}
+
+	// 一、没配服务商时：**明说没推上去**，而不是回一个和成功一样的响应。
+	e := r.mustDo("PUT", "/dns/weights", body)
+	var d struct {
+		Sync struct {
+			OK     bool   `json:"ok"`
+			Detail string `json:"detail"`
+		} `json:"dns_sync"`
+	}
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Sync.OK {
+		t.Errorf("还没配服务商却说同步成功了：%q", d.Sync.Detail)
+	}
+	if d.Sync.Detail == "" {
+		t.Error("要说出为什么没推上去 —— 只回 domain/lines 的话，" +
+			"「推上去了」和「只存在本地」长得一模一样")
+	}
+
+	// 二、配好之后再存：**要说成功，并且说出写到了哪个名字**。
+	r.configureDNSProvider()
+	e = r.mustDo("PUT", "/dns/weights", body)
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if !d.Sync.OK {
+		t.Fatalf("配好服务商之后仍说没同步成功：%q", d.Sync.Detail)
+	}
+	if !strings.Contains(d.Sync.Detail, "cdn.example.com") {
+		t.Errorf("成功的说明里没有实际写入的名字（%q）—— "+
+			"domain 与 sub 拼重复时记录会建到一个人不会去看的名字下，"+
+			"而每一层都是成功的", d.Sync.Detail)
+	}
+}

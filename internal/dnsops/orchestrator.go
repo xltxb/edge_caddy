@@ -166,6 +166,17 @@ func (o *Orchestrator) Sync(ctx context.Context, weights dnssched.Weights) error
 	st := store.DNSSyncState{OK: err == nil, At: &now, Detail: "解析安排已同步到服务商"}
 	if err != nil {
 		st.Detail = err.Error()
+	} else if h := o.Hostname(ctx); h != "" {
+		// **成功时把写入的名字也记下来。**
+		//
+		// domain 与 sub 拼重复（`cdn.example.com` + `cdn`）时记录会建到
+		// `cdn.cdn.example.com`：同步成功、ok=true、服务商也不会拦，
+		// **而人在面板上永远看不到它**——他看的是另一个名字。
+		//
+		// 这个 detail 是常驻的（界面上那个徽标读它），所以它比一次性的响应
+		// 更该带上这个名字：人来查「为什么服务商上没有」时，第一眼就该看到
+		// 我们写到了哪儿。
+		st.Detail = "解析安排已同步到服务商（写入 " + h + "）"
 	}
 	if perr := o.Store.PutDNSSync(context.WithoutCancel(ctx), st); perr != nil {
 		o.logger().Error("记录解析同步结果失败", "err", perr)

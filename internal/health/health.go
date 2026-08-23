@@ -7,11 +7,13 @@ package health
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/xltxb/edge_caddy/internal/dnsops"
 	"github.com/xltxb/edge_caddy/internal/store"
 	"github.com/xltxb/edge_caddy/internal/tunnel"
 	"github.com/xltxb/edge_caddy/internal/ws"
@@ -347,22 +349,35 @@ func (m *Monitor) markDown(ctx context.Context, nodeID string) {
 
 	// **先摘解析再告警。** 反过来的话，人被叫醒时流量还在往一台死机器上打。
 	detached := false
+	why := "未配置服务商"
 	if m.DNS != nil {
-		if err := m.DNS.Detach(ctx, nodeID); err != nil {
-			m.Log.Error("摘除解析失败", "node", nodeID, "err", err)
-		} else {
+		switch err := m.DNS.Detach(ctx, nodeID); {
+		case err == nil:
 			detached = true
+		case errors.Is(err, dnsops.ErrNoProvider):
+			// 保持默认那句。
+		default:
+			// **「摘不掉」的原因不止一种，而它们指向完全不同的动作。**
+			//
+			// 这里原先无论什么错都说「未配置服务商」。灰度上真实发生过：
+			// 服务商配好了，而库里的权重五条线不一致、纯 DNS 表达不了，
+			// 于是每次摘除都失败——而告警说的是「未配置服务商」，
+			// **把人送去配一个已经配好的东西**。
+			//
+			// 一句错的诊断比没有诊断更贵：它给了人一个方向，而那个方向是反的。
+			// 与 main.go 那条「不在」和「读不到」要分开说是同一条。
+			m.Log.Error("摘除解析失败", "node", nodeID, "err", err)
+			why = err.Error()
 		}
 	}
 
-	// 措辞必须与实际发生的事一致。没有配置 DNS 服务商时解析并没有被摘，
-	// 说「已自动暂停解析」就是承诺一件没发生的事——和「ok 不等于已生效」
-	// 是同一类问题。
+	// 措辞必须与实际发生的事一致。解析没被摘掉时说「已自动暂停解析」
+	// 就是承诺一件没发生的事——和「ok 不等于已生效」是同一类问题。
 	msg := "心跳连续超时 " + itoa(m.Threshold) + " 次，已判定离线"
 	if detached {
 		msg += "，并已暂停 DNS 解析"
 	} else {
-		msg += "；DNS 解析未变动（未配置服务商）"
+		msg += "；解析仍指向这台机器（" + why + "）"
 	}
 	m.emit(ctx, nodeID, "crit", msg)
 
