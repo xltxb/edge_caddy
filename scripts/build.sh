@@ -15,7 +15,22 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 out="dist"
-version="${1:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
+# **「脏」只看后端自己那几个目录。**
+#
+# `git describe --dirty` 看的是整个工作树，而这个仓库里住着两个 agent：
+# 前端在 web/ 下有未提交的改动时，后端的包就会被标成 -dirty ——
+# 而后端二进制里根本没有 web/ 的任何东西。
+#
+# 一个说「这个构建含未提交改动」而实际不含的版本戳，比没有版本戳更坏：
+# 它会让人去找一个不存在的差异。**版本戳的作用域必须和产物的作用域一致。**
+mine="cmd internal proto go.mod go.sum scripts deploy"
+dirty=""
+# shellcheck disable=SC2086
+if ! git diff --quiet -- $mine 2>/dev/null || \
+   ! git diff --cached --quiet -- $mine 2>/dev/null; then
+  dirty="-dirty"
+fi
+version="${1:-$(git describe --tags --always 2>/dev/null || echo dev)${dirty}}"
 commit="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 stamp="${version} (${commit})"
 
