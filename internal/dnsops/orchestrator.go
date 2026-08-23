@@ -107,6 +107,22 @@ func hostname(cfg store.DNSProviderSettings) string {
 	return cfg.SubName + "." + cfg.Domain
 }
 
+// Hostname 是解析记录**实际会写到的那个名字**（sub + domain）。
+//
+// 把它说出来是因为这两个字段拼错的后果是静默的：
+// domain 填 `cdn.example.com`、sub 又填 `cdn`，记录会建到
+// `cdn.cdn.example.com` —— **推送成功、接口回 200，而人在服务商面板上
+// 永远看不到它**，因为他看的是另一个名字。
+//
+// 服务商那边也不会拦：那是它 zone 里一个完全合法的子域名。
+func (o *Orchestrator) Hostname(ctx context.Context) string {
+	cfg, err := o.Store.GetDNSProvider(ctx, nil)
+	if err != nil {
+		return ""
+	}
+	return hostname(cfg)
+}
+
 // CurrentPlan 按库里的权重与节点状态算出当前应有的安排。
 func (o *Orchestrator) CurrentPlan(ctx context.Context, weights dnssched.Weights) (dnssched.Plan, error) {
 	cfg, err := o.Store.GetDNSProvider(ctx, nil)

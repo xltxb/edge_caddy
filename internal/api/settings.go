@@ -297,6 +297,16 @@ func (s *Server) syncAfterProviderChange(ctx context.Context) (bool, string) {
 		s.log.Error("改完服务商后同步解析失败", "err", err)
 		return false, "服务商设置已保存，但同步到服务商失败：" + err.Error()
 	default:
+		// **把实际写入的名字说出来。**
+		//
+		// domain 填 `cdn.example.com`、sub 又填 `cdn` 的话，记录会建到
+		// `cdn.cdn.example.com`——推送成功、这里回 true，而人在服务商面板上
+		// 永远看不到它。服务商也不会拦：那是它 zone 里一个合法的子域名。
+		//
+		// **一次成功里唯一能揭穿这件事的，就是把那个名字印出来。**
+		if h := s.dns.Hostname(ctx); h != "" {
+			return true, "服务商设置已保存，当前解析已推到服务商（写入 " + h + "）"
+		}
 		return true, "服务商设置已保存，当前解析已推到服务商"
 	}
 }

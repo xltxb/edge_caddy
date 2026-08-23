@@ -665,3 +665,43 @@ func TestSettingsUnrelatedToDNSSaysNothingAboutDNS(t *testing.T) {
 			d.Synced, d.Detail)
 	}
 }
+
+// TestSyncDetailNamesTheRecordItWrote 钉的是**成功里也要说出写到了哪个名字**。
+//
+// domain 填 `cdn.example.com`、sub 又填 `cdn` 的话，记录会建到
+// `cdn.cdn.example.com`：推送成功、接口回 200、`dns_synced` 是 true，
+// **而人在服务商面板上永远看不到它**——他看的是另一个名字。
+// 服务商也不会拦，那是它 zone 里一个完全合法的子域名。
+//
+// **一次成功里唯一能揭穿这件事的，就是把那个名字印出来。**
+// 这条是那句「detail 要说出实际发生了什么」在成功路径上的形态：
+// 失败要说原因，而成功要说**做了什么**——「成功」两个字本身信息量为零。
+func TestSyncDetailNamesTheRecordItWrote(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	// 故意把 sub 和 domain 配成会重复的那种。
+	e := r.mustDo("PUT", "/settings", map[string]any{
+		"dns_provider": map[string]any{
+			"kind": "dnspod", "domain": "cdn.example.com", "sub": "cdn",
+			"credential": "fake-token",
+		},
+	})
+	var d struct {
+		Synced bool   `json:"dns_synced"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if !d.Synced {
+		t.Fatalf("装置坏了：这次该是推成功的，detail=%q", d.Detail)
+	}
+	if !strings.Contains(d.Detail, "cdn.cdn.example.com") {
+		t.Errorf("成功的 detail 里没有实际写入的名字（%q）—— "+
+			"人看到「已推到服务商」，去面板上找 cdn.example.com，"+
+			"而记录在 cdn.cdn.example.com，两边都对而对不上账", d.Detail)
+	}
+}
