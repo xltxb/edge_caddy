@@ -256,10 +256,17 @@ func TestEveryWriteEndpointRejectsUnknownFields(t *testing.T) {
 		} else {
 			path = strings.ReplaceAll(path, ":p", "不存在的东西")
 		}
+		// 登录是唯一一个不带会话的写端点——**这是「不发 Cookie」，不是「跳过」**。
+		//
+		// 这里原先写的是 `continue`，理由注成「单独由 TestUnknownFieldIsRejectedNotIgnored
+		// 一族覆盖」。那句话是假的：那条测试验的是 PUT /settings。
+		// 于是登录的严格绑定**一条测试都没有**，而清单里它看起来是被数过的。
+		// **一个带着理由的豁免，比没有豁免更难被怀疑。**
+		send := auth
 		if ep == "POST /auth/login" {
-			continue // 登录本身不带会话，单独由 TestUnknownFieldIsRejectedNotIgnored 一族覆盖
+			send = nil
 		}
-		_, e := do(t, r, method, "/api/v1"+path, map[string]any{bogus: 1}, auth)
+		_, e := do(t, r, method, "/api/v1"+path, map[string]any{bogus: 1}, send)
 		if e.Code == api.CodeOK {
 			t.Errorf("%s：发了一个契约里没有的字段，却得到 code 0 —— "+
 				"那个值被静默丢掉了，而调用方会以为成功了", ep)
