@@ -627,41 +627,91 @@ func TestCloudflareDNSNeverProxies(t *testing.T) {
 	}
 }
 
-// TestCloudflareDNSRefusesWhatItCannotExpress 钉的是**塌缩要报错，不能默默取平均**。
+// TestCloudflareDNSFlattensInsteadOfRefusing 是**一条推翻了的规矩的替代品**。
 //
-// 普通 DNS 记录既没有权重也没有线路。按等权处理的话，界面上权重条画着 60/40
-// 而实际是轮询，**而那种不一致没有任何地方会说出来**。
-func TestCloudflareDNSRefusesWhatItCannotExpress(t *testing.T) {
+// 它此前叫 TestCloudflareDNSRefusesWhatItCannotExpress，钉的是
+// 「五条线不一致或权重不同就报错」。理由是：默默按等权处理会让界面画着
+// 60/40 而实际是轮询，而那种不一致没人会说出来。
+//
+// **那个理由在界面跟上之后就不成立了**：控制台读 Caps.Weights，
+// 这家为 false 时权重输入框被换成「轮换」两个字，五条线也合并成一个。
+//
+// 而拒绝的代价是一个真实的死锁，灰度上撞到的：
+//
+//	库里权重五条线不一致（之前用 Load Balancing 时留下的）
+//	→ 后端拒绝同步，要求先拉平
+//	→ 而界面上已经没有权重输入框，保存按钮恒灰
+//	→ 拉不平，也就永远同步不了
+//
+// **两边各自都在遵守一条好规矩，合起来把人锁死了。**
+//
+// 所以现在：不拒，取并集，并把「这次合并了」说进同步说明。
+func TestCloudflareDNSFlattensInsteadOfRefusing(t *testing.T) {
+	api := &fakeAPI{respond: map[string]string{
+		"GET /zones/z/dns_records":  `{"success":true,"result":[]}`,
+		"POST /zones/z/dns_records": `{"success":true,"result":{"id":"r1"}}`,
+	}}
 	cf := dnsctl.NewCloudflareDNS("z", "cdn.example.com")
 	cf.Token = "tok"
-	cf.Base = "http://127.0.0.1:1" // 不该被用到
+	cf.Base = api.server(t)
 
 	nodes := []dnssched.NodeState{node("a", "1.1.1.1"), node("b", "2.2.2.2")}
-
-	// 一、权重不同
-	w := dnssched.Weights{}
-	for _, l := range []string{"ct", "cu", "cm", "tw", "ov"} {
-		w[l] = map[string]int{"a": 60, "b": 40}
-	}
-	err := cf.Sync(context.Background(), dnssched.Build("cdn.example.com", w, nodes))
-	if err == nil {
-		t.Fatal("权重不同却收下了 —— 界面画 60/40 而实际轮询，没人会发现")
-	}
-	if !strings.Contains(err.Error(), "权重") {
-		t.Errorf("报错要说清是权重的问题：%v", err)
-	}
-
-	// 二、线路配得不一样
-	w2 := dnssched.Weights{
-		"ct": {"a": 100}, "cu": {"a": 100}, "cm": {"a": 100},
+	// **b 只出现在 tw 里，第一条线（ct）里没有它。**
+	//
+	// 这一点是刻意的：ct 里也有 b 的话，「取并集」和「取第一条」得到的
+	// 是同一组 IP，下面那条断言就永远不会红 —— 它会看起来在守并集，
+	// 而实际上什么也没守。（第一版就是这么写的，探针撞出来的。）
+	w := dnssched.Weights{
+		"ct": {"a": 60}, "cu": {"a": 60}, "cm": {"a": 60},
 		"tw": {"b": 100}, "ov": {"a": 100},
 	}
-	err = cf.Sync(context.Background(), dnssched.Build("cdn.example.com", w2, nodes))
-	if err == nil {
-		t.Fatal("五条线配得不一样却收下了")
+	if err := cf.Sync(context.Background(), dnssched.Build("cdn.example.com", w, nodes)); err != nil {
+		t.Fatalf("不该拒绝：%v", err)
 	}
-	if !strings.Contains(err.Error(), "线路") {
-		t.Errorf("报错要说清是线路的问题：%v", err)
+
+	// **取并集**：只配在某一条线上的节点也要拿到记录。
+	// 取第一条的话 b 会被静默丢掉，那是在减容量。
+	got := map[string]bool{}
+	for _, c := range api.seen() {
+		if c.Method == "POST" {
+			if ip, ok := c.Body["content"].(string); ok {
+				got[ip] = true
+			}
+		}
+	}
+	for _, ip := range []string{"1.1.1.1", "2.2.2.2"} {
+		if !got[ip] {
+			t.Errorf("%s 没拿到记录 —— 并集里应当有它（实际 %v）", ip, got)
+		}
+	}
+
+	// **合并了要说出来。** 不说的话，人配的五条线被合成一条，
+	// 而没有任何地方提过这件事。
+	if n := cf.Note(); n == "" {
+		t.Error("五条线不一致却什么也没说 —— 那是一次静默的意图改写")
+	} else if !strings.Contains(n, "并集") {
+		t.Errorf("附注要说清这次是怎么处理的：%q", n)
+	}
+}
+
+// TestCloudflareDNSSaysNothingWhenLinesAgree 是上一条的反面。
+//
+// 没有这一条，一个「每次都附注一句」的实现也能让上面全绿 ——
+// 而一句每次都出现的提示等于没有提示，人两天就学会跳过它。
+func TestCloudflareDNSSaysNothingWhenLinesAgree(t *testing.T) {
+	api := &fakeAPI{respond: map[string]string{
+		"GET /zones/z/dns_records":  `{"success":true,"result":[]}`,
+		"POST /zones/z/dns_records": `{"success":true,"result":{"id":"r1"}}`,
+	}}
+	cf := dnsctl.NewCloudflareDNS("z", "cdn.example.com")
+	cf.Token = "tok"
+	cf.Base = api.server(t)
+
+	if err := cf.Sync(context.Background(), plainPlan(t, node("a", "1.1.1.1"))); err != nil {
+		t.Fatalf("同步失败：%v", err)
+	}
+	if n := cf.Note(); n != "" {
+		t.Errorf("五条线本来就一致，不该附注：%q", n)
 	}
 }
 

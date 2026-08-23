@@ -39,7 +39,13 @@ type CloudflareDNS struct {
 
 	ZoneID   string
 	Hostname string
+
+	// note 是上一次 Sync 里**值得说但不该拦**的事。调用方读它写进同步说明。
+	note string
 }
+
+// Note 实现 dnsctl.Noter：把上一次同步里的附注交出去。
+func (c *CloudflareDNS) Note() string { return c.note }
 
 func NewCloudflareDNS(zoneID, hostname string) *CloudflareDNS {
 	return &CloudflareDNS{cfAPI: newCFAPI(), ZoneID: zoneID, Hostname: hostname}
@@ -64,9 +70,14 @@ func (c *CloudflareDNS) Caps() Caps {
 
 // Sync 把这个域名的 A / AAAA 记录对成计划里的那组 IP。
 func (c *CloudflareDNS) Sync(ctx context.Context, plan dnssched.Plan) error {
-	want, err := collapseToPlainRotation(plan)
-	if err != nil {
-		return err
+	want, divergent := collapseToPlainRotation(plan)
+	if divergent {
+		// **说出来，但不拦。** 拦的代价见 collapseToPlainRotation 的注释。
+		// 说不出来的代价是：人配的五条线被合成一条，而没有任何地方提过。
+		c.note = "库里五条线路的配置并不一致（多半是之前用别的服务商时配的）；" +
+			"普通 DNS 记录分不出线路，这次按各线路节点的并集推送"
+	} else {
+		c.note = ""
 	}
 	if len(want) == 0 {
 		// **不清空记录。** 把最后一条记录撤掉等于主动让域名解析不出来，
@@ -78,46 +89,58 @@ func (c *CloudflareDNS) Sync(ctx context.Context, plan dnssched.Plan) error {
 	return c.reconcile(ctx, want)
 }
 
-// collapseToPlainRotation 把五条线塌缩成一组 IP。不一致时报错。
-func collapseToPlainRotation(plan dnssched.Plan) ([]string, error) {
-	byLine := map[string][]dnssched.Entry{}
-	for _, lp := range plan.Lines {
-		byLine[lp.Code] = plan.Rotation(lp.Code)
-	}
+// collapseToPlainRotation 把五条线塌缩成一组 IP。
+//
+// # 它不拒绝，而这一条是改过的
+//
+// 最初它在「五条线配得不一样」或「权重不全相同」时明确报错，理由是
+// **默默按等权处理会让界面画着 60/40 而实际是轮询，而那种不一致没人会说出来**。
+//
+// 那个理由**在界面跟上之后就不成立了**：控制台读 Caps.Weights，
+// 这家为 false 时它把权重输入框换成「轮换」两个字，五条线也合并成一个。
+// 界面已经明说了这里只有轮换。
+//
+// 而拒绝的代价是一个真实的死锁 —— 灰度上撞到的：
+//
+//	库里的权重是五条线不一致的（之前用 Load Balancing 时留下的）
+//	→ 后端拒绝同步，要求先拉平
+//	→ 而界面上没有权重输入框了，改不动，保存按钮恒灰
+//	→ 拉不平，也就永远同步不了
+//
+// **两边各自都对，合起来把人锁死。** 而它比单独一个 bug 难发现：
+// 每一侧单独看都在遵守一条好规矩。
+//
+// # 为什么是并集
+//
+// 节点取五条线的并集，不是第一条。**一个只配在某一条线上的节点，
+// 是运维要它服务的节点**；取第一条会把它静默丢掉，那是在减容量。
+// 而普通 DNS 本来就做不到按线路投放，「只在境外服务」这件事在这里
+// 从一开始就实现不了 —— 并集没有丢掉任何本来能兑现的东西。
+//
+// 控制台那一页的占比预览也是按并集算的，两边看到的是同一组节点。
+func collapseToPlainRotation(plan dnssched.Plan) ([]string, bool) {
+	seen := map[string]bool{}
+	var ips []string
+	divergent := false
+	var ref string
 
-	all := []string{"ct", "cu", "cm", "tw", "ov"}
-	ref := signature(byLine[all[0]])
-	for _, l := range all[1:] {
-		if signature(byLine[l]) != ref {
-			return nil, capErr(
-				"普通 DNS 记录分不出线路，五条线必须配置相同的节点与权重，"+
-					"当前 %s 与 %s 不一致。要按线路分流得改用 DNSPod",
-				lineName(all[0]), lineName(l))
+	for _, code := range []string{"ct", "cu", "cm", "tw", "ov"} {
+		entries := plan.Rotation(code)
+		if sig := signature(entries); ref == "" {
+			ref = sig
+		} else if sig != ref {
+			divergent = true
 		}
-	}
-
-	entries := byLine[all[0]]
-	// **权重也要一致。** 多条 A 记录是等概率轮询，60/40 表达不出来。
-	// 默默按等权处理的话，界面上权重条画着 60/40 而实际是 50/50——
-	// 而那种不一致没有任何地方会说出来。
-	for i, e := range entries {
-		if i > 0 && e.Weight != entries[0].Weight {
-			return nil, capErr(
-				"普通 DNS 记录没有权重字段，多条记录是等概率轮询，"+
-					"所以各节点的权重必须相同（当前 %s=%d、%s=%d）。"+
-					"要按权重分流得开通 Cloudflare Load Balancing，或改用 DNSPod",
-				entries[0].Node, entries[0].Weight, e.Node, e.Weight)
-		}
-	}
-
-	ips := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if e.IP != "" {
+		for _, e := range entries {
+			if e.IP == "" || seen[e.IP] {
+				continue
+			}
+			seen[e.IP] = true
 			ips = append(ips, e.IP)
 		}
 	}
 	sort.Strings(ips)
-	return ips, nil
+	return ips, divergent
 }
 
 type cfDNSRecord struct {

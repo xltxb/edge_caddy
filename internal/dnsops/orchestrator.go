@@ -167,7 +167,7 @@ func (o *Orchestrator) Sync(ctx context.Context, weights dnssched.Weights) error
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	err := o.syncOnce(ctx, weights)
+	note, err := o.syncOnce(ctx, weights)
 
 	// **每次同步都记下结果**，无论成败。界面上那个「已退出解析」徽标是常驻的，
 	// 而一次请求的响应会消失——不落库的话，一次失败的同步会留下一个一直撒谎
@@ -177,6 +177,9 @@ func (o *Orchestrator) Sync(ctx context.Context, weights dnssched.Weights) error
 	if err != nil {
 		st.Detail = err.Error()
 	} else if h := o.Hostname(ctx); h != "" {
+		// 服务商可以留一句「做了但值得说」的附注（比如把五条线合并成了并集）。
+		// **不接上的话它就是个没人读的字段** —— 这个仓库里数过很多次了。
+
 		// **成功时把写入的名字也记下来。**
 		//
 		// domain 与 sub 拼重复（`cdn.example.com` + `cdn`）时记录会建到
@@ -187,6 +190,9 @@ func (o *Orchestrator) Sync(ctx context.Context, weights dnssched.Weights) error
 		// 更该带上这个名字：人来查「为什么服务商上没有」时，第一眼就该看到
 		// 我们写到了哪儿。
 		st.Detail = "解析安排已同步到服务商（写入 " + h + "）"
+		if note != "" {
+			st.Detail += "。" + note
+		}
 	}
 	if perr := o.Store.PutDNSSync(context.WithoutCancel(ctx), st); perr != nil {
 		o.logger().Error("记录解析同步结果失败", "err", perr)
@@ -194,16 +200,27 @@ func (o *Orchestrator) Sync(ctx context.Context, weights dnssched.Weights) error
 	return err
 }
 
-func (o *Orchestrator) syncOnce(ctx context.Context, weights dnssched.Weights) error {
+// syncOnce 推一次，并把服务商留下的附注一起带出来。
+//
+// **附注必须从这个实例上取。** 我第一版写的是在外面重新 o.Provider(ctx)
+// 再读 Note()，而那会新造一个实例——上面那次同步设的附注在另一个对象上，
+// 于是它恒为空串。**又一个「什么都没发生」装成「没什么可说」。**
+func (o *Orchestrator) syncOnce(ctx context.Context, weights dnssched.Weights) (string, error) {
 	provider, _, err := o.Provider(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
 	plan, err := o.CurrentPlan(ctx, weights)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return provider.Sync(ctx, plan)
+	if err := provider.Sync(ctx, plan); err != nil {
+		return "", err
+	}
+	if n, ok := provider.(Noter); ok {
+		return n.Note(), nil
+	}
+	return "", nil
 }
 
 // Detach 把一个节点摘出解析。实现 health.DNSDetacher。
@@ -229,3 +246,10 @@ func (o *Orchestrator) Caps(ctx context.Context) dnsctl.Caps {
 	}
 	return provider.Caps()
 }
+
+// Noter 是「这次同步做了，但有件事值得说」的出口。
+//
+// 不是每家都有。**用可选接口而不是给 Provider 加方法**：
+// 加方法会逼 DNSPod 和 Cloudflare 各写一个空实现，而空实现最容易在
+// 后来真需要说点什么时被忘掉。
+type Noter interface{ Note() string }
