@@ -39,8 +39,21 @@ out="dist"
 # （前端 agent 在他的 pack.mjs 里撞到了同一个形状，我照着去量自己的，
 # 一量就中。**同形状的另一个不会自己浮出来。**）
 #
-# --porcelain 会把未跟踪文件报成 `??`，而它尊重 .gitignore，
-# 所以构建产物不会误伤。
+# --porcelain 会把未跟踪文件报成 `??`，而它尊重 .gitignore。
+#
+# **这后半句一开始是我顺手写下的推理，不是量出来的。** 当时探的那一条是
+# 「只动 dist/ → 不该 dirty」，而 dist/ 本来就不在 $mine 里 ——
+# **它是因为别的原因才干净的，那次探测对这句话零信息**。
+#
+# 真正能验它的输入是「作用域**内**、而被忽略的文件」：
+#
+#	internal/api/x.pem  （.gitignore 的 *.pem 不带前导斜杠，任何深度都算）
+#	  → 不触发 ✓
+#	internal/api/x.txt  （同一个目录，不被忽略）
+#	  → 触发   ✓  ← 这条证明上一条不是「探针根本没在看」
+#
+# 两种结果都出现，这个探法才可信。清一色「不触发」跟「规则全生效」
+# 长得一模一样。
 mine="cmd internal proto go.mod go.sum scripts deploy"
 dirty=""
 # shellcheck disable=SC2086
