@@ -14,6 +14,7 @@
 | `bash scripts/build.sh [版本号]` | 打后端的包（主控 + Agent，交叉编译 Linux amd64/arm64） | 要部署的时候 |
 | `python3 scripts/packcheck.py <包>` | 这个包解到目标机器上，**会不会弄坏它落脚的那个目录** | `build.sh` 自动跑，不过就不写校验和 |
 | `bash deploy/edge-node_test.sh` | 部署脚本的那些承重约束还在吗 | 改了 `deploy/edge-node.sh` 之后 |
+| `sudo bash deploy/cf-realip.sh` | 让审计记下**真实访问者**的 IP，而不是 CDN 的 | 装在 CDN 后面时，以及每月一次 |
 
 ## 为什么不是一条 `make check`
 

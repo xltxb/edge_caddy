@@ -190,18 +190,27 @@ def check_index():
         return 1
     text = readme.read_text(encoding="utf-8")
 
-    real = {p.name for p in (ROOT / "scripts").iterdir()
-            if p.suffix in (".py", ".sh") and p.name != "README.md"}
-    real.add("edge-node_test.sh")  # 它住在 deploy/，但索引里该有它
+    # **两个目录都要扫。**
+    #
+    # 这里原先只扫 scripts/，另外把 edge-node_test.sh 手工 add 进来——
+    # 而 deploy/ 下后来又多了 cf-realip.sh，索引提到了它，
+    # 检查却对它一无所知。**一个手工补丁挡住了一次，挡不住第二次。**
+    real = {p.name
+            for d in ("scripts", "deploy")
+            for p in (ROOT / d).iterdir()
+            if p.suffix in (".py", ".sh")}
 
     bad = 0
     for name in sorted(real):
         if name not in text:
             print(f"  ✗ {name} 存在，而索引里没有它")
             bad += 1
-    for m in re.finditer(r'scripts/(\w[\w.-]*\.(?:py|sh))', text):
-        if m.group(1) not in real:
-            print(f"  ✗ 索引指着 scripts/{m.group(1)}，而它不在了")
+    for m in re.finditer(r'((?:scripts|deploy)/(\w[\w.-]*\.(?:py|sh)))', text):
+        if m.group(2) not in real:
+            # **把索引里写的那个路径原样回显**，不要拼一个。
+            # 拼的话，一条写在 deploy/ 下的失效引用会被报成 scripts/ 下的，
+            # 而人会去那个目录找，找不到，然后怀疑是检查器坏了。
+            print(f"  ✗ 索引指着 {m.group(1)}，而它不在了")
             bad += 1
     if not bad:
         print(f"  ✓ 索引与 {len(real)} 个脚本双向一致")
