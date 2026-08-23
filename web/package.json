@@ -26,7 +26,8 @@
     "check:humantext": "node scripts/check-humantext.mjs",
     "check:anchors": "node scripts/check-anchors.mjs",
     "check:certs": "node scripts/check-certs.mjs",
-    "check:dist": "node scripts/check-dist.mjs"
+    "check:dist": "node scripts/check-dist.mjs",
+    "pack": "node scripts/check-dist.mjs && node scripts/pack.mjs"
   },
   "dependencies": {
     "pinia": "^2.2.6",
