@@ -1651,6 +1651,36 @@ cursor 分页（§0.5），可选 `?operator=abiu`。倒序。
 }
 ```
 
+**`GET` 还回一个 `dns_provider_requirements`**：每个 `kind` × `credential_mode`
+还要人填哪些字段。
+
+```json
+"dns_provider_requirements": {
+  "dnspod":     { "": ["domain", "credential"] },
+  "cloudflare": {
+    "api_token":  ["domain", "credential", "account_id", "zone_id"],
+    "global_key": ["domain", "credential", "account_id", "zone_id", "email"]
+  }
+}
+```
+
+键名与 `PUT` 的 `dns_provider` body 键**一模一样**——界面拿它当找输入框的钥匙。
+**不含 `kind`**：那是选择器本身，不是要填的字段。
+
+它由 `store.MissingFields` 对一份空配置求值得出，**不是它的抄本**，
+所以不可能和校验分叉（`TestRequirementsAreDerivedNotCopied` 守着）。
+
+> 它存在的理由不是「给必填项标个红星」。星号解决的是「人不知道要填」，
+> 而这次撞上的是**人填不了**：`account_id` 被误关在 `global_key` 分支里，
+> `api_token` 模式下那个框根本不渲染。
+>
+> **一个不存在的框不引起任何疑问**，而一个标着「可空」的空框至少还在页面上。
+>
+> 界面拿它做的检查是：**这份清单里的每个字段，在对应的 kind+mode 下
+> 都得渲染得出一个输入框**。两侧合起来才闭合——主控这侧保证
+> 「拼进 URL 的值必须被要求填」（`TestEveryConfigValueInAURLPathIsRequired`），
+> 界面那侧保证「被要求填的必须填得进去」。
+
 **`PUT` 时 `dns_provider` 的字段**（两家不同，界面按 `kind` 切换）：
 
 | 字段 | dnspod | cloudflare |

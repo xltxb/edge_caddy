@@ -94,6 +94,55 @@ func (c DNSProviderSettings) MissingFields() []string {
 	return missing
 }
 
+// ProviderKinds 是主控认得的服务商。**这是唯一的一份名单。**
+//
+// 此前 settings 的校验里写着 `k != "dnspod" && k != "cloudflare"`，
+// 而 dnsops 的装配是另一个 switch —— 加一家时改了一处忘了另一处，
+// 症状是「保存成功、装配时报未知服务商」，或者反过来「代码支持它、而校验不让存」。
+var ProviderKinds = []string{"dnspod", "cloudflare"}
+
+// KnownKind 说这个 kind 主控认不认。
+func KnownKind(k string) bool {
+	for _, x := range ProviderKinds {
+		if x == k {
+			return true
+		}
+	}
+	return false
+}
+
+// CredentialModes 是每家支持的凭证模式。空串表示这一家没有模式之分。
+var CredentialModes = map[string][]string{
+	"dnspod":     {""},
+	"cloudflare": {"api_token", "global_key"},
+}
+
+// ProviderRequirements 报出每个 kind × mode 还要人填哪些字段。
+//
+// **它是 MissingFields 对一份空配置求值的结果，不是它的抄本。**
+// 这一点是承重的：前端要拿它去检查「界面上有没有这个输入框」，
+// 而一份会和判据分叉的清单，守出来的一致性是假的。
+//
+// 起因：Cloudflare 的 account_id 此前被误关在 global_key 分支里，
+// **api_token 模式下界面上根本不渲染那个框**。人不是留空了它，是填不了它——
+// 而一个不存在的框不引起任何疑问，一个标着「可空」的空框至少还在页面上。
+//
+// **不含 kind**：那是选择器本身，不是要填的字段。
+// 键名与 `PUT /settings` 的 `dns_provider` body 键**一模一样**，
+// 前端拿它当找输入框的钥匙——两边叫法不同的话就得再加一层映射，
+// 而那层映射又是一份新知识。
+func ProviderRequirements() map[string]map[string][]string {
+	out := map[string]map[string][]string{}
+	for _, kind := range ProviderKinds {
+		byMode := map[string][]string{}
+		for _, mode := range CredentialModes[kind] {
+			byMode[mode] = DNSProviderSettings{Kind: kind, CredentialMode: mode}.MissingFields()
+		}
+		out[kind] = byMode
+	}
+	return out
+}
+
 // Usable 说这份配置装配得出一个能用的服务商客户端。
 func (c DNSProviderSettings) Usable() bool { return len(c.MissingFields()) == 0 }
 

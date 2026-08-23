@@ -354,6 +354,9 @@ func (c *Cloudflare) call(ctx context.Context, method, path string, body, out an
 			// 原样带上服务商的措辞：那是排查凭证权限不足的唯一线索，
 			// 而权限不足是接 Cloudflare 时最常见的失败。
 			msg = fmt.Sprintf("%d %s", env.Errors[0].Code, env.Errors[0].Message)
+			if h := hint(env.Errors[0].Code, path); h != "" {
+				msg += "。" + h
+			}
 		}
 		return fmt.Errorf("Cloudflare %s %s: %s", method, path, msg)
 	}
@@ -361,4 +364,33 @@ func (c *Cloudflare) call(ctx context.Context, method, path string, body, out an
 		return json.Unmarshal(raw, out)
 	}
 	return nil
+}
+
+// hint 把 Cloudflare 的错误码翻成一句**说得出该去改哪里**的话。
+//
+// 上面那段注释写着「权限不足是接 Cloudflare 时最常见的失败」，而在
+// 这个函数存在之前，消息里没有一个字说该去改什么 ——
+// **描述清楚一个危害，不等于处置了它。**
+//
+// 原始措辞照旧原样带上（它是唯一的一手证据），这只是在它后面补一句。
+// 认不出的码返回空串：**编一句像模像样的猜测比不说更坏**，
+// 它会把人送去一个由我们凭空指定的方向。
+func hint(code int, path string) string {
+	switch code {
+	case 10000:
+		// Authentication error：凭证本身无效，或者它对**这个资源**没权限。
+		// 加权调度要两处，而它们在 Token 编辑页是两个不同的区块 ——
+		// 只给 DNS 权限的 Token 是最常见的那一种，而它在这里失败。
+		if strings.Contains(path, "/load_balancers") {
+			return "这个端点要 Load Balancing 权限，只有 DNS 权限的 Token 到不了这里：" +
+				"账户级「Load Balancing: Monitors and Pools」= Edit，" +
+				"区域级「Load Balancers」= Edit，两个都要。" +
+				"另外 Load Balancing 是 Cloudflare 的付费附加产品，账户没开通时权限给全了也用不了"
+		}
+		return "凭证无效，或者它对这个资源没有权限"
+	case 7003:
+		// 正常情况下 call() 开头那道拦截先挡住了，走到这里说明是别的空段。
+		return "请求路径里有空的一段 —— 多半是某个 ID 没填"
+	}
+	return ""
 }

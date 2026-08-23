@@ -500,3 +500,38 @@ func TestCloudflareRefusesEmptyPathSegment(t *testing.T) {
 		t.Errorf("发出了 %d 个请求 —— 应该在拼接那一步就停住，一个都不发", n)
 	}
 }
+
+// TestCloudflareAuthErrorSaysWhichPermission 钉的是**远端的错误消息不认识我们的场景**。
+//
+// 灰度上的原话：`10000 Authentication error`。它对，而它说不出该去改哪里——
+// 人会去重新生成一个 Token，而新 Token 多半还是只有 DNS 权限，于是再撞一次。
+//
+// 加权调度要两处权限，在 Cloudflare 的 Token 编辑页是两个不同的区块，
+// 而「只给 DNS 权限」是最常见的那一种。原始措辞仍然原样带上——
+// 它是一手证据，这只是在它后面补一句说得出动作的话。
+func TestCloudflareAuthErrorSaysWhichPermission(t *testing.T) {
+	api := &fakeAPI{respond: map[string]string{
+		"GET /accounts/acct/load_balancers/pools": `{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}`,
+	}}
+	cf := dnsctl.NewCloudflare("acct", "zone", "cdn.example.com")
+	cf.Token = "tok"
+	cf.Base = api.server(t)
+
+	plan := dnssched.Build("cdn.example.com", dnssched.Weights{
+		"ct": {"a": 100}, "cu": {"a": 100}, "cm": {"a": 100}, "ov": {"a": 100},
+	}, []dnssched.NodeState{node("a", "1.1.1.1")})
+
+	err := cf.Sync(context.Background(), plan)
+	if err == nil {
+		t.Fatal("10000 却当成功了")
+	}
+	got := err.Error()
+	if !strings.Contains(got, "Authentication error") {
+		t.Errorf("丢掉了服务商的原话，那是唯一的一手证据：%v", got)
+	}
+	for _, want := range []string{"Load Balancing", "Edit", "付费"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("没说出该去改什么（缺 %q）：%v", want, got)
+		}
+	}
+}

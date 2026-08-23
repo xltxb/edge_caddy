@@ -3,10 +3,12 @@ package api
 import (
 	"errors"
 	"fmt"
-	"github.com/xltxb/edge_caddy/internal/store"
 	"net"
+	"strings"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/xltxb/edge_caddy/internal/store"
 )
 
 var (
@@ -53,6 +55,19 @@ func (s *Server) handleGetSettings(c *gin.Context) {
 			"credential_mode": dns.CredentialMode,
 			"configured":      dns.CredentialOK,
 		},
+
+		// **每个 kind × mode 还要人填哪些字段。**
+		//
+		// 由 store.MissingFields 对一份空配置求值得出，所以它不可能和
+		// 校验分叉。界面拿它检查「这个 kind+mode 下该有的输入框都渲染出来了吗」
+		// ——起因是 account_id 曾被误关在 global_key 分支里，
+		// **api_token 模式下那个框根本不存在**，人填不了它。
+		//
+		// 两条检查合起来才闭合：主控这侧保证「拼进 URL 的值必须被要求填」
+		// （TestEveryConfigValueInAURLPathIsRequired），界面那侧保证
+		// 「被要求填的必须填得进去」。
+		"dns_provider_requirements": store.ProviderRequirements(),
+
 		"ops_bot_token_configured": s.opsBotConfigured,
 	})
 }
@@ -195,9 +210,13 @@ func (s *Server) handlePutSettings(c *gin.Context) {
 		assign(&dns.CredentialMode, p.CredentialMode)
 		assign(&dns.Credential, p.Credential)
 
-		if dns.Kind != "" && dns.Kind != "dnspod" && dns.Kind != "cloudflare" {
+		// 名单只有一份（store.ProviderKinds）。此前这里是写死的两个字符串，
+		// 而装配那边是另一个 switch —— 加一家时改一处忘一处，
+		// 症状是「保存成功、装配时报未知服务商」，或者反过来。
+		if dns.Kind != "" && !store.KnownKind(dns.Kind) {
 			FailValidation(c, "系统设置未通过校验", []FieldError{
-				{ResKey: "settings", Field: "dns_provider.kind", Reason: "只能是 dnspod 或 cloudflare"},
+				{ResKey: "settings", Field: "dns_provider.kind",
+					Reason: "只能是 " + strings.Join(store.ProviderKinds, " 或 ")},
 			})
 			return
 		}
