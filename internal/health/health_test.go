@@ -139,10 +139,14 @@ func TestNodeRecoversOnNextHeartbeat(t *testing.T) {
 	waitFor(t, 3*time.Second, func() bool { return len(a.all()) > 0 })
 
 	m.Observe(hb(15)) // 心跳回来了
-	waitFor(t, 3*time.Second, func() bool {
-		_, attached := d.took()
-		return len(attached) > 0
-	})
+
+	// **等告警，不等 DNS.Attach。** recover() 的顺序是「写库 → 推服务商 → 发告警」，
+	// 等前面任何一步都会在告警还没发的时候往下走。
+	// 同一个坑在 TestAutoDetachedDNSComesBackOnRecovery 里实测过：20 次红 2 次。
+	waitFor(t, 3*time.Second, func() bool { return len(a.all()) >= 2 })
+	if _, attached := d.took(); len(attached) == 0 {
+		t.Fatal("恢复时应当把解析推回服务商")
+	}
 	if got := a.all(); len(got) < 2 || got[1] != "warn|节点恢复 node-a" {
 		t.Fatalf("应当发一条恢复告警，实际 %v", got)
 	}
@@ -431,12 +435,23 @@ func TestAutoDetachedDNSComesBackOnRecovery(t *testing.T) {
 	}
 
 	// 心跳回来。
+	//
+	// **等的必须是最后发生的那件事。**
+	//
+	// 这里原先等的是库里 dns_enabled 转 true，然后立刻断言告警发出来了——
+	// 而 recover() 的顺序是「先写库，再发告警」。于是库那一步一到，
+	// 测试就往下走，告警可能还没发。**它 flaky，而 flaky 的测试会在两个
+	// 方向上说谎**：偶尔红一次让人以为产品坏了，而它平时的绿也不能当证据。
+	//
+	// 等告警就同时等到了库（库在它前面），反过来不成立。
 	m.Observe(hb(10))
 	waitFor(t, 3*time.Second, func() bool {
-		var on bool
-		_ = st.Pool.QueryRow(ctx,
-			`SELECT dns_enabled FROM edge_nodes WHERE id='node-a'`).Scan(&on)
-		return on
+		for _, x := range a.all() {
+			if strings.Contains(x, "节点恢复") {
+				return true
+			}
+		}
+		return false
 	})
 
 	// reason / actor 一起清掉：留着 auto_offline 而 dns_enabled 是 true，
