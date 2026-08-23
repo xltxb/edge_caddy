@@ -25,6 +25,13 @@ export interface ResourceItem {
   changes: number
   /** version 0 = 尚未下发到任何节点 */
   isNew: boolean
+  /**
+   * 底下没有 live 资源的草稿。**永远打不开、也下发不了。**
+   *
+   * 草稿是在已有资源上的 Partial，没有底子合并不出东西（契约 §7.1）。
+   * 主控会在预览时用 `field: "res_key"` 挡下它。
+   */
+  orphan?: boolean
 }
 
 export const useConfigStore = defineStore('config', () => {
@@ -121,6 +128,35 @@ export const useConfigStore = defineStore('config', () => {
         isNew: p.version === 0,
       })
     }
+    /*
+     * **底下没有 live 资源的草稿，也要在树上占一行。**
+     *
+     * 上面三个循环遍历的是 live 资源，`dirtyKeys` 来自草稿 —— 两者对不上时，
+     * 那个 key 在树里根本不存在。而顶栏的「N 处变更」是按草稿数的：
+     * **数字说有一处，列表里一处都找不到，人没法处置一个看不见的东西。**
+     *
+     * 这种草稿今天从控制台产生不出来（草稿的 key 全部来自已有资源），
+     * 只有运维机器人写得进去。但「新建规则」这个功能一旦做出来，第一个撞上
+     * 它的就是它 —— 所以先把它显示出来，而不是等到那时候。
+     *
+     * 不给它 `dirty` 标记：那个点的意思是「这份资源有未下发的改动」，
+     * 而这里连资源都没有。它要说的是另一件事。
+     */
+    const known = new Set(items.map((i) => i.key))
+    for (const key of dirtyKeys.value) {
+      if (known.has(key)) continue
+      items.push({
+        key,
+        kind: (key.split(':')[0] as ResKind) ?? 'route',
+        label: key,
+        group: '没有底子的草稿',
+        dirty: false,
+        changes: changesOf(key),
+        isNew: false,
+        orphan: true,
+      })
+    }
+
     return items
   })
 

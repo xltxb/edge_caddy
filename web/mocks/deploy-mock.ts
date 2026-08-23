@@ -188,7 +188,30 @@ function settle(run: Running, deps: DeployMockDeps, total: number): void {
  * 会拒的配置回 `ok: true`，就是把真实的失败藏起来：那正是下发进度那次坑我的形状
  * （mock 的时序恰好掩盖了进度帧比 current 先到）。
  */
-function validateEffective(): { res_key: string; field: string; reason: string }[] {
+function validateEffective(
+  resKeys: string[] = [],
+): { res_key: string; field: string; reason: string }[] {
+  /*
+   * **底下没有 live 资源的草稿，排在渲染问题前面**（契约 §7.1）——
+   * 「这条资源根本不存在」是「这条资源哪里配错了」的前提。
+   *
+   * 真主控此前把这种草稿**静默跳过**：预览 ok、下发成功、草稿被删、而什么
+   * 都没建出来。**成功的假象里最贵的一种：它同时是数据丢失。**（ce507ec 修的。）
+   *
+   * mock 这边原先也不知道有这回事 —— 又一个「跟着一起错的替身」，只不过这次
+   * 是漏而不是错：它压根没实现这条校验，于是 dev 下也不会挡。
+   */
+  const orphans = resKeys
+    .filter((k) => findLive(k) === undefined)
+    .map((k) => ({
+      res_key: k,
+      field: 'res_key',
+      reason:
+        '没有这个资源。草稿是在已有资源上的改动，没有底子合并不出东西；' +
+        '要新建请先建出资源本身，再改它的草稿',
+    }))
+  if (orphans.length) return orphans
+
   const log = effective('global:log') as { spec?: { rate_limit?: boolean } } | undefined
   if (log?.spec?.rate_limit !== true) return []
   return [
@@ -217,7 +240,7 @@ export async function handleDeploy(
     // 校验失败在预览里返回 code: 0 —— 预览成功地告诉了你「校验没过」（契约 §7.1）
     // 没有 cfg_version：新版本号在 POST /deploys 那一刻才生成，
     // 预览时给一个必然对不上的号，就是在弹层和下发记录之间埋一处不一致。
-    const errors = validateEffective()
+    const errors = validateEffective(resKeys)
     ok(res, {
       before: renderAll(false),
       // 校验没过时 after 必须是 null（契约 §7.1）：渲染不出来的东西绝不能拿去 diff，
@@ -234,6 +257,24 @@ export async function handleDeploy(
   if (req.method === 'POST' && path === '/api/v1/deploys') {
     const body = await readBody(req)
     const resKeys = (body.res_keys as string[]) ?? []
+
+    /*
+     * **下发这一侧也要校验，而且用 1002 拒**（契约 §7.2）。
+     *
+     * 这里原先什么都不校验，直接开跑 —— 与真主控修复前一模一样的形状：
+     * 预览挡得住，下发挡不住。而下发成功之后草稿就被删了，人写下的东西没了。
+     *
+     * 预览挡住了就够了？不够：**预览和下发是两次请求**，中间状态会变
+     * （别人删了那条资源、或者机器人写进来一份新草稿）。「上一步检查过了」
+     * 不是这一步可以不检查的理由。
+     */
+    const errs = validateEffective(resKeys)
+    if (errs.length) {
+      return (
+        json(res, { code: 1002, data: { errors: errs }, msg: '校验未通过，未触达任何节点' }), true
+      )
+    }
+
     const run: Running = {
       id: ++nextId,
       cfgVersion: nextCfg(),

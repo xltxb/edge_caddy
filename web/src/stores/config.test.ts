@@ -159,3 +159,55 @@ describe('「新」的判据三类资源一致', () => {
     expect(store.tree.find((t) => t.key === 'rule:r1')!.isNew).toBe(false)
   })
 })
+
+/*
+ * 底下没有 live 资源的草稿，也要在树上占一行。
+ *
+ * 树遍历的是 live 资源，而顶栏的「N 处变更」是按草稿数的 —— 两者对不上时，
+ * **数字说有一处，列表里一处都找不到**。人没法处置一个看不见的东西。
+ *
+ * 这种草稿今天从控制台产生不出来（草稿的 key 全部来自已有资源），只有运维
+ * 机器人写得进去。后端此前会把它静默吞掉：预览说没问题、下发说成功、草稿被
+ * 删、而什么都没建出来（契约 §7.1，主控 ce507ec 修的）。现在主控会用
+ * `field: "res_key"` 挡下它 —— 界面这边要让人看见它是哪一条、为什么动不了。
+ */
+describe('没有底子的草稿', () => {
+  beforeEach(() => setActivePinia(createPinia()))
+
+  it('在树上占一行，标 orphan', () => {
+    const store = useConfigStore()
+    store.routes = [{ domain: 'a.example.com', version: 3 }] as never
+    store.patches = { 'rule:brand-new': { name: '新规则' } } as never
+
+    const row = store.tree.find((t) => t.key === 'rule:brand-new')
+    expect(row, '草稿在树上一行都没有的话，「N 处变更」就指向了看不见的东西').toBeDefined()
+    expect(row!.orphan).toBe(true)
+  })
+
+  it('**不打 dirty 标记** —— 那个点说的是「这份资源有未下发改动」，而这里连资源都没有', () => {
+    const store = useConfigStore()
+    store.patches = { 'rule:brand-new': { name: '新规则' } } as never
+    expect(store.tree.find((t) => t.key === 'rule:brand-new')!.dirty).toBe(false)
+  })
+
+  it('有 live 资源的草稿不算 orphan，走原来那条路', () => {
+    // 这条兜着上面两条：不加它的话，「所有草稿都标 orphan」也能让它们全绿。
+    const store = useConfigStore()
+    store.rules = [
+      { id: 'r1', name: 'R', type: 'ip_whitelist', version: 2, spec: {}, apply_to: [] },
+    ] as never
+    store.patches = { 'rule:r1': { name: '改过的' } } as never
+
+    const row = store.tree.find((t) => t.key === 'rule:r1')!
+    expect(row.orphan).toBeUndefined()
+    expect(row.dirty, '正常草稿该有蓝点').toBe(true)
+  })
+
+  it('kind 从 key 的前缀取，分组归到「没有底子的草稿」', () => {
+    const store = useConfigStore()
+    store.patches = { 'global:brand-new': { name: 'x' } } as never
+    const row = store.tree.find((t) => t.key === 'global:brand-new')!
+    expect(row.kind).toBe('global')
+    expect(row.group).toBe('没有底子的草稿')
+  })
+})
