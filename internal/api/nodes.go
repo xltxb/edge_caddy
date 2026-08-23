@@ -40,6 +40,19 @@ type nodeResp struct {
 	// 三条路径关掉解析（人手动、系统自动摘、人下线），而它们的处置完全不同：
 	// 自己关的想开就开，系统摘的要先去修那台机器，下线的要先「重新上线」。
 	// 只有一个 dns_enabled 的时候，界面只能说「未参与解析」四个字。
+	// Reconnects1h 是**过去一小时这条隧道断了又接上几次**。
+	//
+	// 它存在的理由是**去抖会把真故障吃掉**：断开到重连只要 1–2 秒，
+	// 而离线判定要连续错过 heartbeat_interval × offline_threshold（默认 9 秒）
+	// 才翻 down —— 所以一条每十分钟断一次的隧道，
+	// 在 status / online / hb_age_ms 三个瞬时值上**全部是健康的**。
+	//
+	// 灰度上真发生过：CDN 每隔十几分钟切一次长连接，界面上看不出任何异常，
+	// 唯一的痕迹在那台机器的 Agent 日志里。
+	//
+	// **区分「一次抖动」和「反复抖动」需要的不是更灵敏的判定，
+	// 是一个跨时间的计数** —— 前者不该惊动人，后者是故障。
+	Reconnects1h int     `json:"reconnects_1h"`
 	DNSReason    string  `json:"dns_reason"` // manual | auto_offline | drained
 	DNSActor     *string `json:"dns_actor"`  // 操作人；系统自动摘除时是 null
 	DNSChangedAt *string `json:"dns_changed_at"`
@@ -97,6 +110,13 @@ func (s *Server) handleListNodes(c *gin.Context) {
 			item.DrainedAt = &ts
 		}
 		item.AgentVersion = n.AgentVersion
+		if c, err := s.store.CountReconnects(ctx, n.ID, time.Hour); err != nil {
+			// 数不出来就留 0，但**要说出来**：0 和「查不到」在界面上一样，
+			// 而它们的含义相反（很稳 / 不知道）。
+			s.log.Error("统计重连次数失败", "node", n.ID, "err", err)
+		} else {
+			item.Reconnects1h = c
+		}
 		item.DNSReason = n.DNSReason
 		if n.DNSActor != "" {
 			// **系统自动摘除时是 null，不是「system」。**

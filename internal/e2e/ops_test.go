@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/xltxb/edge_caddy/internal/api"
+	"github.com/xltxb/edge_caddy/internal/store"
 )
 
 // 总览的四项 KPI。
@@ -1085,4 +1086,81 @@ func TestKnownNodeReconnectingWithCertIsAllowed(t *testing.T) {
 	// 同一个 state 目录、空 Token —— 走的就是「证书优先」那条路。
 	r.startAgent("node-hk-01", "", stateDir)
 	r.waitOnline("node-hk-01")
+}
+
+// **反复抖动必须能被数出来，因为去抖把它吃掉了。**
+//
+// 灰度上真发生过：CDN 每隔十几分钟切一次长连接，Agent 1–2 秒就重连上。
+// 而离线判定要连续错过 heartbeat_interval × offline_threshold（默认 9 秒）
+// 才翻 down —— 所以 status / online / hb_age_ms **三个瞬时值全部是健康的**，
+// 界面上看不出任何异常，唯一的痕迹在那台机器的 Agent 日志里。
+//
+// 契约 §4 那句「短暂不一致是正常的，那是判定的去抖窗口」是对的，
+// 而它的另一面就是这个：**去抖分不出「一次抖动」和「反复抖动」**。
+// 前者不该惊动人，后者是故障。区分它们需要的不是更灵敏的判定，
+// 是一个**跨时间的计数**。
+//
+// 顺带钉住「接入」与「重连」是两件事：契约 §4 里「接入」指凭 Token 的
+// 首次加入，凭证书重连记成同一个词，事件流读起来就成了
+// 「这台机器半小时内重新加入了三次集群」。
+func TestReconnectsAreCountedAndNotCalledJoining(t *testing.T) {
+	r := newRig(t)
+	stateDir := t.TempDir()
+	token, _ := r.issueToken("node-hk-01")
+	stop := r.startAgent("node-hk-01", token, stateDir)
+	r.waitOnline("node-hk-01")
+
+	readNode := func() (int, string) {
+		t.Helper()
+		nodes := r.mustDo("GET", "/nodes", nil)
+		var d struct {
+			Items []struct {
+				Reconnects1h int    `json:"reconnects_1h"`
+				Status       string `json:"status"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(nodes.Data, &d); err != nil {
+			t.Fatal(err)
+		}
+		if len(d.Items) != 1 {
+			t.Fatalf("装置坏了：想要 1 个节点，实际 %d", len(d.Items))
+		}
+		return d.Items[0].Reconnects1h, d.Items[0].Status
+	}
+
+	// 首次加入不算重连。**没有这一条，一个「把每次连接都数一遍」的实现
+	// 也能让下面那条通过**，而那会让每台新机器一上来就显示「已重连 1 次」。
+	if n, _ := readNode(); n != 0 {
+		t.Fatalf("首次加入不该算重连，实际 %d", n)
+	}
+
+	// 断两次、每次都很快回来 —— 正是那个「徽标看不出来」的场景。
+	for i := 0; i < 2; i++ {
+		stop()
+		stop = r.startAgent("node-hk-01", "", stateDir)
+		r.waitOnline("node-hk-01")
+	}
+
+	n, status := readNode()
+	if n != 2 {
+		t.Errorf("重连次数 = %d，想要 2 —— "+
+			"数不出来的话，一条每十分钟断一次的隧道在界面上完全是健康的", n)
+	}
+	// **而这正是它存在的理由**：抖了两次，而 status 一直是 ok。
+	if status != "ok" {
+		t.Logf("（status=%s；这条不是断言，只是记下当时的瞬时值）", status)
+	}
+
+	// 事件流里「接入」只该有一条，其余是「重连」。
+	ov := r.mustDo("GET", "/overview", nil)
+	joined := strings.Count(string(ov.Data), store.EventNodeJoined)
+	recon := strings.Count(string(ov.Data), store.EventTunnelReconnected)
+	if joined != 1 {
+		t.Errorf("「%s」应当只有 1 条（凭 Token 那次），实际 %d —— "+
+			"重连记成同一个词，事件流会读成「这台机器重新加入了三次集群」",
+			store.EventNodeJoined, joined)
+	}
+	if recon != 2 {
+		t.Errorf("「%s」应当有 2 条，实际 %d", store.EventTunnelReconnected, recon)
+	}
 }

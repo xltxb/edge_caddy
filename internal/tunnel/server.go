@@ -246,7 +246,7 @@ func (s *Server) Channel(stream edgev1.EdgeTunnel_ChannelServer) error {
 		return status.Error(codes.InvalidArgument, "首帧必须是 Hello")
 	}
 
-	nodeID, enrolled, err := s.identify(ctx, hello)
+	nodeID, enrolled, fresh, err := s.identify(ctx, hello)
 	if err != nil {
 		return err
 	}
@@ -257,13 +257,22 @@ func (s *Server) Channel(stream edgev1.EdgeTunnel_ChannelServer) error {
 	sess := s.register(nodeID, stream)
 	defer s.unregister(nodeID, sess)
 
-	s.log.Info("节点接入", "node_id", nodeID, "agent_version", hello.GetVersion())
+	// **「接入」和「重连」是两件事，记成同一句话会读出一个假事实。**
+	//
+	// 契约 §4 里「接入」指的是凭 Token 的首次加入。凭证书重连记成同一个词，
+	// 事件流读起来就是「这台机器半小时内重新加入了三次集群」——
+	// 而实际是一条隧道断了两次。灰度上就是这么读岔的。
+	msg := store.EventTunnelReconnected
+	if fresh {
+		msg = store.EventNodeJoined
+	}
+	s.log.Info(msg, "node_id", nodeID, "agent_version", hello.GetVersion())
 	// 版本要落库，不能只进日志 —— 灰度时人是在控制台上问
 	// 「我推上去的那一版到底上没上」，而不是去翻主控的日志。
 	if err := s.opt.Store.SetAgentVersion(ctx, nodeID, hello.GetVersion()); err != nil {
 		s.log.Error("记录 Agent 版本失败", "node_id", nodeID, "err", err)
 	}
-	if _, err := s.opt.Store.InsertEvent(ctx, nodeID, "ok", "节点已接入"); err != nil {
+	if _, err := s.opt.Store.InsertEvent(ctx, nodeID, "ok", msg); err != nil {
 		s.log.Error("写接入事件失败", "err", err)
 	}
 
@@ -276,10 +285,10 @@ func (s *Server) Channel(stream edgev1.EdgeTunnel_ChannelServer) error {
 // **证书优先于自称**：已接入的节点带着 mTLS 客户端证书，CN 就是 node_id。
 // Hello 里的 node_id 只在凭 Token 首连时才被参考，而那一次 node_id 也不来自
 // Agent —— 它绑定在 Token 上，签发时就定死了。
-func (s *Server) identify(ctx context.Context, hello *edgev1.Hello) (string, *edgev1.Enrolled, error) {
+func (s *Server) identify(ctx context.Context, hello *edgev1.Hello) (nodeID string, enrolled *edgev1.Enrolled, fresh bool, err error) {
 	baseline, err := s.opt.Store.Baseline(ctx)
 	if err != nil {
-		return "", nil, status.Errorf(codes.Internal, "读取基线: %v", err)
+		return "", nil, false, status.Errorf(codes.Internal, "读取基线: %v", err)
 	}
 
 	if cn := clientCertCN(ctx); cn != "" {
@@ -301,16 +310,16 @@ func (s *Server) identify(ctx context.Context, hello *edgev1.Hello) (string, *ed
 		//
 		// 一道以状态为前提的门，挡不住「那个状态连同记录一起没了」。
 		if err := s.refuseIfUnknown(ctx, cn); err != nil {
-			return "", nil, err
+			return "", nil, false, err
 		}
 		if err := s.refuseIfDrained(ctx, cn); err != nil {
-			return "", nil, err
+			return "", nil, false, err
 		}
-		return cn, &edgev1.Enrolled{CfgVersion: baseline}, nil
+		return cn, &edgev1.Enrolled{CfgVersion: baseline}, false, nil
 	}
 
 	if hello.GetToken() == "" {
-		return "", nil, s.refuseEnroll(ctx, "",
+		return "", nil, false, s.refuseEnroll(ctx, "",
 			"接入被拒：没有客户端证书也没有接入 Token", codes.Unauthenticated)
 	}
 
@@ -322,15 +331,15 @@ func (s *Server) identify(ctx context.Context, hello *edgev1.Hello) (string, *ed
 	switch {
 	case errors.Is(err, store.ErrTokenInvalid):
 		// node 传空：这张 Token 认不出来，我们不知道它想接入哪台机器。
-		return "", nil, s.refuseEnroll(ctx, "", "接入被拒：Token 无效", codes.Unauthenticated)
+		return "", nil, false, s.refuseEnroll(ctx, "", "接入被拒：Token 无效", codes.Unauthenticated)
 	case errors.Is(err, store.ErrTokenExpired):
-		return "", nil, s.refuseEnroll(ctx, hello.GetNodeId(),
+		return "", nil, false, s.refuseEnroll(ctx, hello.GetNodeId(),
 			"接入被拒：Token 已过期（签发后 30 分钟内有效）", codes.Unauthenticated)
 	case errors.Is(err, store.ErrTokenUsed):
-		return "", nil, s.refuseEnroll(ctx, hello.GetNodeId(),
+		return "", nil, false, s.refuseEnroll(ctx, hello.GetNodeId(),
 			"接入被拒：Token 已被使用过", codes.Unauthenticated)
 	case err != nil:
-		return "", nil, status.Errorf(codes.Internal, "校验接入 Token: %v", err)
+		return "", nil, false, status.Errorf(codes.Internal, "校验接入 Token: %v", err)
 	}
 
 	// 拒绝在消耗之前，所以这张 Token 还没废：「重新上线」之后它照样能用。
@@ -339,15 +348,15 @@ func (s *Server) identify(ctx context.Context, hello *edgev1.Hello) (string, *ed
 	// 已下线的机器上」。那句话只覆盖了「被拒」这一半，没想到 rejoin 之后的情形：
 	// 一台正在重装的机器，人重新上线之后还得回控制台再签一张。
 	if err := s.refuseIfDrained(ctx, spec.NodeID); err != nil {
-		return "", nil, err
+		return "", nil, false, err
 	}
 
 	if err := s.opt.Store.UpsertNode(ctx, spec); err != nil {
-		return "", nil, status.Errorf(codes.Internal, "写入节点: %v", err)
+		return "", nil, false, status.Errorf(codes.Internal, "写入节点: %v", err)
 	}
 	leaf, err := s.opt.CA.SignClient(spec.NodeID, pki.TunnelLeafTTL())
 	if err != nil {
-		return "", nil, status.Errorf(codes.Internal, "签发隧道证书: %v", err)
+		return "", nil, false, status.Errorf(codes.Internal, "签发隧道证书: %v", err)
 	}
 
 	// 一切就绪，现在才烧掉这张 Token。这之后没有会失败的事，
@@ -355,9 +364,9 @@ func (s *Server) identify(ctx context.Context, hello *edgev1.Hello) (string, *ed
 	if err := s.opt.Store.ConsumeEnrollToken(ctx, hello.GetToken()); err != nil {
 		if errors.Is(err, store.ErrTokenUsed) {
 			// Peek 与这里之间被别人抢先用掉了。
-			return "", nil, status.Error(codes.Unauthenticated, "接入 Token 已被使用")
+			return "", nil, false, status.Error(codes.Unauthenticated, "接入 Token 已被使用")
 		}
-		return "", nil, status.Errorf(codes.Internal, "标记 Token 已用: %v", err)
+		return "", nil, false, status.Errorf(codes.Internal, "标记 Token 已用: %v", err)
 	}
 
 	return spec.NodeID, &edgev1.Enrolled{
@@ -365,7 +374,7 @@ func (s *Server) identify(ctx context.Context, hello *edgev1.Hello) (string, *ed
 		TunnelKeyPem:  leaf.KeyPEM,
 		TunnelCaPem:   s.opt.CA.CertPEM,
 		CfgVersion:    baseline,
-	}, nil
+	}, true, nil // fresh：凭 Token 的首次加入
 }
 
 // refuseIfDrained 挡住已下线节点的接入。
