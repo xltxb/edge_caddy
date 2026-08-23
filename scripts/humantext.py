@@ -18,6 +18,7 @@
   - 反引号原始字符串（`...`）不看：正则、SQL、JSON 模板都住在那里，
     而它们不面向人。代价是一条用反引号写的 msg 会漏掉。
   - 拼接出来的标记看不见：`"**"+x+"**"` 每一段都不含 `**`。
+  - 只看 Go。前端有自己那份（`pnpm check:humantext`），管辖各自的字符串。
   - 「面向人」是按「是不是字符串」判的，不是按「它到不到得了屏幕」判的。
     所以日志、终端报错也被算进来——那是有意的：终端同样不渲染 markdown。
 """
@@ -44,13 +45,65 @@ def go_files():
     return sorted(out)
 
 
-def strings_in(line):
-    """取一行代码里的双引号字符串。整行注释与块注释续行直接跳过。"""
-    s = line.lstrip()
-    if s.startswith("//") or s.startswith("*") or s.startswith("/*"):
-        return []
-    code = line.split("//")[0]
-    return [m.group(1) for m in re.finditer(r'"((?:[^"\\]|\\.)*)"', code)]
+def strings_in_file(text):
+    """扫出整个文件里的双引号字符串字面量，返回 (行号, 内容)。
+
+    **剥注释这一步比判据本身更要紧。** 这里是一个走完整个文件的状态机，
+    而不是逐行做正则——逐行的两种偷懒各自会坏一个方向，两个我都亲手做过：
+
+      1. `line.split("//")[0]`：字符串里的 `http://` 会被拦腰截断，
+         `"见 http://x 里的 **说明**"` 就此**假阴**。
+         （前端 agent 提前警告过这一格，我照样踩了。）
+      2. 只跳过「整行以 `//` 或 `/*` 开头」：`/* … */` 块注释的**中间几行**
+         会被当成代码扫，注释里的强调变成**假阳**。
+         （他在自己那版里撞到的正是这个，8/11 是误报。）
+
+    第 2 种尤其贵：**一个八成是误报的检查器，第二次就没人看了。**
+    它不会被删掉，会被忽略——而忽略和不存在没有区别，只是还占着位置。
+    """
+    out = []
+    i, n, line = 0, len(text), 1
+    while i < n:
+        ch = text[i]
+        if ch == "\n":
+            line += 1
+            i += 1
+        elif text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            seg = text[i:n if j < 0 else j + 2]
+            line += seg.count("\n")
+            i = n if j < 0 else j + 2
+        elif ch == "`":  # 原始字符串：正则 / SQL / JSON 模板住在这里，不面向人
+            j = text.find("`", i + 1)
+            seg = text[i:n if j < 0 else j + 1]
+            line += seg.count("\n")
+            i = n if j < 0 else j + 1
+        elif ch == "'":  # rune 字面量，'\'' 要认
+            i += 1
+            while i < n and text[i] != "'":
+                i += 2 if text[i] == "\\" else 1
+            i += 1
+        elif ch == '"':
+            start_line = line
+            i += 1
+            buf = []
+            while i < n and text[i] != '"':
+                if text[i] == "\\":
+                    buf.append(text[i:i + 2])
+                    i += 2
+                else:
+                    if text[i] == "\n":  # 不该发生（Go 不允许），但别把行号数丢了
+                        line += 1
+                    buf.append(text[i])
+                    i += 1
+            i += 1
+            out.append((start_line, "".join(buf)))
+        else:
+            i += 1
+    return out
 
 
 def main():
@@ -59,13 +112,12 @@ def main():
     total_strings = 0
     bad = []
     for p in files:
-        for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
-            for lit in strings_in(line):
-                total_strings += 1
-                for mark, name in MARKS:
-                    if mark in lit:
-                        bad.append((p.relative_to(ROOT), n, name, lit[:70]))
-                        break
+        for n, lit in strings_in_file(p.read_text(encoding="utf-8")):
+            total_strings += 1
+            for mark, name in MARKS:
+                if mark in lit:
+                    bad.append((p.relative_to(ROOT), n, name, lit[:70]))
+                    break
 
     if len(files) < 20 or total_strings < 200:
         print(f"  ✗ 装置坏了：只扫到 {len(files)} 个文件、{total_strings} 个字符串")
