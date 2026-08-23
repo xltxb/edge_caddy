@@ -134,8 +134,35 @@ function pushEvent(deps: NodeMockDeps, node: string | null, kind: string, msg: s
  * 真主控在从没同步过时给 `null`（契约 §0.4）。mock 这边给真实时刻，
  * 「没有时刻」那条路径在单测里覆盖，不靠 mock。
  */
+/**
+ * `dns_sync.detail` **在成功时也说实际发生了什么**（契约 §8）。
+ *
+ * 「成功」两个字信息量为零。真后端在这里说的是：记录写到了哪个名字、
+ * 这次按什么口径推的 —— 而那个名字是唯一能揭穿「`domain` + `sub` 拼出
+ * `cdn.cdn.example.com`」的东西：推送成功、接口 200、`ok` 是 true，
+ * 而人在服务商面板上永远找不到它。
+ *
+ * mock 跟着 kind 走，否则 dev 下永远看不到纯 DNS 那一档的说法 ——
+ * 而那一档正是「库里五条不一致」的常态。
+ */
 function dnsSync() {
-  return { ok: true, at: new Date().toISOString(), detail: '解析安排已同步到服务商' }
+  const kind = settingsKind()
+  const name = 'cdn.example.com'
+  if (kind === 'cloudflare_dns') {
+    return {
+      ok: true,
+      at: new Date().toISOString(),
+      detail:
+        `解析安排已同步到服务商（写入 ${name}）。库里五条线路的配置并不一致` +
+        '（多半是之前用别的服务商时配的）；普通 DNS 记录分不出线路，' +
+        '这次按各线路节点的并集推送',
+    }
+  }
+  return {
+    ok: true,
+    at: new Date().toISOString(),
+    detail: `解析安排已同步到服务商（写入 ${name}）`,
+  }
 }
 
 /**

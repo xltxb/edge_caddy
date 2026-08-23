@@ -3,7 +3,14 @@ import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { http, errorText } from '@/api/http'
 import type { DnsWeightsWire } from '@/api/types'
-import { isDivergent, isIdle, lineInputs, mergedWeight, type LineInput } from '@/dns/capability'
+import {
+  computeShares,
+  isDivergent,
+  isIdle,
+  lineInputs,
+  mergedWeight,
+  type LineInput,
+} from '@/dns/capability'
 import { useUiStore } from '@/stores/ui'
 import { useNodesStore } from '@/stores/nodes'
 import { participation as whyNotServing } from '@/dns/participation'
@@ -158,15 +165,14 @@ const dirty = computed(() => Object.keys(edits.value).length > 0)
  * 权重 20 / 占比 0%，看起来像界面算错了。
  */
 function shares(g: LineInput): Map<string, number> {
-  const m = new Map<string, number>()
-  const nodes = nodesOf(g)
-  const enabled = nodes.filter((n) => entryOf(g, n)?.dns_enabled)
-  const total = enabled.reduce((s, n) => s + weightOf(g, n), 0)
-  for (const n of nodes) {
-    const on = entryOf(g, n)?.dns_enabled === true
-    m.set(n, on && total > 0 ? Math.round((weightOf(g, n) / total) * 1000) / 10 : 0)
-  }
-  return m
+  return computeShares(
+    nodesOf(g).map((n) => ({
+      node: n,
+      enabled: entryOf(g, n)?.dns_enabled === true,
+      weight: weightOf(g, n),
+    })),
+    supportsWeights.value,
+  )
 }
 
 /** 参与解析的节点数 / 总节点数。同样按并集算。 */
@@ -270,10 +276,40 @@ async function save(): Promise<void> {
     <div v-if="configured && sync && !sync.ok" class="banner warn">
       下面这些权重是<b>待生效的安排</b>，服务商那边还没反映：{{ sync.detail }}
     </div>
+    <!--
+      **成功时也要把 detail 说出来。**
+
+      这里原先只显示时间 —— 而「成功」两个字本身信息量为零。后端在成功的
+      detail 里说的是**实际发生了什么**：记录写到了哪个名字、这次按什么口径推的。
+
+      那个名字尤其要紧：`domain` 填 `cdn.example.com` 而 `sub` 又填 `cdn`，
+      记录会建到 `cdn.cdn.example.com` —— 推送成功、接口 200、`ok` 是 true，
+      而人在服务商面板上永远找不到它。服务商也不会拦，那是它 zone 里一个合法的
+      子域名。**一次成功里唯一能揭穿这件事的，就是把那个名字印出来**（契约 §8）。
+
+      丢掉 detail 等于把那道唯一的检查关掉。
+    -->
     <div v-else-if="sync?.ok && !isZeroTime(sync.at)" class="banner info">
-      上次同步到服务商：{{ fmtClock(sync.at) }}
+      上次同步到服务商：{{ fmtClock(sync.at) }}<span v-if="sync.detail"> · {{ sync.detail }}</span>
     </div>
-    <div v-if="divergent.length" class="banner warn">
+
+    <!--
+      **这句只在权重配得动的时候说。**
+
+      它承诺的是一个动作（「保存会把它们拉平」），而 `weights: false` 时权重输入框
+      根本不渲染 —— 没有输入就没有改动，保存按钮恒灰。**那时这句话承诺了一个
+      按不下去的动作**，而人会去找那个按钮。
+
+      这是我和后端合造的一个死锁的前端一半：后端曾要求「先把五条拉平再同步」，
+      而拉平要靠保存。两边各自都在遵守一条好规矩（我这边是「让非法状态造不出
+      来」，它那边是「不默默改写用户没要过的配置」），**而没有哪一侧的测试会红**
+      —— 每一侧的行为都符合它自己的规格。
+
+      后端现在不再要求拉平（按各线路节点的**并集**推送），并在 `dns_sync.detail`
+      里说明了这件事。所以这一档由上面那条横幅讲，这里不重复 ——
+      **两条横幅讲同一件事只会互相稀释，人会两条都不读。**
+    -->
+    <div v-if="supportsWeights && divergent.length" class="banner warn">
       {{ divergent.join('、') }} 下各线路的权重当前并不一致（可能是在别的服务商下配的）。
       保存会把它们拉平成同一个值。
     </div>

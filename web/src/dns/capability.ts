@@ -120,3 +120,51 @@ export function isIdle(
     .filter((n) => n.dnsEnabled)
     .reduce((sum, n) => sum + mergedWeight(weights, group, n.id), 0) === 0
 }
+
+/** 一个节点在某条（或某个合并组）线路上的现状，`computeShares` 只需要这些。 */
+export interface ShareInput {
+  node: string
+  /** 它在不在解析里（手动暂停 / 心跳超时自动摘除的都是 false）。 */
+  enabled: boolean
+  /** 库里配的权重值。**表达不了权重的服务商下这个字段会被忽略。** */
+  weight: number
+}
+
+/**
+ * 本地预览占比。**画的是将会发生的事，不是库里存着的数。**
+ *
+ * ## 表达不了权重时是均分，不是按权重算
+ *
+ * 这一条是我漏过一次的：把权重输入框换成「轮换」两个字之后，我以为就说清楚了
+ * —— **而占比条还在按库里的权重画 60% / 40%**。那正是后端当初拒绝默默取等权时
+ * 担心的东西：
+ *
+ * > 界面上权重条画着 60/40 而实际是轮询，
+ * > **而那种不一致没有任何地方会说出来。**
+ *
+ * 库里那些权重仍然存着（换回 DNSPod 还要用），但普通 A / AAAA 记录只有
+ * 「在或不在」，DNS 轮询把它们摆平。
+ *
+ * ## 退出解析的节点不进分母
+ *
+ * 与后端一致：它的权重仍然保留（人的意图），但不参与这一轮分流。
+ */
+export function computeShares(
+  entries: ShareInput[],
+  supportsWeights: boolean,
+): Map<string, number> {
+  const m = new Map<string, number>()
+  const enabled = entries.filter((e) => e.enabled)
+
+  if (!supportsWeights) {
+    const each = enabled.length > 0 ? Math.round((100 / enabled.length) * 10) / 10 : 0
+    for (const e of entries) m.set(e.node, e.enabled ? each : 0)
+    return m
+  }
+
+  const total = enabled.reduce((sum, e) => sum + e.weight, 0)
+  for (const e of entries) {
+    m.set(e.node, e.enabled && total > 0 ? Math.round((e.weight / total) * 1000) / 10 : 0)
+  }
+  return m
+}

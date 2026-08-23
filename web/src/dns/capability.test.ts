@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { isDivergent, isIdle, lineInputs, mergedWeight, type LineInput } from './capability'
+import {
+  computeShares,
+  isDivergent,
+  isIdle,
+  lineInputs,
+  mergedWeight,
+  type LineInput,
+} from './capability'
 
 const CONTRACT = [
   { code: 'ct', name: '电信' },
@@ -96,6 +103,61 @@ describe('isDivergent', () => {
   })
 })
 
+/*
+ * `cloudflare_dns`（普通 A / AAAA 轮换）**把五条全合成一条** —— 这一组验的是
+ * 上面那些判断在那个形状下同样成立。
+ *
+ * 它不是「多一条以防万一」：分叉在这一档**几乎必然发生**。灰度上真出过 ——
+ * 从 `cloudflare`（LB）换过来的人，库里存的是 LB 那家能表达的形状
+ * （只要求 ct/cu/cm 一致，tw 与 ov 各自独立），而纯 DNS 表达不了它。
+ * 后端拒绝推送并说「电信 与 台湾 不一致」，**而人在这一页上看不到那件事** ——
+ * 除非这个横幅出来。
+ */
+describe('五条合并成一条（cloudflare_dns）', () => {
+  const ALL = {
+    code: 'all',
+    name: '全部（不分线路）',
+    covers: ['ct', 'cu', 'cm', 'tw', 'ov'],
+  }
+  const g = lineInputs(CONTRACT, [ALL])[0]!
+
+  it('五条都一致：不分叉', () => {
+    const w = { ct: { a: 50 }, cu: { a: 50 }, cm: { a: 50 }, tw: { a: 50 }, ov: { a: 50 } }
+    expect(isDivergent(w, g)).toBe(false)
+  })
+
+  /*
+   * **只有末两条不一致也要算分叉。** 从 LB 换过来正是这个形状：前三条被那家
+   * 要求一致，后两条各自独立 —— 如果判断只看前几条，这个真实场景恰好逃掉。
+   */
+  it('前三条一致而 tw / ov 不同：算分叉', () => {
+    const w = { ct: { a: 60 }, cu: { a: 60 }, cm: { a: 60 }, tw: { a: 100 }, ov: { a: 40 } }
+    expect(isDivergent(w, g)).toBe(true)
+  })
+
+  /*
+   * **合并框显示第一条被覆盖线路的值，不是平均也不是空。**
+   *
+   *   平均 → 五条变成一个谁也没配过的数，悄悄改了人的意图
+   *   空/0 → 保存之后所有节点退出轮换，那是一次全体摘解析
+   *
+   * 取第一条至少是他配过的值，而「其余四条会被这个值覆盖」由横幅说出来。
+   */
+  it('合并框取第一条被覆盖线路的值', () => {
+    const w = { ct: { a: 60 }, cu: { a: 30 }, cm: { a: 10 }, tw: { a: 100 }, ov: { a: 40 } }
+    expect(mergedWeight(w, g, 'a')).toBe(60)
+  })
+
+  /*
+   * 某条线路里压根没有这个节点时跳过它，继续往后找 —— 而不是当成 0。
+   * 当成 0 的话，一个「只在 ov 配过」的节点会被显示成 0，而人一保存它就真成 0 了。
+   */
+  it('前面几条没有这个节点时，取第一个有值的', () => {
+    const w = { ct: {}, cu: {}, cm: {}, tw: {}, ov: { a: 40 } }
+    expect(mergedWeight(w, g, 'a')).toBe(40)
+  })
+})
+
 describe('isIdle —— 这条解析线路上有没有流量真的被分出去', () => {
   const g: LineInput = { code: 'cn', name: '中国', covers: ['ct', 'cu', 'cm'], supported: true }
   const on = (id: string) => ({ id, dnsEnabled: true })
@@ -127,5 +189,55 @@ describe('isIdle —— 这条解析线路上有没有流量真的被分出去',
     // 两种状态要说不同的话：空线路该说「还没有节点」，
     // 而 idle 说的是「节点在这儿，但你还没给它配权重」。
     expect(isIdle({}, g, [])).toBe(false)
+  })
+})
+
+describe('computeShares', () => {
+  const e = (node: string, enabled: boolean, weight: number) => ({ node, enabled, weight })
+
+  it('按权重算，退出解析的不进分母', () => {
+    const m = computeShares([e('a', true, 60), e('b', true, 40), e('c', false, 100)], true)
+    expect(m.get('a')).toBe(60)
+    expect(m.get('b')).toBe(40)
+    expect(m.get('c')).toBe(0)
+  })
+
+  /*
+   * **这一条是我漏过一次的那半。**
+   *
+   * 把权重输入框换成「轮换」两个字之后，我以为就说清楚了 —— 而占比条还在按
+   * 库里的权重画 60/40。那正是后端当初拒绝默默取等权时担心的：
+   * **界面画着 60/40 而实际是轮询，而那种不一致没有任何地方会说出来。**
+   *
+   * 库里那些权重仍然存着（换回 DNSPod 还要用），但普通 A / AAAA 记录只有
+   * 「在或不在」—— 这里画的必须是**将会发生的事**。
+   */
+  it('表达不了权重时均分，而不是按库里的权重画', () => {
+    const m = computeShares([e('a', true, 60), e('b', true, 40), e('c', true, 0)], false)
+    expect(m.get('a')).toBe(m.get('b'))
+    expect(m.get('b')).toBe(m.get('c'))
+    expect(m.get('a')).toBeCloseTo(33.3, 1)
+  })
+
+  it('表达不了权重时，退出解析的仍然是 0 —— 均分只在参与的之间', () => {
+    const m = computeShares([e('a', true, 60), e('b', true, 40), e('c', false, 100)], false)
+    expect(m.get('a')).toBe(50)
+    expect(m.get('b')).toBe(50)
+    expect(m.get('c')).toBe(0)
+  })
+
+  /*
+   * 权重全是 0 时不要除以零。按权重算那一支给 0（那是真的：谁都分不到），
+   * 而均分那一支照样均分 —— **轮换不看权重，全 0 也照转**。
+   */
+  it('权重全 0：按权重算是 0，而轮换照样均分', () => {
+    const zeros = [e('a', true, 0), e('b', true, 0)]
+    expect(computeShares(zeros, true).get('a')).toBe(0)
+    expect(computeShares(zeros, false).get('a')).toBe(50)
+  })
+
+  it('一个参与的都没有：不炸，全 0', () => {
+    const m = computeShares([e('a', false, 60)], false)
+    expect(m.get('a')).toBe(0)
   })
 })
