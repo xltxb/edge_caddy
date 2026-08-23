@@ -70,3 +70,27 @@ export function canToggleDns(n: EdgeNode): { ok: boolean; reason: string } {
       : '该节点已被下线，先「重新上线」再恢复解析',
   }
 }
+
+/**
+ * 能不能删这条记录。**必须先下线**，与 `canToggleDns` 同一个理由置灰：
+ * 一道人人都会撞到的拒绝，说明那个按钮不该能按。
+ *
+ * **但这一条和「危险操作二次确认」是两种东西**，别照那个写措辞。
+ *
+ * 一台还连着的机器手里有隧道证书。删掉记录之后它会重连、被按证书认出来、
+ * 然后在一张不存在的行上写心跳 —— `TouchHeartbeat` 是 UPDATE，影响 0 行，
+ * **不报错**。结果是一台连着、在服务、而控制台上看不见的机器。下线会断隧道
+ * 并拒绝它重连（ADR-0014），所以下线是这个操作**真正的前提**。
+ *
+ * 判据（后端 `docs/agents/domain.md`）：
+ * **去掉这个检查会产生不一致的状态 → 那是前提；只是「后果严重」→ 那才是确认。**
+ * 前提要说「先做那件事」，确认要说「你确定吗」——写反了，人会以为自己在被
+ * 劝阻，然后找地方跳过它。
+ */
+export function canDelete(n: EdgeNode): { ok: boolean; reason: string } {
+  if (n.drainedAt) return { ok: true, reason: '' }
+  return {
+    ok: false,
+    reason: '先下线这台节点再删。它现在还连着，删掉记录它会重连并在一张不存在的行上写心跳',
+  }
+}

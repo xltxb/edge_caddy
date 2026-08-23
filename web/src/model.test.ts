@@ -9,6 +9,7 @@ const wire = (over: Partial<NodeWire> = {}): NodeWire => ({
   line: 'CN2 GIA',
   public_ip: '203.0.113.7',
   status: 'ok',
+  online: true,
   cpu: 15.2,
   mem: 32.8,
   conns: 12400,

@@ -5,13 +5,19 @@ import { fromNodeWire, isZeroTime } from '@/model'
 import type { HeartbeatFrame, NodeWire } from '@/api/types'
 
 const getMock = vi.fn()
+const putMock = vi.fn()
+const delMock = vi.fn()
 vi.mock('@/api/http', () => ({
   http: {
     get: (...a: unknown[]) => getMock(...a),
     post: vi.fn(),
-    put: vi.fn(),
-    del: vi.fn(),
+    put: (...a: unknown[]) => putMock(...a),
+    del: (...a: unknown[]) => delMock(...a),
   },
+  // store 确实 import 了它（fetchAll 的 catch 用），mock 里缺了就只有走到那条
+  // 路径才炸 —— 而那正是「失败路径没人测」的那种炸法
+  errorText: (e: unknown, fallback = '操作失败') =>
+    e instanceof Error && e.message ? e.message : fallback,
 }))
 
 const wire = (id: string, cfg: string, over: Partial<NodeWire> = {}): NodeWire => ({
@@ -21,6 +27,7 @@ const wire = (id: string, cfg: string, over: Partial<NodeWire> = {}): NodeWire =
   line: 'CN2 GIA',
   public_ip: '203.0.113.7',
   status: 'ok',
+  online: true,
   cpu: 10,
   mem: 20,
   conns: 100,
@@ -242,5 +249,166 @@ describe('下线与离线各记各的', () => {
     expect(postMock).toHaveBeenCalledWith('/nodes/node-hk-01/rejoin')
     expect(r.drained_at).toBeNull()
     expect(r.dns_enabled).toBe(false)
+  })
+
+  describe('改元数据', () => {
+    beforeEach(() => putMock.mockReset())
+
+    /*
+     * **发出去的 body 里不能有 node_id。**
+     *
+     * 类型上挡着（`NodeUpdateBody` 没有那个键），但类型只管调用点写死的对象；
+     * 真正发出去的是 store 转手的那一份，而 `{ ...form }` 这种写法会把表单上
+     * 多出来的任何键一起带走。后端严格绑定，带了整个请求被 1001 拒 ——
+     * 而那件事今天只在运行时才知道。
+     */
+    it('body 只有四项，不含 node_id', async () => {
+      putMock.mockResolvedValue({
+        id: 'node-a',
+        city: '新加坡',
+        vendor: 'V.PS',
+        line: 'CMIN2',
+        public_ip: '203.0.113.9',
+        dns_synced: true,
+        detail: '公网 IP 已改（203.0.113.7 → 203.0.113.9），解析已同步到服务商',
+      })
+      const store = useNodesStore()
+      store.items = [fromNodeWire(wire('node-a', 'cfg-1'))]
+
+      await store.updateNode('node-a', {
+        city: '新加坡',
+        vendor: 'V.PS',
+        line: 'CMIN2',
+        public_ip: '203.0.113.9',
+      })
+
+      const [path, body] = putMock.mock.calls[0]!
+      expect(path).toBe('/nodes/node-a')
+      expect(Object.keys(body as object).sort()).toEqual([
+        'city',
+        'line',
+        'public_ip',
+        'vendor',
+      ])
+    })
+
+    it('就地更新那四项，不重拉全表', async () => {
+      putMock.mockResolvedValue({
+        id: 'node-a',
+        city: '新加坡',
+        vendor: 'V.PS',
+        line: 'CMIN2',
+        public_ip: '203.0.113.9',
+        dns_synced: true,
+        detail: '解析已同步',
+      })
+      getMock.mockReset()
+      const store = useNodesStore()
+      store.items = [fromNodeWire(wire('node-a', 'cfg-1'))]
+
+      await store.updateNode('node-a', {
+        city: '新加坡',
+        vendor: 'V.PS',
+        line: 'CMIN2',
+        public_ip: '203.0.113.9',
+      })
+
+      const n = store.items[0]!
+      expect([n.city, n.vendor, n.line, n.ip]).toEqual([
+        '新加坡',
+        'V.PS',
+        'CMIN2',
+        '203.0.113.9',
+      ])
+      // 重拉会把整页的心跳年龄、CPU 序列一起换掉 —— 改个城市名不该让满屏数字跳一下
+      expect(getMock).not.toHaveBeenCalled()
+    })
+
+    /*
+     * **dns_synced 原样交回调用方，store 不替它判成败。**
+     *
+     * `false` 有两种完全不同的意思：「这次改动跟解析无关」（detail 空串）和
+     * 「解析该变而没变成」（detail 有话）。store 判不了 —— 那取决于人到底改没改
+     * IP，而 store 手上只有一个布尔和一句话。在这里替它判，就是在最没有信息的
+     * 地方做那个决定。
+     */
+    it('dns_synced 与 detail 原样返回，不在 store 里判成败', async () => {
+      putMock.mockResolvedValue({
+        id: 'node-a',
+        city: '香港',
+        vendor: 'DMIT PPro',
+        line: 'CN2 GIA',
+        public_ip: '203.0.113.7',
+        dns_synced: false,
+        detail: '',
+      })
+      const store = useNodesStore()
+      store.items = [fromNodeWire(wire('node-a', 'cfg-1'))]
+
+      const r = await store.updateNode('node-a', {
+        city: '香港',
+        vendor: 'DMIT PPro',
+        line: 'CN2 GIA',
+        public_ip: '203.0.113.7',
+      })
+
+      expect(r.dns_synced).toBe(false)
+      expect(r.detail).toBe('')
+    })
+  })
+
+  describe('删记录', () => {
+    beforeEach(() => delMock.mockReset())
+
+    it('删完就地移除那一行，不等下一轮请求', async () => {
+      delMock.mockResolvedValue({ id: 'node-a', detail: '已删除记录。注意那台机器上的…' })
+      getMock.mockReset()
+      const store = useNodesStore()
+      store.items = [
+        fromNodeWire(wire('node-a', 'cfg-1')),
+        fromNodeWire(wire('node-b', 'cfg-1')),
+      ]
+
+      await store.removeNode('node-a')
+
+      expect(store.items.map((n) => n.id)).toEqual(['node-b'])
+      expect(delMock).toHaveBeenCalledWith('/nodes/node-a')
+      expect(getMock).not.toHaveBeenCalled()
+    })
+
+    /*
+     * detail 要原样交回去 —— 它说的是这个操作**只做了一半**：记录没了，而那台
+     * 机器上的 Agent 与 Caddy 还在跑。store 把它吞掉的话，界面就没有第二个
+     * 地方能知道这件事。
+     */
+    it('detail 原样返回 —— 那是「另一半没做」的唯一出处', async () => {
+      const detail =
+        '已删除记录。注意那台机器上的 Agent 与 Caddy 还在跑，要真正撤掉在那台机器上执行：sudo ./edge-node.sh uninstall'
+      delMock.mockResolvedValue({ id: 'node-a', detail })
+      const store = useNodesStore()
+      store.items = [fromNodeWire(wire('node-a', 'cfg-1'))]
+
+      const r = await store.removeNode('node-a')
+
+      expect(r.detail).toBe(detail)
+    })
+
+    it('删失败时那一行还在 —— 不能先删界面再等结果', async () => {
+      // mockRejectedValue 会**立刻**建出那个 rejected promise，在 await 到它
+      // 之前就先被判成 unhandled rejection。调用时才建，就没有那个窗口。
+      delMock.mockImplementationOnce(() => Promise.reject(new Error('该节点还连着，先下线再删')))
+      const store = useNodesStore()
+      store.items = [fromNodeWire(wire('node-a', 'cfg-1'))]
+
+      let caught: unknown = null
+      try {
+        await store.removeNode('node-a')
+      } catch (e) {
+        caught = e
+      }
+
+      expect((caught as Error).message).toContain('先下线')
+      expect(store.items.map((n) => n.id)).toEqual(['node-a'])
+    })
   })
 })

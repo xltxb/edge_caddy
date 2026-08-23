@@ -77,6 +77,12 @@ const node = (
   line,
   public_ip,
   status,
+  /*
+   * mock 里让它跟着 status 走 —— 正常情况下两者本来就一致（与 caddyAdmin 的
+   * 做法同源）。**要造两者不一致的场景，在用例里 override 它**：那是线上真出过
+   * 的形状（status 停在 ok 而隧道早断了），不是默认值该长的样子。
+   */
+  online: status !== 'down',
   cpu,
   mem,
   conns,

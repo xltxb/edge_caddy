@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canToggleDns, nodeFlags } from './flags'
+import { canDelete, canToggleDns, nodeFlags } from './flags'
 import type { EdgeNode } from '@/model'
 
 const node = (over: Partial<EdgeNode> = {}): EdgeNode => ({
@@ -9,6 +9,7 @@ const node = (over: Partial<EdgeNode> = {}): EdgeNode => ({
   line: 'CN2 GIA',
   ip: '203.0.113.7',
   status: 'ok',
+  online: true,
   cpu: 10,
   mem: 20,
   conns: 100,
@@ -116,5 +117,49 @@ describe('已下线的节点，解析开关两个方向都不该能按', () => {
   it('没下线：两个方向都正常可按', () => {
     expect(canToggleDns(node({ dnsEnabled: false })).ok).toBe(true)
     expect(canToggleDns(node({ dnsEnabled: true })).ok).toBe(true)
+  })
+})
+
+describe('删记录的前提是「已下线」，不是「已离线」', () => {
+  /*
+   * 这一组守的是一个**容易被写对结论、写错判据**的地方。
+   *
+   * 判据必须是 `drainedAt`（意图），不能是 `status === 'down'`（观察）——
+   * 而两者在「一台挂掉的机器」上恰好同时成立，所以拿那台机器测，写错也是绿的。
+   * 下面第二条专门造出**只有观察成立**的那台机器：心跳超时判定为 down，
+   * 但没人下线过它。
+   *
+   * 为什么那台不能删：down 只说明主控连着几个周期没收到心跳，**隧道随时可能
+   * 回来**（Agent 的 Restart=always 会一直重连）。只有 drain 会断隧道并拒绝
+   * 重连（ADR-0014）。删掉一台还会重连的机器的记录，它会被按证书认出来、
+   * 然后在一张不存在的行上写心跳 —— UPDATE 影响 0 行，不报错。
+   */
+  it('已下线：可以删', () => {
+    expect(canDelete(node({ drainedAt: AT })).ok).toBe(true)
+  })
+
+  it('离线但没下线：仍然不能删 —— 判据是意图不是观察', () => {
+    const r = canDelete(node({ status: 'down', online: false, drainedAt: null }))
+    expect(r.ok).toBe(false)
+    expect(r.reason).toContain('先下线')
+  })
+
+  it('在线且没下线：不能删', () => {
+    expect(canDelete(node({ status: 'ok', drainedAt: null })).ok).toBe(false)
+  })
+
+  /*
+   * **措辞是前提，不是劝阻。**
+   *
+   * 判据（后端 domain.md）：去掉这个检查会产生不一致的状态 → 那是前提；
+   * 只是「后果严重」→ 那才是确认。写成「你确定吗 / 不可撤销」，人会以为自己
+   * 在被劝阻，然后去找地方跳过它 —— 而这一条是跳不得的。
+   *
+   * 这条测试挡的是**把 reason 改成劝阻话术**：那种改动不会让上面三条变红。
+   */
+  it('拒绝的话说的是「先做那件事」，不是「你确定吗」', () => {
+    const r = canDelete(node({ drainedAt: null }))
+    expect(r.reason).toContain('先下线')
+    expect(r.reason).not.toMatch(/确定|不可撤销|谨慎|危险/)
   })
 })

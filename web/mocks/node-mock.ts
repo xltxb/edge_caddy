@@ -138,6 +138,37 @@ function dnsSync() {
   return { ok: true, at: new Date().toISOString(), detail: '解析安排已同步到服务商' }
 }
 
+/**
+ * 两个字符串是不是**同一个 IP**。
+ *
+ * 不能直接比字符串：`2001:db8::1` 和 `2001:0db8:0:0:0:0:0:1` 是同一个地址而
+ * 写法不同。真后端比的是 `net.IP.Equal`，mock 这边借浏览器/Node 都有的 URL
+ * 解析器做同一件事 —— 它会把 IPv6 归一到压缩小写形式。
+ *
+ * 解析不了就退回字符串比：那种输入已经被 `isIP` 挡在外面了，走到这里说明
+ * 两边都是合法 IP，退化路径只是不让它抛。
+ */
+function sameIP(a: string, b: string): boolean {
+  if (a === b) return true
+  try {
+    return new URL(`http://[${a}]`).hostname === new URL(`http://[${b}]`).hostname
+  } catch {
+    return false
+  }
+}
+
+/** 合法 IPv4 / IPv6。写错的值不会在这里出事，会在下一次同步解析时出事。 */
+function isIP(v: string): boolean {
+  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(v)) {
+    return v.split('.').every((p) => Number(p) <= 255 && String(Number(p)) === p)
+  }
+  try {
+    return new URL(`http://[${v}]`).hostname.length > 0
+  } catch {
+    return false
+  }
+}
+
 export async function handleNodes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -167,6 +198,133 @@ export async function handleNodes(
         token,
         expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
         install_cmd: `curl -fsSL https://ec.internal/install.sh | sudo bash -s -- --token ${token} --master ec.internal:9000 --node-id ${String(b.node_id ?? '')}`,
+      }),
+      true
+    )
+  }
+
+  const one = /^\/api\/v1\/nodes\/([^/]+)$/.exec(path)
+
+  if (m === 'PUT' && one) {
+    const id = decodeURIComponent(one[1]!)
+    const node = nodeState.nodes.find((n) => n.id === id)
+    if (!node) return failCode(res, 1003, '找不到这个节点'), true
+
+    const b = await readBody(req)
+
+    /*
+     * **严格绑定要在 mock 里也严格**，否则 dev 下发得出去、线上被 1001 拒。
+     * 后端的报错会点名那个字段，这里照做 —— 一条说不清是哪个字段的 1001，
+     * 等于没有这条错误。
+     */
+    const forbidden = ['node_id', 'status', 'dns_enabled', 'drained_at', 'online'].filter(
+      (k) => k in b,
+    )
+    if (forbidden.length) {
+      return failCode(res, 1001, `这些字段不能改：${forbidden.join('、')}`), true
+    }
+
+    const fields = ['city', 'vendor', 'line', 'public_ip'] as const
+    const missing = fields.filter((k) => typeof b[k] !== 'string' || !(b[k] as string).trim())
+    if (missing.length) {
+      return failCode(res, 1002, `${missing.join('、')} 不能为空`), true
+    }
+
+    const nextIP = (b.public_ip as string).trim()
+    if (!isIP(nextIP)) {
+      return failCode(res, 1002, `${nextIP} 不是合法的 IP 地址`), true
+    }
+
+    /*
+     * **按 IP 的值比，不按字符串比。** `2001:db8::1` 和 `2001:0db8:0:0:0:0:0:1`
+     * 是同一个地址而字符串不同 —— 按字符串比会回报一句「203.0.113.7 →
+     * 203.0.113.7，解析已同步」这样字面为真、读起来是假话的 detail。
+     * 真后端用 net.IP.Equal，mock 跟上，否则这个坑只在线上出现。
+     */
+    const ipChanged = !sameIP(node.public_ip, nextIP)
+    const prevIP = node.public_ip
+
+    node.city = (b.city as string).trim()
+    node.vendor = (b.vendor as string).trim()
+    node.line = (b.line as string).trim()
+    node.public_ip = nextIP
+
+    log(id, 'info', `metadata updated by operator`)
+    pushEvent(deps, id, 'ok', `${id} 的信息已修改`)
+
+    return (
+      ok(res, {
+        id,
+        city: node.city,
+        vendor: node.vendor,
+        line: node.line,
+        public_ip: node.public_ip,
+        dns_synced: ipChanged,
+        // 只改城市/机房/线路时是空串 —— **那不是失败**，是这次改动跟解析无关
+        detail: ipChanged ? `公网 IP 已改（${prevIP} → ${nextIP}），解析已同步到服务商` : '',
+      }),
+      true
+    )
+  }
+
+  if (m === 'DELETE' && one) {
+    const id = decodeURIComponent(one[1]!)
+    const node = nodeState.nodes.find((n) => n.id === id)
+    if (!node) return failCode(res, 1003, '找不到这个节点'), true
+
+    /*
+     * **必须先下线。** 不是礼节性确认：还连着的机器手里有隧道证书，删掉记录
+     * 之后它会重连、被按证书认出来、然后在一张不存在的行上写心跳（UPDATE 影响
+     * 0 行，不报错）—— 一台连着、在服务、而控制台上看不见的机器。
+     *
+     * **2001 状态冲突**，与「对已下线节点开解析或签 Token」同一类。
+     *
+     * 这里一度写的是 3002：契约的端点小节里那个数字是错的（§0.3 的码表说
+     * 3002 是「节点不可达」，而这里拒绝的理由恰恰是那台机器**还连着** ——
+     * 两句话正好说反），而真后端的 `handleDeleteNode` 从头到尾返回的都是
+     * `CodeStateConflict`。我照契约复刻了 mock，于是**替身错得和文档一样，
+     * 而两边都跟实现对不上**。
+     *
+     * 接住它的不是任何测试：后端的 e2e 断言 `code != CodeOK`，只验「被拒了」，
+     * 不验「以什么理由被拒」—— 而前者在任何一种失败下都成立，包括理由完全
+     * 错了的那些。**「被拒了」不是断言，「以什么理由被拒」才是。**
+     *
+     * **这个数字前端这边没有东西守着，而且不该有。**
+     *
+     * 想过用 `check-premises`（它专门去问真主控，还有「预期被拒，不会入库」
+     * 那个模式）。但验「未下线不让删」的唯一办法，是真的去删一台未下线的节点
+     * —— 而**那道检查一旦失效，代价正是这条检查本身要防的事故**：一台还在跑的
+     * 机器记录没了，变成幽灵。check-premises 打的是真主控，风险不对称。
+     *
+     * 所以这里靠的是**替身跟着观测走**，不是跟着理解走。真后端的
+     * `handleDeleteNode` 返回 `CodeStateConflict`，后端那边有测试钉住具体的码；
+     * 这边照抄那个值和那句 msg。改动它之前先去看一眼后端返回的到底是什么。
+     */
+    if (!node.drained_at) {
+      return (
+        failCode(
+          res,
+          2001,
+          '先「下线」这个节点再删除 —— 还连着的机器会带着隧道证书重连，' +
+            '而它的记录已经没了，结果是一台连着却看不见的机器',
+        ),
+        true
+      )
+    }
+
+    nodeState.nodes = nodeState.nodes.filter((n) => n.id !== id)
+    delete nodeState.logs[id]
+    delete nodeState.caddyAdmin[id]
+    // 跟着删的：解析权重。它是「关于这台机器此刻的安排」，机器没了就没有意义。
+    for (const line of Object.values(nodeState.weights)) delete line[id]
+
+    pushEvent(deps, id, 'warn', `${id} 的记录已删除`)
+
+    return (
+      ok(res, {
+        id,
+        detail:
+          '已删除记录。注意那台机器上的 Agent 与 Caddy 还在跑，要真正撤掉在那台机器上执行：sudo ./edge-node.sh uninstall',
       }),
       true
     )

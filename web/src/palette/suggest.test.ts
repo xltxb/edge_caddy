@@ -9,6 +9,7 @@ const node = (id: string, over: Partial<EdgeNode> = {}): EdgeNode => ({
   line: 'CN2 GIA',
   ip: '203.0.113.7',
   status: 'ok',
+  online: true,
   cpu: 10,
   mem: 20,
   conns: 100,

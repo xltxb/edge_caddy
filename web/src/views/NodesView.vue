@@ -3,7 +3,9 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { errorText } from '@/api/http'
 import { useRoute } from 'vue-router'
 import AddNodeModal from '@/components/nodes/AddNodeModal.vue'
+import DeleteNodeConfirm from '@/components/nodes/DeleteNodeConfirm.vue'
 import DrainConfirm from '@/components/nodes/DrainConfirm.vue'
+import EditNodeModal from '@/components/nodes/EditNodeModal.vue'
 import SparkLine from '@/components/console/SparkLine.vue'
 import VStatusPill from '@/components/base/VStatusPill.vue'
 import { useNodesStore } from '@/stores/nodes'
@@ -12,7 +14,7 @@ import { useUiStore } from '@/stores/ui'
 import { hbAgeSec, type EdgeNode } from '@/model'
 import { fmtClock, fmtConns, fmtHbAge } from '@/utils/format'
 import type { DrainStep } from '@/api/types'
-import { canToggleDns, nodeFlags } from '@/nodes/flags'
+import { canDelete, canToggleDns, nodeFlags } from '@/nodes/flags'
 
 const route = useRoute()
 const nodes = useNodesStore()
@@ -24,6 +26,8 @@ const open = ref<Set<string>>(new Set())
 const query = ref('')
 const drainTarget = ref<string | null>(null)
 const addOpen = ref(false)
+const editTarget = ref<string | null>(null)
+const deleteTarget = ref<string | null>(null)
 
 /** 每秒走一次的本地时钟，只为让「心跳 N 秒前」自己往前跑。 */
 const now = ref(Date.now())
@@ -38,6 +42,7 @@ const now = ref(Date.now())
 const dnsSyncOk = computed(() => nodes.dnsSync?.ok ?? null)
 const flagsOf = (n: EdgeNode) => nodeFlags(n, dnsSyncOk.value)
 const dnsGate = (n: EdgeNode) => canToggleDns(n)
+const delGate = (n: EdgeNode) => canDelete(n)
 let ticker: ReturnType<typeof setInterval> | null = null
 
 onMounted(() => {
@@ -164,6 +169,38 @@ const drainNode = computed(() =>
   drainTarget.value ? nodes.byId.get(drainTarget.value) : undefined,
 )
 
+const editNode = computed(() => (editTarget.value ? nodes.byId.get(editTarget.value) : undefined))
+
+/**
+ * 删除的 detail **不进 toast**，理由与下线的三步结果相同。
+ *
+ * 那句话说的是这个操作只做了一半 —— 记录没了，而那台机器上的 Agent 与 Caddy
+ * 还在跑，要真正撤掉得上那台机器执行 uninstall。**要人照着做的东西不能自己
+ * 走掉**，何况里面有一条要复制的命令。
+ */
+const deleteResult = ref<string | null>(null)
+
+async function onDelete(): Promise<void> {
+  const id = deleteTarget.value
+  if (!id) return
+  try {
+    const r = await nodes.removeNode(id)
+    deleteResult.value = r.detail
+    // 那一行已经没了，展开状态跟着清掉，否则下次同名节点接入会诡异地默认展开
+    const next = new Set(open.value)
+    next.delete(id)
+    open.value = next
+  } catch (e) {
+    ui.toast('warn', '删除失败', errorText(e, ''))
+    deleteTarget.value = null
+  }
+}
+
+function closeDelete(): void {
+  deleteTarget.value = null
+  deleteResult.value = null
+}
+
 const LEVEL_COLOR: Record<string, string> = {
   debug: 'var(--text-faint)',
   info: 'var(--text-muted)',
@@ -273,6 +310,30 @@ const LEVEL_COLOR: Record<string, string> = {
                   <!-- detail 是后端给的原话，不要自己编：它区分「没配服务商」和「同步失败了」 -->
                   <span v-if="dnsSyncOk === false" class="warn">· {{ nodes.dnsSync!.detail }}</span>
                 </dd>
+                <!--
+                  **隧道与状态并列摆着，让它们的不一致能被看见。**
+
+                  两个字段回答不同的问题：status 问「这台机器健康吗」（心跳判定，
+                  有去抖），隧道问「这条连接此刻通吗」（会话表，实时）。契约 §4：
+                  **短暂不一致正常**（那就是去抖窗口），**持续不一致是 bug**。
+
+                  2026-08-23 线上一台机器 31 分钟没心跳而徽标显示「在线」——
+                  主控重启后 health 的内存 map 清空，已失联的节点永远进不去，
+                  status 就永久停在库里的 ok，而隧道一直诚实地报着未连接。
+                  **两个字段早就在打架，只是界面上没有一处把它们放在一起。**
+
+                  这里只陈述事实，不替人判定「这是不是 bug」—— 那需要去抖窗口
+                  （心跳间隔 × 离线阈值）当阈值，而这一页没有那两个值。在这儿
+                  写死一个秒数，设置改了它不会跟着改，也不会有任何东西变红。
+                -->
+                <dt>隧道</dt>
+                <dd :class="{ warn: !n.online }">
+                  {{ n.online ? '已连接' : '未连接' }}
+                  <span v-if="!n.online && n.status !== 'down'" class="warn">
+                    · 而状态是「{{ n.status === 'ok' ? '在线' : '异常' }}」，两者不一致；
+                    短暂如此是判定的去抖窗口，持续如此要查主控
+                  </span>
+                </dd>
               </dl>
 
               <div class="col-title">Caddy Admin</div>
@@ -352,6 +413,28 @@ const LEVEL_COLOR: Record<string, string> = {
             <button v-else class="mini danger" type="button" @click="drainTarget = n.id">
               下线节点
             </button>
+
+            <button class="mini" type="button" @click="editTarget = n.id">修改信息</button>
+
+            <!--
+              **未下线时置灰，理由与解析开关那条相同**：一道人人都会撞到的拒绝，
+              说明那个按钮不该能按。
+
+              但这一条**不是**「危险操作二次确认」。一台还连着的机器手里有隧道
+              证书，删掉记录之后它会重连、被按证书认出来、然后在一张不存在的行上
+              写心跳（UPDATE 影响 0 行，不报错）—— 那是一台连着、在服务、而控制台
+              上看不见的机器。所以 title 写的是「先做那件事」，不是「你确定吗」：
+              **写成劝阻的话，人会去找地方跳过它。**
+            -->
+            <button
+              class="mini danger"
+              type="button"
+              :disabled="!!nodes.busy[n.id] || !delGate(n).ok"
+              :title="delGate(n).reason"
+              @click="deleteTarget = n.id"
+            >
+              删除记录
+            </button>
           </div>
         </div>
       </li>
@@ -367,6 +450,17 @@ const LEVEL_COLOR: Record<string, string> = {
     @cancel="closeDrain"
     @confirm="onDrain"
   />
+  <EditNodeModal v-if="editNode" :node="editNode" @close="editTarget = null" />
+
+  <DeleteNodeConfirm
+    v-if="deleteTarget"
+    :node-id="deleteTarget"
+    :busy="!!nodes.busy[deleteTarget]"
+    :result="deleteResult"
+    @cancel="closeDelete"
+    @confirm="onDelete"
+  />
+
   <AddNodeModal v-if="addOpen" @close="addOpen = false" />
 </template>
 

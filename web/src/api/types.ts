@@ -129,6 +129,24 @@ export interface NodeWire {
   line: string
   public_ip: string
   status: NodeStatus
+  /**
+   * **这条隧道此刻连着吗** —— 会话表里实时读的，没有去抖。
+   *
+   * 与 `status` 回答的是两个不同的问题：`status` 问「这台机器健康吗」，由心跳
+   * 判定产出、**有去抖**（连续错过 N 个周期才翻成 down）。所以两者**短暂不一致
+   * 是正常的**，那个窗口就是判定的去抖；**持续不一致是 bug**（契约 §4）。
+   *
+   * **界面上的在线徽标认 `status`，不认这个。** 它是排查用的辅助信号 ——
+   * 升格成第二个徽标就是在 ADR-0014 的正交模型上无理由地再加一维，而
+   * 「合成一个徽标运维半夜分不清该不该起床」那条论证，反过来同样约束着加维度。
+   *
+   * 这个字段从第一个切片起就在后端返回里，但直到 2026-08-23 才写进契约 ——
+   * 在那之前前端不知道它存在。那天线上一台机器 31 分钟没心跳而控制台显示
+   * 「在线」：主控重启后 health 的内存 map 清空，已失联的节点永远进不去，
+   * 于是 `status` 永久停在库里的旧值 `ok`，而 `online` 一直是诚实的 `false`。
+   * **两个字段早就在打架，只是没有一个地方把它们放在一起看。**
+   */
+  online: boolean
   cpu: number
   mem: number
   conns: number
@@ -507,6 +525,41 @@ export interface DnsSyncWire {
 export interface NodesPageWire extends Paged<NodeWire> {
   baseline: string
   dns_sync: DnsSyncWire
+}
+
+/**
+ * `PUT /nodes/:id` 的响应 —— 改元数据。
+ *
+ * **`dns_synced` 说的是解析真的变了，不是库里写成功了**，与 `DnsToggleWire`
+ * 同一条规矩。改 `public_ip` 会立刻把解析推到服务商，那一步可能失败（没配服务商、
+ * 服务商报错），而**库里的 IP 已经改了** —— 不呈现 `detail` 的话，人以为改完就
+ * 生效了，实际访问者还被送到旧地址。
+ *
+ * 只改城市/机房/线路时 `dns_synced` 是 `false`、`detail` 是空串。**那不是失败**，
+ * 是这次改动跟解析无关 —— 界面不能把它显示成一次没成功的操作。
+ */
+export interface NodeUpdateWire {
+  id: string
+  city: string
+  vendor: string
+  line: string
+  public_ip: string
+  dns_synced: boolean
+  detail: string
+}
+
+/**
+ * `DELETE /nodes/:id` 的响应 —— 只删记录，不碰那台机器。
+ *
+ * `detail` 里那句话**要原样显示**：它说的是这个操作**只做了一半** —— 记录没了，
+ * 而那台机器上的 Agent 与 Caddy 还在跑，还在监听 80/443、还在用最后一次拿到的
+ * 配置服务。人点完删除会以为干净了。
+ *
+ * **一个只做了一半的操作，必须自己说出另一半是什么。**
+ */
+export interface NodeDeleteWire {
+  id: string
+  detail: string
 }
 
 export interface DnsToggleWire {

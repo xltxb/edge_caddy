@@ -47,6 +47,19 @@
       ],
       "optional": []
     },
+    "PUT /nodes/:id": {
+      "required": [
+        "city",
+        "vendor",
+        "line",
+        "public_ip"
+      ],
+      "optional": []
+    },
+    "DELETE /nodes/:id": {
+      "required": [],
+      "optional": []
+    },
     "POST /routes": {
       "required": [
         "domain",

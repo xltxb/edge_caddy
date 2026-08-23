@@ -7,12 +7,15 @@ import type {
   DrainWire,
   HeartbeatFrame,
   LogLevel,
+  NodeDeleteWire,
   NodeTokenWire,
+  NodeUpdateWire,
   NodesPageWire,
   Paged,
   ProbeWire,
   RejoinWire,
 } from '@/api/types'
+import type { NodeUpdateBody } from '@/api/requests'
 import { fromNodeWire, type EdgeNode } from '@/model'
 
 /** sparkline 固定 12 点，追加时从头部挤掉最旧的。 */
@@ -191,6 +194,49 @@ export const useNodesStore = defineStore('nodes', () => {
     return http.post<NodeTokenWire>('/nodes/token', body)
   }
 
+  /**
+   * 改元数据。**四项都必填，而且发不出 node_id** —— 类型挡着（`NodeUpdateBody`）。
+   *
+   * 就地更新而不是重拉全表：响应里这四项都回了，而重拉会把整页的心跳年龄、
+   * CPU 序列一起换掉 —— 人刚改完一个城市名，满屏数字跳一下，看起来像发生了
+   * 别的事。
+   *
+   * **返回值要交给调用方**：`dns_synced` 为 false 有两种完全不同的意思
+   * （「这次改动跟解析无关」和「解析该变而没变成」），store 判不了，
+   * 那取决于人到底改没改 IP。
+   */
+  async function updateNode(id: string, body: NodeUpdateBody): Promise<NodeUpdateWire> {
+    const r = await withBusy(id, '保存中', () =>
+      http.put<NodeUpdateWire>(`/nodes/${encodeURIComponent(id)}`, body),
+    )
+    const n = items.value.find((x) => x.id === id)
+    if (n) {
+      n.city = r.city
+      n.vendor = r.vendor
+      n.line = r.line
+      n.ip = r.public_ip
+    }
+    return r
+  }
+
+  /**
+   * 删记录。**必须先下线**，否则后端拒绝。
+   *
+   * 那不是一道礼节性的确认：一台还连着的机器手里有隧道证书，删掉记录之后它会
+   * 重连、被按证书认出来、然后在一张不存在的行上写心跳 —— `TouchHeartbeat` 是
+   * UPDATE，影响 0 行，**不报错**。结果是一台连着、在服务、而控制台上看不见的
+   * 机器（契约 §4）。
+   *
+   * 成功后就地移除，不重拉：那一行已经不存在了，让它当场消失比等一轮请求诚实。
+   */
+  async function removeNode(id: string): Promise<NodeDeleteWire> {
+    const r = await withBusy(id, '删除中', () =>
+      http.del<NodeDeleteWire>(`/nodes/${encodeURIComponent(id)}`),
+    )
+    items.value = items.value.filter((x) => x.id !== id)
+    return r
+  }
+
   return {
     items,
     loading,
@@ -211,6 +257,8 @@ export const useNodesStore = defineStore('nodes', () => {
     drain,
     rejoin,
     issueToken,
+    updateNode,
+    removeNode,
     applyHeartbeat,
     recomputeDrift,
   }

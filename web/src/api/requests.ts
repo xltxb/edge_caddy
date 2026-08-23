@@ -89,6 +89,25 @@ export interface NodeTokenBody {
   public_ip: string
 }
 
+/**
+ * 契约 §4 `PUT /nodes/:id`：**能改的只有这四项，四项都必填。**
+ *
+ * **没有 `node_id`** —— 那是这台机器的身份，写在隧道证书的 CN 里（ADR-0009）。
+ * 改它等于换一台机器，那是「删掉再接一台」。后端严格绑定，带上它会被 1001 拒
+ * **并点名**。这里的类型就是那道护栏：`NodeTokenBody` 有 `node_id` 而这个没有，
+ * 两者字段只差一个，**照着上面那个改出来是最容易犯的错**。
+ *
+ * **也没有 `status` / `dns_enabled` / `drained_at`。** 那些是观察和意图，各有
+ * 自己的写入路径（ADR-0014）。一个能改 `status` 的编辑框会让人以为可以手工把
+ * 死机器改成在线 —— 而那台机器不会因此活过来。
+ */
+export interface NodeUpdateBody {
+  city: string
+  vendor: string
+  line: string
+  public_ip: string
+}
+
 export interface RouteCreateBody {
   domain: string
   upstream: string
@@ -204,6 +223,12 @@ export const REQUEST_SHAPES: Record<string, Shape> = {
     required: ['node_id', 'city', 'vendor', 'line', 'public_ip'],
     optional: [],
   }),
+  /* 四项都必填，且**没有 node_id** —— 理由在 NodeUpdateBody 的注释里。 */
+  'PUT /nodes/:id': shape<NodeUpdateBody>()({
+    required: ['city', 'vendor', 'line', 'public_ip'],
+    optional: [],
+  }),
+  'DELETE /nodes/:id': { required: [], optional: [] },
 
   'POST /routes': shape<RouteCreateBody>()({
     required: ['domain', 'upstream', 'block_mode', 'mtls', 'compress', 'body_max', 'whitelist'],

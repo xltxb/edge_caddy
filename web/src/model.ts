@@ -31,6 +31,19 @@ export interface EdgeNode {
   line: string
   ip: string
   status: NodeStatus
+  /**
+   * 隧道此刻连着吗（实时，无去抖）。**徽标不认它，认 status。**
+   *
+   * 留着是为了让它与 status 的不一致**能被人看见**：契约 §4 明写短暂不一致
+   * 正常（那是判定的去抖窗口）、持续不一致是 bug。2026-08-23 那次就是持续
+   * 不一致，而界面上没有任何一处能看出来。
+   *
+   * **前端不判定「这是不是 bug」** —— 那要拿去抖窗口（`heartbeat_interval_s ×
+   * offline_threshold_count`）当阈值，而这一页没有那两个值，只有设置页有。
+   * 在这里写死一个秒数就是第二份知识：设置改了它不会跟着改，也不会有任何东西
+   * 变红。所以详情里只把两个事实并列摆出来，判断留给人。
+   */
+  online: boolean
   cpu: number
   mem: number
   conns: number
@@ -72,6 +85,7 @@ export function fromNodeWire(w: NodeWire, stampedAt = Date.now()): EdgeNode {
     line: w.line,
     ip: w.public_ip,
     status: w.status,
+    online: w.online ?? false,
     cpu: w.cpu,
     mem: w.mem,
     conns: w.conns,
