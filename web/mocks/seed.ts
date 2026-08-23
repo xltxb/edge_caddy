@@ -155,6 +155,15 @@ export const events: EventWire[] = [
   ev(370, null, 'info', '管理员 abiu 修改 api.example.com 白名单，新增 2 个 IP'),
 ]
 
+/**
+ * 主控自己的构建版本（契约 §3）。**mock 此前漏了它** —— `check:shapes` 接进
+ * 检查链、主控重启之后才报出来。
+ *
+ * 未打标的构建是 `"dev"` 而不是空串：空白读起来像「这个字段还没做」，
+ * 而不是「这是个未打标的构建」。
+ */
+export const MASTER_VERSION = 'cfg-dev (mock)'
+
 export const kpi = () => ({
   // 三档由这一处同时算出来，保证 online + warn + down == total。
   // 真后端也是一条语句产出的（契约 §3），前端不再自行推导。
@@ -389,6 +398,18 @@ export const settings: SettingsWire & Record<string, unknown> = {
   warn_mem_pct: 90,
   // 凭证只写入不回显：这里永远没有明文，只有「配没配」
   dns_provider: { kind: 'cloudflare', domain: 'example.com', sub: '', credential_mode: 'api_token', configured: true },
+  /*
+   * 照契约 §11 抄的 —— **而这一份是这条链上唯一没有机械保障的一段**：
+   * 真主控那边它由 MissingFields 求值得出，到了这里是我手抄的。
+   * `check:shapes` 只比形状不比值，抄错了不会红。抄的时候看着契约。
+   */
+  dns_provider_requirements: {
+    dnspod: { '': ['domain', 'credential'] },
+    cloudflare: {
+      api_token: ['domain', 'credential', 'account_id', 'zone_id'],
+      global_key: ['domain', 'credential', 'account_id', 'zone_id', 'email'],
+    },
+  },
   ops_bot_token_configured: true,
 }
 

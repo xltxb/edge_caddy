@@ -116,6 +116,20 @@ export interface OverviewWire {
    * （漂移节点会把它带偏）。在后端补上之前，mock 按这个形状给。
    */
   baseline: string
+  /**
+   * **主控自己的构建版本**（契约 §3）。
+   *
+   * 加它的理由是 2026-08-23 那次复验卡住的地方：那台机器 31 分钟没心跳而控制台
+   * 显示「在线」，修复提交了，而我分不清**「修得不对」和「根本没部署」** ——
+   * 两者产生的观测一模一样，而处置完全相反。节点侧早就有 `agent_version`，
+   * 主控侧此前没有对应的东西。
+   *
+   * 未打标的构建是 `"dev"` 而**不是空串**：空白读起来像「这个字段还没做」。
+   *
+   * mock 此前漏了它 —— `check:shapes` 接进检查链、本地主控重启之后才报出来。
+   * **一个没被比过的端点，和一个比过的端点，在那之前长得一样。**
+   */
+  master_version: string
   kpi: OverviewKpiWire
   events: EventWire[]
 }
@@ -839,6 +853,28 @@ export interface SettingsWire {
   offline_threshold_count: number
   auto_drop_dns: boolean
   dns_provider: DnsProviderWire
+  /**
+   * 每个 `kind` × `credential_mode` **还要人填哪些字段**（契约 §11）。
+   *
+   * 键名与 `PUT` 的 `dns_provider` body 键一模一样 —— 界面拿它当**找输入框的
+   * 钥匙**（每个输入框上标着 `data-field="<键名>"`，中间没有映射表）。
+   * **不含 `kind`**：那是选择器本身，不是要填的字段。
+   *
+   * 它由后端的 `store.MissingFields` 对一份空配置**求值得出**，不是抄本，
+   * 所以不可能和校验分叉。
+   *
+   * ## 它不是用来标红星的
+   *
+   * 星号解决的是「人不知道要填」，而 2026-08-23 撞上的是**人填不了**：
+   * `account_id` 被误关在 `global_key` 分支里，`api_token` 模式下那个框根本
+   * 不渲染。红星标在一个不存在的框上等于没标。
+   *
+   * 它真正的用途是那条 e2e：**这里列出的每个字段，在对应的 kind × mode 下
+   * 界面上都得有一个能填的框**。前端的 `v-if` 从此不再是第二份知识 ——
+   * 它仍然由前端写（标签、占位符、提示是界面的知识），
+   * 而它与后端那份判据的一致性有东西守着。
+   */
+  dns_provider_requirements: Record<string, Record<string, string[]>>
   ops_bot_token_configured: boolean
 }
 

@@ -307,6 +307,7 @@ async function clearProvider(): Promise<void> {
           <div class="ctl">
             <input
               id="dns-domain"
+              data-field="domain"
               v-model="form.dns_provider.domain"
               class="text"
               placeholder="example.com"
@@ -364,6 +365,7 @@ async function clearProvider(): Promise<void> {
           <div class="ctl">
             <input
               id="dns-zone"
+              data-field="zone_id"
               v-model="dnsEdit.zone_id"
               class="text mono"
               :placeholder="form.dns_provider.configured ? '留空 = 不改动' : '必填'"
@@ -376,6 +378,7 @@ async function clearProvider(): Promise<void> {
           <div class="ctl">
             <input
               id="dns-account"
+              data-field="account_id"
               v-model="dnsEdit.account_id"
               class="text mono"
               :placeholder="form.dns_provider.configured ? '留空 = 不改动' : '必填'"
@@ -394,6 +397,7 @@ async function clearProvider(): Promise<void> {
             <div class="ctl">
               <input
                 id="dns-email"
+              data-field="email"
                 v-model="dnsEdit.email"
                 class="text"
                 :placeholder="form.dns_provider.configured ? '留空 = 不改动' : 'Global Key 模式必填'"
@@ -417,6 +421,7 @@ async function clearProvider(): Promise<void> {
             <span class="tag" :class="credTag.cls">{{ credTag.text }}</span>
             <input
               id="dns-cred"
+              data-field="credential"
               v-model="dnsEdit.credential"
               class="text"
               type="password"

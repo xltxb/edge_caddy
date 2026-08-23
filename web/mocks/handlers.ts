@@ -38,7 +38,7 @@ export const handlers = [
 
   /* ── 3. 总览 ── */
   http.get(`${BASE}/overview`, () =>
-    ok({ baseline: seed.BASELINE, kpi: seed.kpi(), events: seed.events }),
+    ok({ baseline: seed.BASELINE, master_version: seed.MASTER_VERSION, kpi: seed.kpi(), events: seed.events }),
   ),
 
   /*

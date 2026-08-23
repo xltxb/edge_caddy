@@ -77,6 +77,9 @@ function isHard(mock, real) {
  *
  * `[?]`（空数组）对上任何数组不算分歧：种子数据里有、真库里空，是常事。
  */
+/** 本轮比对中因为空数组而**没比到内容**的路径。每个端点比对前清空。 */
+let empties = []
+
 function diffShape(a, b, path = '$', out = []) {
   if (a === b) return out
   const objA = a.startsWith('{')
@@ -87,7 +90,20 @@ function diffShape(a, b, path = '$', out = []) {
   if (arrA && arrB) {
     const ea = a.slice(1, -1)
     const eb = b.slice(1, -1)
-    if (ea === '?' || eb === '?') return out // 一边是空数组，无从比较
+    if (ea === '?' || eb === '?') {
+      /*
+       * 一边是空数组，**无从比较** —— 不算分歧是对的（种子有、真库空是常事），
+       * 但**要记下来**：这一层里的字段一个都没比到。
+       *
+       * 不记的话，`✓ GET /certs` 跟一次真的逐字段比过长得一模一样。
+       * 而它骗过我一次：我据此说「`not_after` 和 `domains` 跟真实响应对上了」，
+       * 实际本地主控的 /certs 返回 0 条，比的是两个空列表。
+       *
+       * > **一条探测通过了，不代表它验的是你以为的那件事。**
+       */
+      empties.push(path)
+      return out
+    }
     return diffShape(ea, eb, `${path}[]`, out)
   }
   if (!objA || !objB) {
@@ -204,6 +220,26 @@ const CASES = [
   { name: 'GET /auth/session', path: '/auth/session' },
   { name: 'GET /overview', path: '/overview' },
   { name: 'GET /settings', path: '/settings' },
+  /*
+   * ── 已知缺口：`GET /nodes` 比不了，而它是最该比的那个 ──
+   *
+   * 节点页是这个控制台最核心的一页，而**它的响应形状从没被比过**。代价是实的：
+   * `scope` / `key_type`（前端声明了、后端从来没发过，界面上一直是空格子）
+   * 和 `not_after`（后端一直在发、前端不知道）都是在别处偶然发现的 ——
+   * 它们本该由这里抓到。
+   *
+   * 比不了的原因是**这个仓库有两套 mock**：MSW 的 `mocks/handlers.ts`（这个脚本
+   * 取的就是它）和 Node 侧的 vite 插件 `mocks/node-mock.ts`。`/nodes` 属于后者，
+   * 而这个脚本 `ssrLoadModule('/mocks/handlers.ts')` 拿不到它。加进 CASES 会
+   * 直接报「没有匹配的 handler」。
+   *
+   * **不给 handlers.ts 再写一份 `/nodes`** —— 那就有两份 mock 了，而两份迟早
+   * 分叉；到时候这个脚本比的是「MSW 那份和真主控一致」，而界面用的是另一份。
+   * 那比不比更坏：它会给出一个关于错误对象的合格证。
+   *
+   * 真正的修法是让这个脚本走 HTTP 打到 vite dev server（两套 mock 都在那后面），
+   * 而不是在进程内装 MSW。没做，**所以这里是一个洞，不是一个决定**。
+   */
   { name: 'GET /certs', path: '/certs' },
   { name: 'GET /deploys', path: '/deploys' },
   { name: 'GET /audit', path: '/audit' },
@@ -297,10 +333,13 @@ for (const c of CASES) {
    * 完全一致，而它们说的是完全相反的两件事。少了这一条，一个「mock 拒了、
    * 真主控收了」的分歧看起来跟一致一模一样。
    */
+  empties = []
   const diffs = diffShape(shapeOf(m.body), shapeOf(r.body))
   rows.push({
     name: c.name,
     diffs,
+    /** 因为空数组而没比到内容的路径 —— 见 diffShape 里那一段。 */
+    empties: [...empties],
     mockStatus: m.status,
     realStatus: r.status,
     mockCode: m.body?.code,
@@ -336,9 +375,19 @@ for (const row of rows) {
   const hard = row.diffs.filter((d) => isHard(d.mock, d.real))
   const soft = row.diffs.length - hard.length
   const softNote = soft ? `（另有 ${soft} 处可空字段两边取值不同，不算分歧）` : ''
+  /*
+   * **「比过了」和「因为列表是空的所以没比到」必须分开印。**
+   *
+   * 不分的话两者都是一个 `✓` —— 而它们的含义相反：一个是「这一层逐字段对过」，
+   * 一个是「这一层一个字段都没看到」。跟 test.mjs 里那条「一条都没跑不是全过了」
+   * 是同一件事，只是粒度更细：这里是**端点通过了，而它的某一层是空转的**。
+   */
+  const emptyNote = row.empties?.length
+    ? `　⚠ ${row.empties.join('、')} 两边都是空数组 —— 这一层的字段一个都没比到`
+    : ''
 
   if (!hard.length && !statusDiff) {
-    console.log(`✓ ${row.name} ${softNote}`)
+    console.log(`✓ ${row.name} ${softNote}${emptyNote}`)
     continue
   }
   bad++
