@@ -56,7 +56,7 @@ func (c *CloudflareDNS) Caps() Caps {
 		},
 		Weights: false,
 		Notes: "用普通 A / AAAA 记录轮换，不需要 Load Balancing（那是付费附加产品）。" +
-			"节点挂掉会自动移出解析、下线时也会真的摘掉——而**权重和地域分流做不到**：" +
+			"节点挂掉会自动移出解析、下线时也会真的摘掉——而「权重」和「地域分流」做不到：" +
 			"DNS 记录既没有权重字段也没有线路概念，多条记录是等概率轮询。" +
 			"要按权重或地域分流，得开通 Load Balancing 或改用 DNSPod。",
 	}
