@@ -259,7 +259,6 @@ const NOT_COMPARED = {
   'PUT /rules/:id': '要一个真规则 id，而且会动共享密钥',
   'DELETE /rules/:id': '删东西',
   'PUT /drafts/:key': '草稿的字段名按资源种类不同，没有固定形状可比',
-  'DELETE /drafts': '会清掉别人正在编辑的草稿',
   'POST /deploys/preview': '要真实的 res_keys，而且预览结果取决于当前草稿',
   'POST /deploys': '真发一次配置到所有节点',
   'POST /deploys/:cfg/rollback': '真回滚',

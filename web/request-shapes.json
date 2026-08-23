@@ -80,10 +80,6 @@
       "optional": [],
       "dynamic": "资源 spec 的 Partial，键取自 src/workbench/fields.ts 的字段表"
     },
-    "DELETE /drafts": {
-      "required": [],
-      "optional": []
-    },
     "POST /deploys/preview": {
       "required": [
         "res_keys"

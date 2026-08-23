@@ -277,13 +277,6 @@ export const useConfigStore = defineStore('config', () => {
     schedulePersist(key)
   }
 
-  /** 放弃全部草稿。 */
-  async function discardAll(): Promise<void> {
-    await http.del('/drafts')
-    patches.value = {}
-    updated.value = {}
-  }
-
   /**
    * 设置一条 service_secret 规则的共享密钥。
    *
@@ -366,7 +359,6 @@ export const useConfigStore = defineStore('config', () => {
     setField,
     flush,
     revert,
-    discardAll,
     commit,
   }
 })

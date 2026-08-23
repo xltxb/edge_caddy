@@ -228,7 +228,22 @@ export const REQUEST_SHAPES: Record<string, Shape> = {
     optional: [],
     dynamic: '资源 spec 的 Partial，键取自 src/workbench/fields.ts 的字段表',
   },
-  'DELETE /drafts': { required: [], optional: [] },
+  /*
+   * **没有 `DELETE /drafts`。** 后端有这个端点，前端不调它。
+   *
+   * 它曾经登记在这里，而对应的 `discardAll()` 定义了、导出了、**没有任何
+   * 调用方，也没有测试**。于是这份清单在向后端宣称一件不会发生的事 ——
+   * 跟 `ops_bot_token` 一样，是登记表里的一句假话。
+   *
+   * 这一条不是靠巧合发现的（`ops_bot_token` 是），是把 22 条写路径在真主控上
+   * 逐个点过来撞出来的。**「登记的都真的会发」这个方向没有任何静态检查守着**：
+   * `check-requests` 只比端点在不在源码里出现，出现了就算，不管那段代码有没有
+   * 人调。
+   *
+   * 「放弃全部草稿」这件事本身不是不该有 —— 回滚会把差异写回草稿，那之后
+   * 确实可能想整批扔掉。但**没做过的功能不该先在契约层留个影子**：真要做的时候
+   * 加回来是四行。
+   */
 
   'POST /deploys/preview': shape<DeployResKeysBody>()({ required: ['res_keys'], optional: [] }),
   'POST /deploys': shape<DeployResKeysBody>()({ required: ['res_keys'], optional: [] }),
