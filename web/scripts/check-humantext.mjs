@@ -166,7 +166,6 @@ if (scanned === 0 || literals === 0) {
 console.log('')
 if (findings.length === 0) {
   console.log(`✓ ${scanned} 个文件、${literals} 个字符串，界面文案里没有 markdown 标记。`)
-  console.log('')
   process.exit(0)
 }
 
@@ -177,5 +176,4 @@ for (const f of findings) {
 console.log('')
 console.log(`${findings.length} 处界面文案里带着 markdown 标记，它们会原样显示成星号。`)
 console.log('把标记去掉 —— **不要**在前端加解析器，那会让星号变成一个没人声明过的特性。')
-console.log('')
 process.exit(1)

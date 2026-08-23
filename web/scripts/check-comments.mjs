@@ -128,4 +128,4 @@ if (hits.length) {
   console.error('  把结论提到首句，历史放它后面。\n')
   process.exit(1)
 }
-console.log(`\n${scanned} 个复盘块，首句都在讲现在。\n`)
+console.log(`\n${scanned} 个复盘块，首句都在讲现在。`)

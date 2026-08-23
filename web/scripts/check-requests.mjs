@@ -218,11 +218,9 @@ if (process.argv.includes('--emit')) {
 console.log('')
 if (problems.length === 0) {
   console.log(`✓ ${found.length} 处写请求，${registered.size} 条登记，对得上。`)
-  console.log('')
   process.exit(0)
 }
 
 for (const p of problems) console.log(`✗ ${p.kind}：${p.detail}\n`)
 console.log(`${problems.length} 处对不上。`)
-console.log('')
 process.exit(1)

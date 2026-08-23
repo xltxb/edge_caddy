@@ -54,7 +54,14 @@ if (withTemplate === 0) {
 }
 
 if (hits.length) {
-  console.error(`\n${hits.length} 处会被字面渲染的标记：\n\n${hits.join('\n')}\n`)
+  /*
+   * **判词放最后一行。** `| tail -1` 是最省事因此最常见的读法 —— 与其要求人
+   * 别那么读，不如让那样读也是对的。这里原先是「判词 + 明细 + 空行」，
+   * 于是 tail -1 看到一个空行，而**成功时最后一行也是空的**：
+   * 两种结果在最省事的读法下完全不可区分。
+   */
+  console.error(`\n${hits.join('\n')}\n`)
+  console.error(`${hits.length} 处会被字面渲染的标记，它们会原样显示成星号。`)
   process.exit(1)
 }
-console.log(`\n${withTemplate} 个模板，没有会被字面渲染的标记。\n`)
+console.log(`\n${withTemplate} 个模板，没有会被字面渲染的标记。`)
