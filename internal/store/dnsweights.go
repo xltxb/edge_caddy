@@ -36,6 +36,38 @@ type DNSProviderSettings struct {
 	ClearCredential bool `json:"-"`
 }
 
+// MissingFields 列出这份服务商配置还差什么才**能用**。
+//
+// **它是校验与装配共用的那一个判据，这一点是承重的。**
+//
+// 灰度上撞到的：`PUT /settings` 只校验了 kind，而装配服务商要求
+// kind + domain + credential 三样都有。于是一份只有 kind 和凭证的配置
+// 被收下了，设置页显示「已配置」，而 DNS 页说「尚未配置服务商」——
+// **两个端点对同一件事说了相反的话，而两句在各自的口径下都对**。
+//
+// 人看到的是：填完保存成功、徽标变绿、而解析一动不动，
+// 没有任何一处说得出缺了什么。
+//
+// 分成两处写迟早会分叉：加一个新的必填字段时，改了装配那一侧、
+// 忘了校验那一侧，症状就是这次这个——**而它不报错**。
+func (c DNSProviderSettings) MissingFields() []string {
+	var missing []string
+	if c.Kind == "" {
+		missing = append(missing, "kind")
+	}
+	if c.Domain == "" {
+		missing = append(missing, "domain")
+	}
+	// 凭证不回显，所以判据是「库里有没有」而不是「这次请求带没带」。
+	if c.Credential == "" && !c.CredentialOK {
+		missing = append(missing, "credential")
+	}
+	return missing
+}
+
+// Usable 说这份配置装配得出一个能用的服务商客户端。
+func (c DNSProviderSettings) Usable() bool { return len(c.MissingFields()) == 0 }
+
 type dnsRow struct {
 	DNSProviderSettings
 	CredB64 string `json:"credential_sealed,omitempty"`

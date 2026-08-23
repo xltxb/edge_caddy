@@ -278,3 +278,67 @@ func TestEveryWriteEndpointRejectsUnknownFields(t *testing.T) {
 		}
 	}
 }
+
+// **一份存得下、而用不了的 DNS 服务商配置，比没配更坏。**
+//
+// 灰度上撞到的：只填了 kind 和凭证、没填域名。保存成功，设置页显示
+// 「已配置」，而 DNS 页说「尚未配置服务商」——**两个端点对同一件事说了
+// 相反的话，而两句在各自的口径下都对**：
+//
+//	GET /settings     configured 说的是「凭证在不在」
+//	GET /dns/weights  说的是「装配得出客户端吗」（要 kind + domain + credential）
+//
+// 人看到的是：填完保存成功、徽标变绿、而解析一动不动，
+// **没有任何一处说得出缺了什么**。
+//
+// 校验的判据与装配那一侧**共用 store.MissingFields**。分开写的话，
+// 加一个新的必填字段时改了一侧忘了另一侧，症状就是这次这个，而它不报错。
+func TestIncompleteDNSProviderIsRejected(t *testing.T) {
+	r, _ := newServer(t)
+	ck := login(t, r)
+	auth := func(req *http.Request) { req.AddCookie(ck) }
+
+	// 一、有 kind 和凭证、没有域名 —— 拒，并且**点名缺的是哪一项**。
+	_, e := do(t, r, "PUT", "/api/v1/settings", map[string]any{
+		"dns_provider": map[string]any{
+			"kind": "cloudflare", "credential_mode": "api_token", "credential": "tok",
+		},
+	}, auth)
+	if e.Code != api.CodeValidation {
+		t.Fatalf("缺域名的配置应当以 1002 拒绝，实际 code=%d msg=%q", e.Code, e.Msg)
+	}
+	if !strings.Contains(string(e.Data), "dns_provider.domain") {
+		t.Errorf("要点名缺的是 domain，实际 %s", e.Data)
+	}
+
+	// **被拒的那次什么也没存。** 存了一半的话，下一次只填域名就会
+	// 「补全」成功，而人不会知道中间那一版曾经存在过。
+	_, got := do(t, r, "GET", "/api/v1/settings", nil, auth)
+	if strings.Contains(string(got.Data), `"configured":true`) {
+		t.Errorf("被拒的配置不该留下痕迹：%s", got.Data)
+	}
+
+	// 二、**反过来：完整的配置照常收下。**
+	//
+	// 没有这一条，一个「无条件拒绝所有 dns_provider」的实现也能让上面全过。
+	_, ok := do(t, r, "PUT", "/api/v1/settings", map[string]any{
+		"dns_provider": map[string]any{
+			"kind": "cloudflare", "domain": "example.com", "sub": "cdn",
+			"credential_mode": "api_token", "credential": "tok",
+		},
+	}, auth)
+	if ok.Code != api.CodeOK {
+		t.Fatalf("完整的配置不该被拒：code=%d msg=%q", ok.Code, ok.Msg)
+	}
+
+	// 三、**只改别的设置、根本没碰 dns_provider 时不受影响。**
+	//
+	// 「一个字段都没填」是「还没开始配」，不是「配错了」——
+	// 把它也拒掉的话，一台还没配 DNS 的主控连心跳间隔都改不了。
+	_, other := do(t, r, "PUT", "/api/v1/settings",
+		map[string]any{"heartbeat_interval_s": 5}, auth)
+	if other.Code != api.CodeOK {
+		t.Errorf("没碰 DNS 的设置修改不该被 DNS 校验挡住：code=%d msg=%q",
+			other.Code, other.Msg)
+	}
+}

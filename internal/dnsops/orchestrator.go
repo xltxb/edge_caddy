@@ -59,7 +59,10 @@ func (o *Orchestrator) Provider(ctx context.Context) (dnsctl.Provider, store.DNS
 	if err != nil {
 		return nil, cfg, err
 	}
-	if cfg.Kind == "" || cfg.Domain == "" || cfg.Credential == "" {
+	// **判据只有一个来源**（store.MissingFields），校验那一侧用的是同一个。
+	// 分成两处写迟早会分叉，而分叉的症状是「设置页说已配置、这里说没配置」
+	// —— 两句在各自的口径下都对，而它们对不上账。
+	if !cfg.Usable() {
 		return nil, cfg, ErrNoProvider
 	}
 

@@ -201,6 +201,30 @@ func (s *Server) handlePutSettings(c *gin.Context) {
 			})
 			return
 		}
+
+		// **一份存得下、而用不了的配置，比没配更坏。**
+		//
+		// 灰度上撞到的：只填了 kind 和凭证、没填域名。保存成功、设置页显示
+		// 「已配置」，而 DNS 页说「尚未配置服务商」——**两个端点对同一件事
+		// 说了相反的话，而两句在各自的口径下都对**。人看到的是：
+		// 填完保存成功、徽标变绿、解析一动不动，没有一处说得出缺了什么。
+		//
+		// 判据用 store.MissingFields，与装配服务商那一侧**共用同一个函数**：
+		// 分开写的话，加一个新的必填字段时改了一侧忘了另一侧，
+		// 症状就是这次这个，而它不报错。
+		//
+		// 「一个字段都没填」是另一回事——那是还没开始配，不是配错了。
+		if !dns.Usable() && (dns.Kind != "" || dns.Domain != "" || dns.CredentialOK) {
+			var issues []FieldError
+			for _, f := range dns.MissingFields() {
+				issues = append(issues, FieldError{
+					ResKey: "settings", Field: "dns_provider." + f,
+					Reason: "配置 DNS 服务商时这一项必填 —— 少了它解析不会被推到任何地方",
+				})
+			}
+			FailValidation(c, "DNS 服务商配置不完整", issues)
+			return
+		}
 		if err := s.store.PutDNSProvider(ctx, dns, s.sealer); err != nil {
 			s.log.Error("保存 DNS 服务商设置失败", "err", err)
 			Fail(c, CodeDownstream, "保存失败")
