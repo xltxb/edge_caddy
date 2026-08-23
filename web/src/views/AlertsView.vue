@@ -75,7 +75,20 @@ async function save(): Promise<void> {
      * body 现在有类型（`AlertsPutBody`），不再是 `Record<string, unknown>` ——
      * 那正是设置页往外发只读状态位的原因。
      */
-    const body: AlertsPutBody = { ...form.value }
+    /*
+     * **逐个字段列出来，不用 `{ ...form.value }`。**
+     *
+     * 那样写过一次，而它正是这个页面上那个 bug 的载体：`form` 是 `GET` 的形状
+     * （`lark: { at_all_on_crit }`），`PUT` 要的是平的，后端静默丢掉嵌套那层。
+     *
+     * 加上 `const body: AlertsPutBody` 的类型标注**也拦不住**——展开一个变量
+     * 不触发多余属性检查，`{ ...form.value }` 照样编译通过。类型标注只在
+     * 字面量逐字段写出来的时候才真的管事。
+     */
+    const body: AlertsPutBody = {
+      notify_level: form.value.notify_level,
+      at_all_on_crit: form.value.lark.at_all_on_crit,
+    }
     if (newWebhook.value) body.webhook_url = newWebhook.value
     if (newLark.value) body.lark_webhook = newLark.value
     await http.put('/alerts', body)

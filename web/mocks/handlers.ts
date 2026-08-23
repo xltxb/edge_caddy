@@ -1,4 +1,5 @@
 import { http, HttpResponse } from 'msw'
+import type { NotifyLevel } from '../src/api/types'
 import * as seed from './seed'
 
 const BASE = '/api/v1'
@@ -189,16 +190,25 @@ export const handlers = [
    * 不带就是保持不变；它们本身永远不回显。
    */
   http.put(`${BASE}/alerts`, async ({ request }) => {
-    const b = (await request.json()) as {
-      notify_level?: typeof seed.alerts.notify_level
-      lark?: { at_all_on_crit?: boolean }
-      webhook_url?: string
-      lark_webhook?: string
+    const b = (await request.json()) as Record<string, unknown>
+
+    /*
+     * **请求体是平的，与 `GET` 的形状不同**（契约 §12）。而且严格：形状发错
+     * 当场报，不再默默吞。
+     *
+     * 这里原先收嵌套的那份，跟界面一起错，于是 dev 下「严重告警 @所有人」
+     * 看起来是好的 —— **一个跟着一起错的 mock，比没有 mock 更能骗人**：
+     * 它把错误变成了「两处一致」，而一致看起来就像正确。
+     */
+    const ALLOWED = new Set(['notify_level', 'webhook_url', 'lark_webhook', 'at_all_on_crit'])
+    const unknown = Object.keys(b).filter((k) => !ALLOWED.has(k))
+    if (unknown.length) {
+      return fail(1001, `请求里有契约没有的字段 ${unknown.map((k) => `"${k}"`).join('、')}`)
     }
-    if (b.notify_level) seed.alerts.notify_level = b.notify_level
-    if (b.lark?.at_all_on_crit !== undefined) {
-      seed.alerts.lark.at_all_on_crit = b.lark.at_all_on_crit
-    }
+
+    if (b.notify_level) seed.alerts.notify_level = b.notify_level as NotifyLevel
+    if (b.at_all_on_crit !== undefined) seed.alerts.lark.at_all_on_crit = !!b.at_all_on_crit
+    // 凭证只写入不回显：带了就是替换（标记为已配置），空 = 保持不变
     if (b.webhook_url) seed.alerts.webhook.url_configured = true
     if (b.lark_webhook) seed.alerts.lark.webhook_configured = true
     return ok(null)

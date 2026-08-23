@@ -116,13 +116,27 @@ export interface DeployResKeysBody {
   res_keys: string[]
 }
 
+/**
+ * **平的，跟 `GET /alerts` 的形状不一样** —— 四个字段都可省，省掉 = 保持不变。
+ *
+ * 这里原先照 `GET` 的形状发（`webhook: {...}` / `lark: { at_all_on_crit }`），
+ * 因为契约把两者并成了一个代码块、一份 JSON，读起来就是「PUT 发 GET 那个形状」。
+ * 后端的 `ShouldBindJSON` 静默丢掉嵌套的那一层，回 `code: 0` —— 于是
+ * **「严重告警 @所有人」这个开关从来没存进去过**，而界面每次都说「已保存」。
+ *
+ * `notify_level` 恰好两边都在顶层，所以它一直是好的 —— **过的那一半掩护了
+ * 没过的那一半**，我验的时候正好验中了能过的那个。
+ *
+ * PUT 的形状**必然**与 GET 不同：GET 里只有 `url_configured: true/false`，
+ * 凭证不回显，没有地方放 webhook 地址。既然必然不同，就让它明显不同：
+ * **看着一样而里面字段名不一样，比明显不一样更容易骗到人。**
+ */
 export interface AlertsPutBody {
-  notify_level: NotifyLevel
-  webhook: { url_configured: boolean }
-  lark: { webhook_configured: boolean; at_all_on_crit: boolean }
-  /** 只写入不回显：填了就是替换，不填就是保持不变。 */
+  notify_level?: NotifyLevel
+  /** 只写入不回显：空 = 保持不变，带了就是替换。 */
   webhook_url?: string
   lark_webhook?: string
+  at_all_on_crit?: boolean
 }
 
 export interface AlertTestBody {
@@ -145,7 +159,17 @@ export interface SettingsPutBody {
   offline_threshold_count?: number
   auto_drop_dns?: boolean
   dns_provider?: DnsProviderPatch
-  ops_bot_token?: string
+  /*
+   * **没有 `ops_bot_token`。** 后端的 `systemReq` 里没有这个字段，而这个端点是
+   * 严格绑定 —— 发过去不是被忽略，是**整个设置保存被拒**。
+   *
+   * 契约那句「`ops_bot_token_configured` 同理（带了就是替换）」是假的：它只从
+   * 环境变量 `EC_OPS_BOT_TOKEN` 读，主控启动时装进鉴权中间件，API 改不了。
+   * 而这不是没做完 —— 它是免登录调用主控的凭证，**让一个已登录会话去铸一把
+   * 长期钥匙，跟改 CA、改监听地址是同一类事**，属于部署面不属于控制台。
+   *
+   * 我曾把它登记在这里，而界面上根本没有那个输入框 —— 一条登记表里的假话。
+   */
 }
 
 /**
@@ -216,8 +240,8 @@ export const REQUEST_SHAPES: Record<string, Shape> = {
   'POST /certs/renew-check': { required: [], optional: [] },
 
   'PUT /alerts': shape<AlertsPutBody>()({
-    required: ['notify_level', 'webhook', 'lark'],
-    optional: ['webhook_url', 'lark_webhook'],
+    required: [],
+    optional: ['notify_level', 'webhook_url', 'lark_webhook', 'at_all_on_crit'],
   }),
   'POST /alerts/test': shape<AlertTestBody>()({ required: ['channel'], optional: [] }),
 
@@ -228,7 +252,6 @@ export const REQUEST_SHAPES: Record<string, Shape> = {
       'offline_threshold_count',
       'auto_drop_dns',
       'dns_provider',
-      'ops_bot_token',
     ],
   }),
 }
@@ -247,14 +270,6 @@ export const NESTED_SHAPES: Record<string, Shape> = {
   }),
   'PUT /dns/weights#lines[].entries[]': shape<DnsWeightsBody['lines'][number]['entries'][number]>()({
     required: ['node', 'weight'],
-    optional: [],
-  }),
-  'PUT /alerts#webhook': shape<AlertsPutBody['webhook']>()({
-    required: ['url_configured'],
-    optional: [],
-  }),
-  'PUT /alerts#lark': shape<AlertsPutBody['lark']>()({
-    required: ['webhook_configured', 'at_all_on_crit'],
     optional: [],
   }),
 }

@@ -129,16 +129,34 @@ for (const [norm, original] of registered) {
   }
 }
 
-/* 黑名单：body 不能是 Record<string, unknown> */
+/*
+ * 两种会绕过类型的 body 写法。
+ *
+ * 第二种是告警页那个 bug 教的：`const body: AlertsPutBody = { ...form.value }`
+ * **编译通过**——展开一个变量不触发多余属性检查。于是 `form`（`GET` 的形状）
+ * 原样发了出去，后端静默丢掉对不上的那半层。**类型标注只在字面量逐字段写出来
+ * 的时候才真的管事**，而那正是这条规则要逼出来的写法。
+ */
+const BAD_BODY = [
+  {
+    re: /const\s+body\s*:\s*Record<string,\s*unknown>/g,
+    kind: '无类型的 body',
+    fix: '改成 src/api/requests.ts 里对应的那个接口。\n      设置页往后端发只读状态位就是这么发出去的。',
+  },
+  {
+    re: /const\s+body\s*:\s*\w+\s*=\s*\{\s*\.\.\./g,
+    kind: '用展开构造的 body',
+    fix: '逐个字段列出来。展开一个变量不触发多余属性检查，类型标注在这里拦不住 ——\n      告警页把 GET 的形状原样发给了 PUT，就是这么过去的。',
+  },
+]
+
 for (const file of walk(SRC)) {
   const text = stripComments(readFileSync(file, 'utf8'))
-  const re = /const\s+body\s*:\s*Record<string,\s*unknown>/g
-  for (const m of text.matchAll(re)) {
-    const line = text.slice(0, m.index).split('\n').length
-    problems.push({
-      kind: '无类型的 body',
-      detail: `${relative(WEB, file)}:${line}\n      改成 src/api/requests.ts 里对应的那个接口。\n      设置页往后端发只读状态位就是这么发出去的。`,
-    })
+  for (const { re, kind, fix } of BAD_BODY) {
+    for (const m of text.matchAll(re)) {
+      const line = text.slice(0, m.index).split('\n').length
+      problems.push({ kind, detail: `${relative(WEB, file)}:${line}\n      ${fix}` })
+    }
   }
 }
 

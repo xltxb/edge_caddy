@@ -115,14 +115,12 @@
       "optional": []
     },
     "PUT /alerts": {
-      "required": [
-        "notify_level",
-        "webhook",
-        "lark"
-      ],
+      "required": [],
       "optional": [
+        "notify_level",
         "webhook_url",
-        "lark_webhook"
+        "lark_webhook",
+        "at_all_on_crit"
       ]
     },
     "POST /alerts/test": {
@@ -137,8 +135,7 @@
         "heartbeat_interval_s",
         "offline_threshold_count",
         "auto_drop_dns",
-        "dns_provider",
-        "ops_bot_token"
+        "dns_provider"
       ]
     }
   },
@@ -173,19 +170,6 @@
       "required": [
         "node",
         "weight"
-      ],
-      "optional": []
-    },
-    "PUT /alerts#webhook": {
-      "required": [
-        "url_configured"
-      ],
-      "optional": []
-    },
-    "PUT /alerts#lark": {
-      "required": [
-        "webhook_configured",
-        "at_all_on_crit"
       ],
       "optional": []
     }

@@ -219,15 +219,16 @@ const CASES = [
    * 当成新状态，而真主控同样回 `data: null`。它逃掉不是因为难，是因为这张表
    * 当时只列了出事的那一个。**修完一个 bug，同形状的另一个不会自己浮出来。**
    *
-   * 不像 settings 能发空 body：alerts 的三个字段是必填的，空 body 会被 1002
-   * 挡在校验层，那时看到的是错误响应的形状，不是这个端点的形状。所以先 GET
-   * 一份现值再原样写回 —— **是一次真的写**，会留一条审计。
+   * 这一条本身也错过一次：原先「先 GET 一份现值再原样写回」，而 `PUT` 的形状
+   * 与 `GET` **必然不同**（契约 §12）。mock 改严之后它回 1001、真主控回 0，
+   * 而两边的 `data` 都是 `null` —— **形状一样，于是它绿着，什么也没验**。
+   * 那次是加了 `code` 比对才看见的。现在发一个真正的空 body：四个字段都可省，
+   * 空 body 是个合法的 no-op。
    */
   {
-    name: 'PUT /alerts（现值原样写回）',
+    name: 'PUT /alerts（空 body，什么都不改）',
     path: '/alerts',
-    init: { method: 'PUT' },
-    bodyFromGet: '/alerts',
+    init: { method: 'PUT', body: '{}' },
   },
 ]
 
@@ -235,10 +236,6 @@ const rows = []
 for (const c of CASES) {
   let m, r
   const init = { ...c.init }
-  if (c.bodyFromGet) {
-    const cur = await real(c.bodyFromGet)
-    init.body = JSON.stringify(cur.body?.data ?? {})
-  }
   try {
     m = await mock(c.path, init)
   } catch (e) {
@@ -251,8 +248,23 @@ for (const c of CASES) {
     rows.push({ name: c.name, err: `真主控侧失败：${e.message}` })
     continue
   }
+  /*
+   * `code` 比**值**，不比类型。
+   *
+   * 别处一律只比形状（值本来就该不同），但信封上的 `code` 是个例外：它的值
+   * 就是它的含义。mock 回 1001、真主控回 0 —— 两个 `data` 都是 `null`，形状
+   * 完全一致，而它们说的是完全相反的两件事。少了这一条，一个「mock 拒了、
+   * 真主控收了」的分歧看起来跟一致一模一样。
+   */
   const diffs = diffShape(shapeOf(m.body), shapeOf(r.body))
-  rows.push({ name: c.name, diffs, mockStatus: m.status, realStatus: r.status })
+  rows.push({
+    name: c.name,
+    diffs,
+    mockStatus: m.status,
+    realStatus: r.status,
+    mockCode: m.body?.code,
+    realCode: r.body?.code,
+  })
 }
 
 /* ── 报告 ──────────────────────────────────────────────────────────── */
@@ -265,7 +277,8 @@ for (const row of rows) {
     console.log(`✗ ${row.name}\n    ${row.err}`)
     continue
   }
-  const statusDiff = row.mockStatus !== row.realStatus
+  const codeDiff = row.mockCode !== row.realCode
+  const statusDiff = row.mockStatus !== row.realStatus || codeDiff
   const hard = row.diffs.filter((d) => isHard(d.mock, d.real))
   const soft = row.diffs.length - hard.length
   const softNote = soft ? `（另有 ${soft} 处可空字段两边取值不同，不算分歧）` : ''
@@ -276,7 +289,13 @@ for (const row of rows) {
   }
   bad++
   console.log(`✗ ${row.name} ${softNote}`)
-  if (statusDiff) console.log(`    HTTP  mock ${row.mockStatus} · 真主控 ${row.realStatus}`)
+  if (row.mockStatus !== row.realStatus) {
+    console.log(`    HTTP  mock ${row.mockStatus} · 真主控 ${row.realStatus}`)
+  }
+  if (codeDiff) {
+    console.log(`    code  mock ${row.mockCode} · 真主控 ${row.realCode}`)
+    console.log(`          —— 一个收下了一个拒了，而两边的 data 形状可能一模一样`)
+  }
   for (const d of hard) {
     console.log(`    ${d.path}`)
     console.log(`        mock   ${d.mock}`)
