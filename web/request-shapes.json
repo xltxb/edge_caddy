@@ -88,6 +88,10 @@
       "required": [],
       "optional": []
     },
+    "DELETE /certs/:domain": {
+      "required": [],
+      "optional": []
+    },
     "PUT /drafts/:key": {
       "required": [],
       "optional": [],

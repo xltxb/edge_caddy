@@ -239,6 +239,8 @@ export const REQUEST_SHAPES: Record<string, Shape> = {
     optional: ['secret'],
   }),
   'DELETE /rules/:id': { required: [], optional: [] },
+  /* 没有 body；`?force=true` 是查询参数，不进这张表（这里登记的是 body 字段）。 */
+  'DELETE /certs/:domain': { required: [], optional: [] },
 
   /*
    * 草稿的字段名**由资源的字段表决定**，不是一个固定集合：一条草稿是某个资源

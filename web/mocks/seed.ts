@@ -233,12 +233,19 @@ const cert = (
   loaded: string[],
   /** 证书实际覆盖的域名。默认就是它自己 —— 多域名 / 通配符的那几张显式传。 */
   domains: string[] = [domain],
+  /**
+   * 它**正在服务**的路由域名 —— 与 domains 是两件事（契约 §9）。
+   * 默认「服务着它自己」；`[]`（没人用）和 `null`（算不出来）要显式传，
+   * **三种值界面上的处置各不相同**。
+   */
+  covers: string[] | null = [domain],
 ): CertWire => ({
   domain,
   issuer,
   domains,
   // 从 days_left 倒推，两者必须自洽 —— 夹具里说「12 天」而日期在三个月后，
   // 界面上那两个数会互相打脸，而它们本来是同一个事实的两种写法
+  covers,
   not_after: new Date(T0 + days_left * 86_400_000).toISOString(),
   days_left,
   challenge,
@@ -275,9 +282,18 @@ export const certs: CertWire[] = [
   cert('push.example.com', '外部证书平台 CA', 73, 'imported', ALL, ALL),
   cert('edge-mtls (内部 CA)', 'Edge Internal CA', 203, '内部签发', ALL, ALL),
   // ADR-0015 之前主控自己签的两张，留着让「（历史）」那一支在界面上走得到
-  cert('master.example.com', "Let's Encrypt", 38, 'dns-01', [], []),
+  /*
+   * **存着但没人用**（covers 为空）—— 它 expected_nodes 也是 0（仅主控）。
+   * 这一张是「没有路由在用它」那一支的夹具：删它是安全的，而界面上这一列
+   * 是唯一说得出这件事的地方。
+   */
+  cert('master.example.com', "Let's Encrypt", 38, 'dns-01', [], [], ['master.example.com'], []),
   cert('static.example.com', "Let's Encrypt", 19, 'dns-01', ALL, STATIC_LOADED),
-  cert('ws.example.com', '外部证书平台 CA', 55, 'imported', ALL, WS_LOADED),
+  /*
+   * **covers 算不出来**（null）—— 路由清单读不到时的那一支。
+   * 它绝不能被渲染成「没人用」：那会引着人去删一张可能还在服务的证书。
+   */
+  cert('ws.example.com', '外部证书平台 CA', 55, 'imported', ALL, WS_LOADED, ['ws.example.com'], null),
 ]
 
 /* ── DNS 调度 ── */

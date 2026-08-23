@@ -296,6 +296,7 @@ const NOT_COMPARED = {
   'DELETE /nodes/:id': '真删一台节点的记录 —— 删完就没了，而那台机器还在跑',
   'PUT /rules/:id': '要一个真规则 id，而且会动共享密钥',
   'DELETE /rules/:id': '删东西',
+  'DELETE /certs/:domain': '真删一张证书，而且会触发一次下发把它从各节点上摘掉',
   'PUT /drafts/:key': '草稿的字段名按资源种类不同，没有固定形状可比',
   'POST /deploys/preview': '要真实的 res_keys，而且预览结果取决于当前草稿',
   'POST /deploys': '真发一次配置到所有节点',

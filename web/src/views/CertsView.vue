@@ -2,9 +2,14 @@
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { http, errorText } from '@/api/http'
-import type { CertWire, Paged } from '@/api/types'
+import { useUiStore } from '@/stores/ui'
+import type { CertDeleteWire, CertWire, Paged } from '@/api/types'
 import { challengeText } from '@/certs/challenge'
 import { coverageText } from '@/certs/coverage'
+import { orphanNote } from '@/certs/orphan'
+import DeleteCertConfirm from '@/components/certs/DeleteCertConfirm.vue'
+import { ApiError } from '@/api/http'
+import { CODE } from '@/api/types'
 import { fmtDate } from '@/utils/format'
 
 /**
@@ -15,6 +20,7 @@ import { fmtDate } from '@/utils/format'
  * （CONTEXT.md）。N < M 意味着「下发到了但没生效」——这类故障在只显示
  * 一个数字的界面里是完全隐形的。
  */
+const ui = useUiStore()
 const items = ref<CertWire[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -51,6 +57,66 @@ onMounted(load)
  */
 function level(days: number): 'crit' | 'warn' | 'ok' {
   return days < 14 ? 'crit' : days < 30 ? 'warn' : 'ok'
+}
+
+/* ── 删除 ────────────────────────────────────────────────────────────── */
+
+const delTarget = ref<CertWire | null>(null)
+const delBusy = ref(false)
+/** 被 2001 拒了 —— 后端那句话列出了它在服务哪些域名，原样交给弹层。 */
+const delRefused = ref<string | null>(null)
+/** 删成了 —— detail 原样显示，由人自己关掉。 */
+const delResult = ref<string | null>(null)
+
+function closeDelete(): void {
+  delTarget.value = null
+  delBusy.value = false
+  delRefused.value = null
+  delResult.value = null
+}
+
+/**
+ * `force` 由弹层给，不由这里推。
+ *
+ * 界面**不预判**「这张能不能删」——那道判据在后端（`covers` 非空 → 2001），
+ * 而那一份看得到路由清单。前端复刻一份的话，`covers` 为 `null`（算不出来）
+ * 那一支就会变成前端替人做的决定。
+ */
+async function onDelete(force: boolean): Promise<void> {
+  const c = delTarget.value
+  if (!c) return
+  delBusy.value = true
+  delRefused.value = null
+  try {
+    /*
+     * **query 拼在模板字面量外面，路径本身留在调用里。**
+     *
+     * `check-requests` 扫的是调用处的字面量（`http.del(\`…\`)`），把整个路径存进
+     * 一个变量会让它扫不到 —— 那条登记就成了「登记了但没人调」。而把
+     * `?force=true` 写进字面量里也不行：它的 `normalize` 不剥 query，
+     * 键会变成 `/certs/:x?force=true`，跟登记的对不上。
+     *
+     * 这是那道检查的写法要求，不是风格偏好 —— 写错了它会红，而红的判词说的是
+     * 「没人调」，离真因（写法）有一步。
+     */
+    const q = force ? '?force=true' : ''
+    const r = await http.del<CertDeleteWire>(`/certs/${encodeURIComponent(c.domain)}` + q)
+    delResult.value = r.detail
+    items.value = items.value.filter((x) => x.domain !== c.domain)
+  } catch (e) {
+    /*
+     * **2001 不是失败，是一条出路。** 它说「这张还在服务，确实要删就带 force」——
+     * 把它跟别的错误一样丢进 toast，人就再也看不到那条出路了。
+     */
+    if (e instanceof ApiError && e.code === CODE.STATE_CONFLICT) {
+      delRefused.value = e.message
+    } else {
+      ui.toast('warn', '删除失败', errorText(e, ''))
+      closeDelete()
+    }
+  } finally {
+    delBusy.value = false
+  }
 }
 
 const COLOR = { crit: 'var(--danger)', warn: 'var(--warning)', ok: 'var(--success)' }
@@ -126,6 +192,7 @@ const mismatched = computed(() => items.value.filter((c) => c.loaded_nodes < c.e
           <th>来源</th>
           <th>剩余有效期</th>
           <th>节点（回执 / 签发）</th>
+          <th></th>
         </tr>
       </thead>
       <tbody>
@@ -140,6 +207,17 @@ const mismatched = computed(() => items.value.filter((c) => c.loaded_nodes < c.e
               -->
               <div class="muted small" :title="c.domains?.join('、')">
                 {{ coverageText(c.domains) }}
+              </div>
+              <!--
+                **只有「没人用」会说话**（契约 §9）。
+
+                `covers` 三种值三个意思：有值 = 正常（不说）；`[]` = 存着但没人用
+                （说 —— 这一列是唯一说得出这件事的地方）；`null` = 算不出来
+                （**不说** —— 把它渲染成「没人用」会引着人去删一张可能还在服务
+                二十条路由的证书）。判断在 @/certs/orphan，有证伪测试。
+              -->
+              <div v-if="orphanNote(c.covers)" class="orphan">
+                {{ orphanNote(c.covers)!.text }}
               </div>
             </td>
             <td class="muted">{{ c.issuer }}</td>
@@ -193,9 +271,17 @@ const mismatched = computed(() => items.value.filter((c) => c.loaded_nodes < c.e
               </button>
               <span v-else class="mono muted">{{ c.loaded_nodes }} / {{ c.expected_nodes }} 个节点</span>
             </td>
+            <td class="right">
+              <!--
+                **不置灰。** 跟节点的「删除记录」不同：那一条是前提（不先下线就会
+                产生一台看不见的机器），而这里「还在服务」是一个人可能真的想推翻的
+                判断 —— 后端会拒（2001）并给出 force 那条路。置灰等于替人否掉它。
+              -->
+              <button class="mini danger" type="button" @click="delTarget = c">删除</button>
+            </td>
           </tr>
           <tr v-if="openRow === c.domain" class="detail-row">
-            <td colspan="5">
+            <td colspan="6">
               <div class="detail">
                 <b>未加载该证书的节点：</b>
                 <span class="mono">{{ c.missing_nodes.join('、') }}</span>
@@ -211,6 +297,16 @@ const mismatched = computed(() => items.value.filter((c) => c.loaded_nodes < c.e
       </tbody>
     </table>
   </section>
+
+  <DeleteCertConfirm
+    v-if="delTarget"
+    :cert="delTarget"
+    :busy="delBusy"
+    :refused="delRefused"
+    :result="delResult"
+    @cancel="closeDelete"
+    @confirm="onDelete"
+  />
 </template>
 
 <style scoped>
@@ -220,6 +316,11 @@ const mismatched = computed(() => items.value.filter((c) => c.loaded_nodes < c.e
 }
 .small {
   font-size: var(--fs-micro);
+}
+.orphan {
+  font-size: var(--fs-micro);
+  color: var(--text-faint);
+  margin-top: 2px;
 }
 .banner {
   padding: 9px var(--space-4);

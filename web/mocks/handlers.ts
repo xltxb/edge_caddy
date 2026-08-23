@@ -13,6 +13,15 @@ const paged = <T>(items: T[]) => ok({ items, next_before_id: null })
 /** 会话状态。MSW 是进程内的，够 dev 与 e2e 用。 */
 let loggedIn = true
 
+/**
+ * 证书的可变副本 —— `DELETE` 要真的删掉，否则 e2e 里删完那一行还在，测不到。
+ *
+ * **没有接进 `__test/reset`**：那个端点被 Node 侧的 vite 插件拦着（`ws-plugin`），
+ * MSW 收不到。而 e2e 的 `beforeEach` 里有 `page.reload()`，reload 会重建整个 JS
+ * 上下文、这个模块跟着重新初始化 —— **复位是免费的**，不是我忘了接。
+ */
+let certs = seed.certs.map((c) => ({ ...c }))
+
 export const handlers = [
   /* ── 1. 会话 ── */
   http.get(`${BASE}/auth/session`, () =>
@@ -87,7 +96,37 @@ export const handlers = [
   /* DNS 权重在 Node 侧：share 要按节点的 dns_enabled 实时归一化。 */
 
   /* ── 9. 证书 ── */
-  http.get(`${BASE}/certs`, () => paged(seed.certs)),
+  http.get(`${BASE}/certs`, () => paged(certs)),
+
+  /*
+   * **删一张证书。** 契约 §9 的三条拒绝各说各的：
+   *
+   *   找不到              1003  —— 域名打错一个字符的症状本来长得和成功一模一样
+   *   还在服务且没带 force 2001  —— msg 要列出它在服务哪些域名，**并写出 force=true**
+   *   成功                     —— detail 说「已删除并从各节点上摘掉」
+   *
+   * 那个逃生口是有意的：一张 `*.example.com` 可能覆盖二十条路由，要求「先删光」
+   * 等于要求不可能的事，而人会绕开 —— 直接进数据库删。**绕过去之后下发不会被
+   * 触发，节点上那张证书会一直留着。** 一道逼人绕开的门比没有门更糟。
+   */
+  http.delete(`${BASE}/certs/:domain`, ({ params, request }) => {
+    const domain = decodeURIComponent(String(params.domain))
+    const hit = certs.find((c) => c.domain === domain)
+    if (!hit) return fail(1003, `没有这张证书：${domain}`)
+
+    const force = new URL(request.url).searchParams.get('force') === 'true'
+    const inUse = Array.isArray(hit.covers) && hit.covers.length > 0
+    if (inUse && !force) {
+      return fail(
+        2001,
+        `这张证书正在服务 ${hit.covers!.join('、')} —— 删掉它，那些站点在按下按钮的` +
+          `那一刻就坏了。确实要删的话带上 force=true`,
+      )
+    }
+
+    certs = certs.filter((c) => c.domain !== domain)
+    return ok({ domain, detail: '已删除并从各节点上摘掉' })
+  }),
   /*
    * **没有 renew / renew-check。** 主控不再签发也不再续期，证书只从外部平台
    * 导入 —— 那两个端点后端已经删了。
