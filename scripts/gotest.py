@@ -103,7 +103,18 @@ def main():
                 continue
             print(f"\n包级输出  {pkg}:\n{text[:1500]}")
 
+    # **有编译错误时，「通过=N 失败=0」是一句谎话。**
+    #
+    # 撞到过：往 api 包里加了一行类型不对的测试代码，整个包 43 条一条都没跑，
+    # 而这里印的是「通过=248 失败=0」—— 退出码是非零的（下面 p.returncode
+    # 那条管着），但**人读的是这一行**。我是靠记得「刚才是 291」才发现的，
+    # 那不是装置在工作，那是我碰巧记得。
+    #
+    # 编译不过的包不会产生任何 fail 事件：它的测试从来没有开始。
+    # 所以 len(failed) 是 0，而它诚实地报告了一个错误的问题。
     line = f"\n通过={passed} 失败={len(failed)}"
+    if buildout:
+        line += "  ✗ 有包编译不过，它们的测试一条都没跑（见下）"
     if skipped:
         line += f" **跳过={len(skipped)}**"
     print(line)
@@ -146,7 +157,17 @@ def main():
             print("✗ 一条测试都没跑 —— 名字打错了？包路径不对？"
                   "这不是「没问题」，是一次没有发生过的运行。")
         return 1
-    return 1 if (failed or nonjson or p.returncode != 0) else 0
+    # **判词放最后一行**，理由与 comments.py / unread.py 相同：
+    # `| tail -1` 是最省事、因此最常见的读法，让它说真话比要求自己读全篇可靠。
+    bad = bool(failed or nonjson or buildout or p.returncode != 0)
+    print()
+    if buildout:
+        print("  ✗ 编译不过 —— 那些包的测试一条都没跑，这不是「没问题」")
+    elif bad:
+        print(f"  ✗ {len(failed)} 条失败（共跑了 {passed + len(failed)} 条）")
+    else:
+        print(f"  ✓ {passed} 条全过")
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":

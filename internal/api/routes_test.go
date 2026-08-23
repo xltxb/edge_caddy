@@ -67,6 +67,7 @@ var contractEndpoints = []string{
 	// §9 证书
 	"GET /api/v1/certs",
 	"PUT /api/v1/certs/:domain",
+	"DELETE /api/v1/certs/:domain",
 	// §10 审计
 	"GET /api/v1/audit",
 	// §11 设置与告警

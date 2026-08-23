@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -8,6 +9,8 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/xltxb/edge_caddy/internal/certs"
+	"github.com/xltxb/edge_caddy/internal/model"
+	"github.com/xltxb/edge_caddy/internal/store"
 )
 
 type certResp struct {
@@ -39,6 +42,18 @@ type certResp struct {
 	ExpectedNodes int      `json:"expected_nodes"`
 	LoadedNodes   int      `json:"loaded_nodes"`
 	MissingNodes  []string `json:"missing_nodes"`
+
+	// Covers 是这张证书**正在服务**的路由域名。
+	//
+	// 与 Domains 的区别是承重的：Domains 是「它能服务什么」（证书自己说的），
+	// Covers 是「它实际服务着什么」（跟我们的路由对过之后）。
+	// **空数组 = 存着但没人用**：它仍然会被下发到每台节点、仍然会报到期，
+	// 而没有任何站点用它。删掉它是安全的，而这一列是唯一说得出这件事的地方。
+	//
+	// **读不到路由清单时是 nil（JSON `null`），不是空数组**（§0.4）。
+	// `[]` 是「它什么都没覆盖」——那是个很强的断言，会引着人去删；
+	// 而「我算不出来」不该长成那个样子。跟 reconnects_1h 是同一条理由。
+	Covers []string `json:"covers"`
 }
 
 func (s *Server) handleListCerts(c *gin.Context) {
@@ -67,6 +82,15 @@ func (s *Server) handleListCerts(c *gin.Context) {
 		return
 	}
 
+	// **读不到路由清单不是致命的**：证书列表的主体（到期、下发情况）
+	// 跟路由无关，为了一列附加信息把整页变成一个错误页是不成比例的。
+	// 但那一列必须是 null 而不是空数组——见 certResp.Covers。
+	routes, routeErr := s.store.ListRoutes(ctx)
+	if routeErr != nil {
+		s.log.Error("读取路由清单失败，证书列表的 covers 这一列给不出", "err", routeErr)
+	}
+	served := routeDomains(routes)
+
 	loadedBy := map[string]map[string]bool{}
 	for _, r := range receipts {
 		if loadedBy[r.Domain] == nil {
@@ -87,6 +111,12 @@ func (s *Server) handleListCerts(c *gin.Context) {
 			// （ADR-0010），不存在「只给某几台」这回事。
 			ExpectedNodes: len(nodes),
 			MissingNodes:  []string{},
+		}
+		if routeErr == nil {
+			// 一定要是非 nil 的切片：CoveredBy 一个都没匹配到时回 nil，
+			// 而**「算过了，一个都没覆盖」和「没算」在 JSON 里必须长得不一样**。
+			item.Covers = []string{}
+			item.Covers = append(item.Covers, certs.CoveredBy(cert.CertPEM, served)...)
 		}
 		for _, n := range nodes {
 			if loadedBy[cert.Domain][n.ID] {
@@ -211,4 +241,89 @@ func (s *Server) handleImportCert(c *gin.Context) {
 		"warnings":  imp.Warnings,
 		"detail":    "已导入并下发到各节点",
 	})
+}
+
+// handleDeleteCert 删掉一张证书。
+//
+// **默认拒绝删一张还在服务的证书。** 删了它，那些域名下一次下发之后
+// 就握不上 TLS —— 而这跟「证书过期」不同：过期还有几天窗口，
+// 这个是**按下按钮的那一刻站点就坏了**。
+//
+// 但不能做成硬约束。一张 *.example.com 可能覆盖着二十条路由，
+// 要求「先把覆盖到的路由都删掉」等于要求不可能的事，而人会绕开——
+// 直接进数据库删。**一道逼人绕开的门比没有门更糟**：绕过去之后
+// 下发不会被触发，节点上那张证书会一直留着。
+//
+// 所以给逃生口：`?force=true`。拒绝那句里写清它，人才知道有这条路。
+func (s *Server) handleDeleteCert(c *gin.Context) {
+	domain := c.Param("domain")
+	setAuditTarget(c, domain)
+
+	if s.certs == nil {
+		Fail(c, CodeStateConflict, "证书管理未装配")
+		return
+	}
+
+	if c.Query("force") != "true" {
+		covers, err := s.coveredRoutes(c, domain)
+		if err != nil {
+			return // coveredRoutes 已经回过错了
+		}
+		if len(covers) > 0 {
+			Fail(c, CodeStateConflict, fmt.Sprintf(
+				"这张证书正在服务 %s。删掉之后这些域名下一次下发就握不上 TLS —— "+
+					"确定要删就带上 force=true",
+				strings.Join(covers, "、")))
+			return
+		}
+	}
+
+	if err := s.certs.Delete(c.Request.Context(), domain); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			Fail(c, CodeNotFound, "没有这张证书")
+			return
+		}
+		s.log.Error("删除证书失败", "domain", domain, "err", err)
+		// 库里删了而下发失败时，审计记 partial：那不是「没删成」。
+		setAuditPartial(c, err.Error())
+		Fail(c, CodeDownstream, err.Error())
+		return
+	}
+	OK(c, gin.H{"domain": domain, "detail": "已删除并从各节点上摘掉"})
+}
+
+// coveredRoutes 回这张证书正在服务哪些路由。出错时它自己回错并回 nil, err。
+//
+// **判据是 leaf.VerifyHostname，与导入时那道 1003 用的是同一个。**
+// 分开写的话，「收得进来」和「删得掉」会对不上账。
+func (s *Server) coveredRoutes(c *gin.Context, domain string) ([]string, error) {
+	ctx := c.Request.Context()
+	cert, err := s.store.GetCert(ctx, domain, nil)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			Fail(c, CodeNotFound, "没有这张证书")
+			return nil, err
+		}
+		s.log.Error("读取证书失败", "domain", domain, "err", err)
+		Fail(c, CodeDownstream, "读取证书失败")
+		return nil, err
+	}
+	routes, err := s.store.ListRoutes(ctx)
+	if err != nil {
+		// **查不出来不能当成「它谁也没服务」。** 那会让一次数据库抖动
+		// 变成一次静默的、把站点弄坏的删除。
+		s.log.Error("读取路由清单失败", "err", err)
+		Fail(c, CodeDownstream, "读不到路由清单，判断不出这张证书还在不在服务，"+
+			"这次删除没有执行")
+		return nil, err
+	}
+	return certs.CoveredBy(cert.CertPEM, routeDomains(routes)), nil
+}
+
+func routeDomains(routes []model.Route) []string {
+	out := make([]string, 0, len(routes))
+	for _, r := range routes {
+		out = append(out, r.Domain)
+	}
+	return out
 }

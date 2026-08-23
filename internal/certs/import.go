@@ -156,13 +156,37 @@ func DomainsOf(certPEM []byte) []string {
 // ——所以一张 *.example.com 的证书会服务 a.example.com，哪怕没有任何一条
 // 路由叫 *.example.com。用「等于」做判据会拒掉一张真的用得上的证书。
 func (i Imported) CoversAny(domains []string) bool {
-	if i.Leaf == nil {
-		return false
+	return len(coveredBy(i.Leaf, domains)) > 0
+}
+
+// CoveredBy 回这张证书（PEM）覆盖得到 candidates 里的哪几个。
+//
+// 给库里已经存着的证书用——那时候手上只有 PEM，没有 Imported。
+// **和 CoversAny 走同一个实现**：分开写的话，「收得进来」和「删得掉」
+// 会对不上账，而那种不一致的症状是「导入时说它有用，删除时说它没用」。
+//
+// PEM 解不开时回 nil。调用方要自己决定那意味着什么——**它不等于「谁也没覆盖」**。
+func CoveredBy(certPEM []byte, candidates []string) []string {
+	blk, _ := pem.Decode(certPEM)
+	if blk == nil {
+		return nil
 	}
-	for _, d := range domains {
-		if i.Leaf.VerifyHostname(d) == nil {
-			return true
+	leaf, err := x509.ParseCertificate(blk.Bytes)
+	if err != nil {
+		return nil
+	}
+	return coveredBy(leaf, candidates)
+}
+
+func coveredBy(leaf *x509.Certificate, candidates []string) []string {
+	if leaf == nil {
+		return nil
+	}
+	var out []string
+	for _, d := range candidates {
+		if leaf.VerifyHostname(d) == nil {
+			out = append(out, d)
 		}
 	}
-	return false
+	return out
 }

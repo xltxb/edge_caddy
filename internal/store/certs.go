@@ -121,9 +121,20 @@ func (s *Store) PutCert(ctx context.Context, c Cert, sealer *secret.Sealer) erro
 	return err
 }
 
+// DeleteCert 删掉一张证书。**没删到要说出来。**
+//
+// 原先它丢掉 rows affected，于是删一个根本不存在的域名也返回 nil ——
+// 接口会回一句「已删除」，而库里什么都没发生。域名打错一个字符
+// （多一个点、少一个横杠）就是这个症状，而它长得和成功一模一样。
 func (s *Store) DeleteCert(ctx context.Context, domain string) error {
-	_, err := s.Pool.Exec(ctx, `DELETE FROM certs WHERE domain = $1`, domain)
-	return err
+	tag, err := s.Pool.Exec(ctx, `DELETE FROM certs WHERE domain = $1`, domain)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // ReplaceCertReceipts 换掉一个节点报上来的全部回执。

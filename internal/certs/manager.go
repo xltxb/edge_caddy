@@ -214,3 +214,32 @@ func (m *Manager) Run(ctx context.Context, every time.Duration) {
 		}
 	}
 }
+
+// Delete 删掉一张证书，并**立刻触发一次下发**。
+//
+// 不下发的话，证书从库里消失了而节点上还留着——`load_pem` 是全量替换的，
+// 只有下一次下发才会把它摘掉。中间那段时间里**界面说它没了，而它还在服务**，
+// 那正是这个仓库反复出现的形状：库和机器各说各话。
+//
+// 私钥的角度更硬一点：一张不再需要的证书仍然是一把有效的私钥，
+// 存在库里、分发在每台节点上。删掉它才算真的删掉。
+func (m *Manager) Delete(ctx context.Context, domain string) error {
+	if err := m.Store.DeleteCert(ctx, domain); err != nil {
+		return err
+	}
+
+	m.event(ctx, "ok", fmt.Sprintf("证书 %s 已删除", domain))
+
+	if m.Redeploy == nil {
+		return nil
+	}
+	if err := m.Redeploy(ctx, "证书删除"); err != nil {
+		// **这一步失败要说出来，而不是让「已删除」独自站着。**
+		// 库里没了，而节点上还在——两句都对，合起来才是真相。
+		m.Log.Error("删除后下发失败", "domain", domain, "err", err)
+		m.event(ctx, "warn", fmt.Sprintf(
+			"证书 %s 已从库中删除，但下发失败，节点上仍在服务它：%v", domain, err))
+		return fmt.Errorf("证书已删除，但下发失败，节点上仍在服务它：%w", err)
+	}
+	return nil
+}

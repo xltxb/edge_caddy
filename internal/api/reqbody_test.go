@@ -81,6 +81,8 @@ var requestBodies = map[string]bodySpec{
 	"PUT /dns/weights": {proto: weightsReq{}},
 
 	"PUT /certs/:p": {proto: importCertReq{}},
+	// 删除不带请求体；force 走查询参数（?force=true），不是 body 字段。
+	"DELETE /certs/:p": {kind: bodyNone, why: "删除只认路径；force 走查询参数 ?force=true，不是 body 字段"},
 
 	"PUT /settings":     {proto: systemReq{}},
 	"PUT /alerts":       {proto: alertsReq{}},

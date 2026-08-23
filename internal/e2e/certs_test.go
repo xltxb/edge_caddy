@@ -691,3 +691,120 @@ func TestWildcardCertIsAcceptedForTheHostsItCovers(t *testing.T) {
 		t.Fatalf("通配符证书覆盖着 a.example.com，不该被拒：code=%d msg=%q", e.Code, e.Msg)
 	}
 }
+
+// TestDeleteCertRefusesWhileItStillServes 钉的是删除的那道拦截。
+//
+// **删一张还在服务的证书，跟证书过期不同**：过期还有几天窗口，
+// 这个是按下按钮的那一刻站点就坏了（下一次下发之后握不上 TLS）。
+//
+// 而拦截必须给逃生口：一张 *.example.com 可能覆盖二十条路由，
+// 要求「先删光覆盖到的路由」等于要求不可能的事，而人会绕开——直接进数据库删。
+// **绕过去之后下发不会被触发，节点上那张证书会一直留着**，
+// 也就是说一道逼人绕开的门，比没有门更糟。
+func TestDeleteCertRefusesWhileItStillServes(t *testing.T) {
+	r := newRig(t)
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "live.example.com", "upstream": r.upstream, "block_mode": "abort",
+	})
+	certPEM, keyPEM := importableCert(t, "live.example.com")
+	r.mustDo("PUT", "/certs/live.example.com", map[string]any{
+		"cert_pem": string(certPEM), "key_pem": string(keyPEM),
+	})
+
+	_, e := r.do("DELETE", "/certs/live.example.com", nil)
+	if e.Code != api.CodeStateConflict {
+		t.Fatalf("还在服务的证书应当以 2001 拒绝，实际 code=%d msg=%q", e.Code, e.Msg)
+	}
+	if !strings.Contains(e.Msg, "live.example.com") {
+		t.Errorf("要说出它在服务哪些域名，人才判断得了：%q", e.Msg)
+	}
+	if !strings.Contains(e.Msg, "force") {
+		t.Errorf("**要写出逃生口**，不然人只会去数据库里删：%q", e.Msg)
+	}
+
+	// **被拒的那次什么也没删。**
+	list := r.mustDo("GET", "/certs", nil)
+	if !strings.Contains(string(list.Data), "live.example.com") {
+		t.Fatalf("被拒之后证书不该消失：%s", list.Data)
+	}
+
+	// force 放行。
+	ok := r.mustDo("DELETE", "/certs/live.example.com?force=true", nil)
+	if !strings.Contains(string(ok.Data), "已删除") {
+		t.Errorf("force 之后要真的删掉并说清：%s", ok.Data)
+	}
+	after := r.mustDo("GET", "/certs", nil)
+	if strings.Contains(string(after.Data), "live.example.com") {
+		t.Errorf("force 删除之后它还在列表里：%s", after.Data)
+	}
+}
+
+// TestDeleteOrphanCertNeedsNoForce：不服务任何站点的证书直接删得掉。
+//
+// 没有这一条，一个「无条件拒绝所有删除」的实现也能让上面那条全绿。
+// 而这类证书正是这个端点存在的理由：删掉一条路由之后，它的证书原样留着，
+// 继续下发、继续报到期，**而那还是一把有效的私钥**。
+func TestDeleteOrphanCertNeedsNoForce(t *testing.T) {
+	r := newRig(t)
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "gone.example.com", "upstream": r.upstream, "block_mode": "abort",
+	})
+	certPEM, keyPEM := importableCert(t, "gone.example.com")
+	r.mustDo("PUT", "/certs/gone.example.com", map[string]any{
+		"cert_pem": string(certPEM), "key_pem": string(keyPEM),
+	})
+	// 路由没了，证书成了孤儿。
+	r.mustDo("DELETE", "/routes/gone.example.com", nil)
+
+	list := r.mustDo("GET", "/certs", nil)
+	var d struct {
+		Items []struct {
+			Domain string   `json:"domain"`
+			Covers []string `json:"covers"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(list.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Items) != 1 {
+		t.Fatalf("装置坏了：想要 1 张证书，实际 %d", len(d.Items))
+	}
+	if d.Items[0].Covers == nil {
+		t.Error("covers 是 null —— 那是「算不出来」，而这里算得出来")
+	}
+	if len(d.Items[0].Covers) != 0 {
+		t.Errorf("路由都删了，covers 该是空的，实际 %v", d.Items[0].Covers)
+	}
+
+	// 不带 force 也删得掉。
+	ok := r.mustDo("DELETE", "/certs/gone.example.com", nil)
+	if !strings.Contains(string(ok.Data), "已删除") {
+		t.Errorf("孤儿证书不该需要 force：%s", ok.Data)
+	}
+}
+
+// TestDeleteMissingCertIsNotASuccess：删一个不存在的域名要报 1003。
+//
+// **域名打错一个字符的症状，本来长得和成功一模一样**：
+// DELETE 影响 0 行、返回 nil、接口回一句「已删除」，而库里什么都没发生。
+func TestDeleteMissingCertIsNotASuccess(t *testing.T) {
+	r := newRig(t)
+
+	// **两条路径都要走，因为它们由不同的东西守着。**
+	//
+	// 不带 force 时先查「它在服务什么」，那一步的 GetCert 就会报没有；
+	// 带 force 时那一步被跳过，**只剩 DeleteCert 的 rows-affected 那道**。
+	//
+	// 只写不带 force 的那条是不够的：把 store 里那道退回去（删 0 行也返回 nil），
+	// 这条测试照样全绿——**它验的是另一个东西**。实测过。
+	for _, path := range []string{
+		"/certs/never-existed.example.com",
+		"/certs/never-existed.example.com?force=true",
+	} {
+		_, e := r.do("DELETE", path, nil)
+		if e.Code != api.CodeNotFound {
+			t.Errorf("%s：删不存在的证书应当报 1003，实际 code=%d msg=%q",
+				path, e.Code, e.Msg)
+		}
+	}
+}

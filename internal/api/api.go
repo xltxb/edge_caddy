@@ -216,6 +216,7 @@ func New(o Options) *gin.Engine {
 
 	authed.GET("/certs", s.handleListCerts)
 	authed.PUT("/certs/:domain", audited("导入证书", s.handleImportCert))
+	authed.DELETE("/certs/:domain", audited("删除证书", s.handleDeleteCert))
 
 	authed.GET("/dns/weights", s.handleGetDNSWeights)
 	authed.PUT("/dns/weights", audited("调整解析权重", s.handlePutDNSWeights))
