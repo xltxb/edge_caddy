@@ -52,7 +52,24 @@ type nodeResp struct {
 	//
 	// **区分「一次抖动」和「反复抖动」需要的不是更灵敏的判定，
 	// 是一个跨时间的计数** —— 前者不该惊动人，后者是故障。
-	Reconnects1h int     `json:"reconnects_1h"`
+	//
+	// **数不出来时是 null，不是 0。** 这不只是契约 §0.4 的通则，
+	// 这个字段有它自己的一条：
+	//
+	//	它的存在理由就是「在一切看起来正常时指出异常」，
+	//	而 0 恰好是「一切正常」的样子。
+	//
+	// 给 0 等于让它在自己失效的那一刻**伪装成它最想否定的那个状态**。
+	// 别的字段退化成 0 只是丢信息，这一个退化成 0 是主动说反话。
+	//
+	// 「那条错误会进日志」补救不到位：日志在主控上，看界面的人在浏览器里。
+	// 它保护的是事后排查的人，而**此刻正在看这台节点健不健康的那个人，
+	// 正是这个字段唯一的服务对象**。
+	//
+	// 同一条判据在这个仓库里已经用过四次：conns_delta_pct（历史不足）、
+	// origin_rate（还没有样本）、cpu_series（主控刚重启）、
+	// dns_actor（系统自动摘的，不是 "system"）。
+	Reconnects1h *int    `json:"reconnects_1h"`
 	DNSReason    string  `json:"dns_reason"` // manual | auto_offline | drained
 	DNSActor     *string `json:"dns_actor"`  // 操作人；系统自动摘除时是 null
 	DNSChangedAt *string `json:"dns_changed_at"`
@@ -111,11 +128,11 @@ func (s *Server) handleListNodes(c *gin.Context) {
 		}
 		item.AgentVersion = n.AgentVersion
 		if c, err := s.store.CountReconnects(ctx, n.ID, time.Hour); err != nil {
-			// 数不出来就留 0，但**要说出来**：0 和「查不到」在界面上一样，
-			// 而它们的含义相反（很稳 / 不知道）。
+			// 留 null（零值就是 nil），并且照样进日志 ——
+			// 日志给事后排查的人，null 给此刻在看界面的人。两个都要。
 			s.log.Error("统计重连次数失败", "node", n.ID, "err", err)
 		} else {
-			item.Reconnects1h = c
+			item.Reconnects1h = &c
 		}
 		item.DNSReason = n.DNSReason
 		if n.DNSActor != "" {

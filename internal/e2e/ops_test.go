@@ -1115,7 +1115,8 @@ func TestReconnectsAreCountedAndNotCalledJoining(t *testing.T) {
 		nodes := r.mustDo("GET", "/nodes", nil)
 		var d struct {
 			Items []struct {
-				Reconnects1h int    `json:"reconnects_1h"`
+				// **指针**：null（数不出来）与 0（很稳）必须分得开。
+				Reconnects1h *int   `json:"reconnects_1h"`
 				Status       string `json:"status"`
 			} `json:"items"`
 		}
@@ -1125,11 +1126,21 @@ func TestReconnectsAreCountedAndNotCalledJoining(t *testing.T) {
 		if len(d.Items) != 1 {
 			t.Fatalf("装置坏了：想要 1 个节点，实际 %d", len(d.Items))
 		}
-		return d.Items[0].Reconnects1h, d.Items[0].Status
+		if d.Items[0].Reconnects1h == nil {
+			t.Fatalf("reconnects_1h 是 null —— 那是「数不出来」，" +
+				"而这次数得出来。null 与 0 含义相反，不能混")
+		}
+		return *d.Items[0].Reconnects1h, d.Items[0].Status
 	}
 
-	// 首次加入不算重连。**没有这一条，一个「把每次连接都数一遍」的实现
-	// 也能让下面那条通过**，而那会让每台新机器一上来就显示「已重连 1 次」。
+	// 首次加入不算重连，而且是 **0 不是 null**。
+	//
+	// 这两件事都要钉：
+	//   - 数成 1，则每台新机器一上来就显示「已重连 1 次」
+	//   - 给 null，则「很稳」被说成「数不出来」——同样是假话，方向相反
+	//
+	// （null 那条分支本身**没有测试**：要让 CountReconnects 失败得把库弄坏，
+	// 而那会让这条测试的其余部分一起垮掉。写在这里而不是假装它被覆盖了。）
 	if n, _ := readNode(); n != 0 {
 		t.Fatalf("首次加入不该算重连，实际 %d", n)
 	}
