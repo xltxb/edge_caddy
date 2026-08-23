@@ -58,6 +58,7 @@ type Master struct {
 	TrustedProxies []string
 	SessionTTL     time.Duration
 	OpsBotToken    string
+	CertBotToken   string
 	WebRoot        string
 
 	// Advertise 是主控对节点公布的地址，进服务端证书的 SAN，也拼进安装命令。
@@ -100,6 +101,7 @@ func LoadMaster() (Master, error) {
 		TrustedProxies: splitList(os.Getenv("EC_TRUSTED_PROXIES")),
 		SessionTTL:     time.Duration(envInt("EC_SESSION_TTL_HOURS", 12)) * time.Hour,
 		OpsBotToken:    os.Getenv("EC_OPS_BOT_TOKEN"),
+		CertBotToken:   os.Getenv("EC_CERT_BOT_TOKEN"),
 		WebRoot:        env("EC_WEB_ROOT", "web/dist"),
 		// **不给默认值。** 任何默认值在生产上都是错的——没人的主控真叫那个名字——
 		// 而一个能启动的错误默认值比起不来更危险：它会让人以为配好了，
@@ -120,6 +122,20 @@ func LoadMaster() (Master, error) {
 		return c, fmt.Errorf("EC_SECRET_KEY 太短（%d 字节），至少 32", len(key))
 	}
 	c.SecretKey = []byte(key)
+
+	// **两个 bot token 不能是同一个值。**
+	//
+	// 设成一样的话，比对时 ops-bot 那一支先命中，cert-bot 的路由白名单
+	// 根本走不到 —— 人以为自己把外部平台收窄到了两个端点，
+	// 而实际交出去的是整个控制面。
+	//
+	// **一个「配错了看不出来」的安全边界等于没有边界**，所以在启动时拒绝，
+	// 而不是等到出事之后从审计里看出来。
+	if c.OpsBotToken != "" && c.OpsBotToken == c.CertBotToken {
+		return c, fmt.Errorf(
+			"EC_OPS_BOT_TOKEN 与 EC_CERT_BOT_TOKEN 是同一个值 —— " +
+				"那样 cert-bot 的端点白名单不会生效，外部平台拿到的是完整权限。两个要各生成一个")
+	}
 
 	// 放在最后：先把该报的凭据问题报完，再报这个。一次只让人改一样东西时，
 	// 顺序就是他修复的顺序。

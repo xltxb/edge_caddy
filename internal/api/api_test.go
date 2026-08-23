@@ -19,6 +19,8 @@ import (
 
 const opsBotToken = "bot-token-for-tests"
 
+const certBotToken = "cert-bot-token-for-tests"
+
 func newServer(t *testing.T) (*gin.Engine, *store.Store) {
 	t.Helper()
 	st := testdb.New(t)
@@ -32,10 +34,11 @@ func newServer(t *testing.T) (*gin.Engine, *store.Store) {
 		t.Fatal(err)
 	}
 	r := api.New(api.Options{
-		Store:       st,
-		SessionTTL:  time.Hour,
-		OpsBotToken: opsBotToken,
-		Sealer:      sealer,
+		Store:        st,
+		SessionTTL:   time.Hour,
+		OpsBotToken:  opsBotToken,
+		CertBotToken: certBotToken,
+		Sealer:       sealer,
 	})
 	return r, st
 }

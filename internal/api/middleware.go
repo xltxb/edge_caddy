@@ -60,13 +60,41 @@ func Recover(log *slog.Logger) gin.HandlerFunc {
 //
 // GET /auth/session 是个例外：它也要求身份，但 401 在那里是**正常结果**，
 // 前端在那一处不跳转。这个区别在前端，后端一视同仁。
-func Auth(st *store.Store, opsBotToken string) gin.HandlerFunc {
+// certBotRoutes 是 cert-bot 这个身份**唯一**能到达的端点。其余一律 403。
+//
+// **它存在的理由是 ops-bot 太大了。** ops-bot 是运维自己的自动化身份，
+// 按设计就是宽的（契约 §7 明说直改路是给批量脚本的）——它能删节点、
+// 下线节点、改 DNS 凭证、下发配置。
+//
+// 而外部证书平台只需要两件事：知道我们服务哪些域名、把证书推进来。
+// 把 ops-bot 交出去，等于**对方那边一次日志泄露就是我们整个控制面**。
+//
+// 这张表是白名单不是黑名单：加新端点时它默认到不了，
+// 而反过来（黑名单）加端点会默认放行——那种默认在安全边界上是错的方向。
+var certBotRoutes = map[string]bool{
+	"GET /api/v1/routes":        true, // 判断域名归不归本 CDN 管
+	"PUT /api/v1/certs/:domain": true, // 推证书
+}
+
+func Auth(st *store.Store, opsBotToken, certBotToken string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if tok := bearerToken(c.Request); tok != "" {
 			// ops-bot 用静态 Bearer。常数时间比较：token 比对是认证边界，
 			// 早退的比较会泄露前缀长度。
 			if opsBotToken != "" && subtleEqual(tok, opsBotToken) {
 				c.Set(ctxKeyPrincipal, Principal{Name: "ops-bot", Kind: "bot"})
+				c.Next()
+				return
+			}
+			if certBotToken != "" && subtleEqual(tok, certBotToken) {
+				// **认了身份还要看路。** 只认身份的话这个 token 和 ops-bot
+				// 没有区别，而它存在的全部意义就是那个区别。
+				if !certBotRoutes[c.Request.Method+" "+c.FullPath()] {
+					Forbidden(c, "这个 token 只能推证书（GET /routes 与 PUT /certs/:domain），"+
+						"到不了这个端点")
+					return
+				}
+				c.Set(ctxKeyPrincipal, Principal{Name: "cert-bot", Kind: "cert-bot"})
 				c.Next()
 				return
 			}

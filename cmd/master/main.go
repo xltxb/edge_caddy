@@ -248,7 +248,7 @@ func main() {
 	srv := api.New(api.Options{
 		Store: st, Hub: hub, Tunnel: tun, Health: monitor, Alerts: notifier, DNS: dnsOrch,
 		Sealer: sealer, Deployer: scheduler, Certs: certMgr, Log: log,
-		SessionTTL: cfg.SessionTTL, OpsBotToken: cfg.OpsBotToken, WebRoot: cfg.WebRoot,
+		SessionTTL: cfg.SessionTTL, OpsBotToken: cfg.OpsBotToken, CertBotToken: cfg.CertBotToken, WebRoot: cfg.WebRoot,
 		Version:        Version,
 		SecureCookie:   cfg.SecureCookie,
 		TrustedProxies: cfg.TrustedProxies,

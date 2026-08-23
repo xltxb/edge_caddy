@@ -80,6 +80,10 @@ type Options struct {
 	Version     string
 	SessionTTL  time.Duration
 	OpsBotToken string
+	// CertBotToken 是给**外部证书平台**的静态 Bearer，只能到达 certBotRoutes
+	// 里那两个端点。与 OpsBotToken 分开是因为后者按设计是宽的
+	// ——把它交给外部服务，等于对方一次日志泄露就是我们整个控制面。
+	CertBotToken string
 	// WebRoot 是控制台静态文件所在的目录（EC_WEB_ROOT）。
 	//
 	// **这是后端包与前端包唯一的接缝**：后端出一个 master，前端出一堆静态
@@ -185,7 +189,7 @@ func New(o Options) *gin.Engine {
 		o.Tunnel.HTTPHandler()(c.Writer, c.Request)
 	})
 
-	authed := v1.Group("", Auth(o.Store, o.OpsBotToken), Audit(o.Store, o.Log))
+	authed := v1.Group("", Auth(o.Store, o.OpsBotToken, o.CertBotToken), Audit(o.Store, o.Log))
 	authed.POST("/auth/logout", audited("登出", s.handleLogout))
 	authed.GET("/auth/session", s.handleSession)
 
