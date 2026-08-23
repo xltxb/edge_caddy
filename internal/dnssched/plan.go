@@ -35,6 +35,9 @@ type NodeState struct {
 	IP         string
 	DNSEnabled bool
 	Status     string // ok | warn | down
+	// Drained 是「这台机器已经被人为下线」（ADR-0014）。已下线的节点
+	// **不出现在候选里**——给它配权重是没有意义的动作。
+	Drained bool
 }
 
 // Entry 是某条线路上某个节点的解析安排。
@@ -86,9 +89,31 @@ func Build(domain string, weights Weights, nodes []NodeState) Plan {
 	for _, line := range Lines {
 		lp := LinePlan{Code: line.Code, Name: line.Name}
 
-		ids := make([]string, 0, len(weights[line.Code]))
+		// 候选 = 配过权重的 ∪ 还没下线的节点。
+		//
+		// **只取前者会形成一个闭环**：一个节点只有在 dns_weights 里有行时才
+		// 出现在这一页上，而写那张表的唯一入口是 PUT /dns/weights——
+		// 界面上只能改「已经在列表里的节点」。于是**新接入的节点永远进不了解析**，
+		// 而页面看起来完全正常：五条线路齐全，只是每条都空着。
+		//
+		// 为什么不从 node.line 推：那是**机房卖的中转线路**（CN2 GIA、CMIN2），
+		// 说的是这台机器怎么出网；line_code 是**访问者来自哪个运营商**。
+		// 一台 CN2 GIA 的机器同时服务电信、联通、移动的访问者是常态，
+		// 两者之间没有函数关系——「哪台机器接哪条线的流量」是一个调度决定，
+		// 只能由人来下，产品要做的是**让这个决定做得出来**。
+		seen := make(map[string]bool, len(weights[line.Code])+len(nodes))
+		ids := make([]string, 0, len(weights[line.Code])+len(nodes))
 		for id := range weights[line.Code] {
+			seen[id] = true
 			ids = append(ids, id)
+		}
+		for _, n := range nodes {
+			// 已下线的节点不进候选。但**它如果配过权重就仍然出现**（上面那个循环
+			// 已经收了），因为那份配置是人写下的意图，不该因为一次下线就从页面上消失。
+			if !seen[n.ID] && !n.Drained {
+				seen[n.ID] = true
+				ids = append(ids, n.ID)
+			}
 		}
 		sort.Strings(ids)
 

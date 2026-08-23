@@ -56,6 +56,62 @@ func TestDNSWeightsAlwaysReturnsFiveLines(t *testing.T) {
 	}
 }
 
+// **一台刚接入的节点，必须在这一页上出现得了。**
+//
+// 原先它不出现：Build 只遍历 dns_weights 里的行，而写那张表的唯一入口是
+// PUT /dns/weights——界面上只能改「已经在列表里的节点」。**闭环**，
+// 新接入的节点永远进不了解析，而页面看起来完全正常：五条线路齐全，只是全空。
+//
+// 单元测试盯的是 Build 的候选逻辑；这条盯的是**整条路真的走得通**：
+// 接入 → 出现在五条线路上（权重 0）→ 给它配上权重 → 真的进了轮换。
+// 少了最后一步，这条测试就只证明了「它显示出来了」，而人要的是「它能用」。
+func TestFreshNodeCanBeGivenWeight(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	// 一、一行权重都没配过，它就该在五条线路上都出现。
+	w := r.weights()
+	for _, l := range w.Lines {
+		var found bool
+		for _, e := range l.Entries {
+			if e.Node == "node-hk-01" {
+				found = true
+				if e.Weight != 0 || e.Share != 0 {
+					t.Errorf("%s：还没配过的节点应当是 weight=0 share=0，实际 %+v", l.Code, e)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("线路 %s 上没有刚接入的节点 —— 那它就永远配不上权重", l.Code)
+		}
+	}
+
+	// 二、给它配上权重，它要真的进轮换。
+	r.mustDo("PUT", "/dns/weights", map[string]any{
+		"lines": []any{map[string]any{
+			"code":    "cu",
+			"entries": []any{map[string]any{"node": "node-hk-01", "weight": 50}},
+		}},
+	})
+	w = r.weights()
+	for _, l := range w.Lines {
+		if l.Code != "cu" {
+			continue
+		}
+		for _, e := range l.Entries {
+			if e.Node == "node-hk-01" {
+				if e.Weight != 50 || e.Share != 100 {
+					t.Fatalf("配上权重之后应当独占联通线路，实际 %+v", e)
+				}
+				return
+			}
+		}
+	}
+	t.Fatal("配完权重之后反而找不到它了")
+}
+
 // **没配服务商时如实说清楚**：权重只会保存在本地，不会推到任何地方。
 //
 // 不说的话，人配了一堆权重、界面显示保存成功，而解析根本没动过。

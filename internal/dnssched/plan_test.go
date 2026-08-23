@@ -173,3 +173,98 @@ func TestAllFiveLinesAlwaysPresent(t *testing.T) {
 		}
 	}
 }
+
+func entryOf(t *testing.T, p dnssched.Plan, line, node string) (dnssched.Entry, bool) {
+	t.Helper()
+	for _, l := range p.Lines {
+		if l.Code != line {
+			continue
+		}
+		for _, e := range l.Entries {
+			if e.Node == node {
+				return e, true
+			}
+		}
+	}
+	return dnssched.Entry{}, false
+}
+
+// **一个还没配过权重的节点，必须在每条线路上都出现（权重 0）。**
+//
+// 不这么做会形成一个闭环：节点只在 dns_weights 里有行时才出现在这一页上，
+// 而写那张表的唯一入口是 PUT /dns/weights——界面上只能改「已经在列表里的」。
+// 于是**新接入的节点永远进不了解析**。
+//
+// 而这一页看起来完全正常：五条线路齐全，只是每条都空着。前端 agent 在真主控上
+// 撞到了它——一台在线、dns_enabled、没下线的节点，五条线路全是 0 个条目。
+//
+// 这个洞能活到今天，是因为**这个包里每一条测试都从一份「节点已经在里面」的
+// 权重表开始**。测试全都假设了产品到不了的那个状态。
+func TestNodeWithoutWeightIsStillACandidate(t *testing.T) {
+	p := dnssched.Build("cdn.example.com",
+		dnssched.Weights{}, // 全新装机：一行权重都没有
+		nodes(ok("node-hk-01", "203.0.113.7")))
+
+	for _, line := range []string{"ct", "cu", "cm", "tw", "ov"} {
+		e, found := entryOf(t, p, line, "node-hk-01")
+		if !found {
+			t.Fatalf("线路 %s 上没有 node-hk-01 —— 那它就永远配不上权重，"+
+				"因为界面只能改已经在列表里的节点", line)
+		}
+		if e.Weight != 0 {
+			t.Errorf("%s：还没配过的节点权重应当是 0，实际 %d", line, e.Weight)
+		}
+		if e.InRotation {
+			t.Errorf("%s：权重 0 不该在轮换里", line)
+		}
+		if e.Share != 0 {
+			t.Errorf("%s：权重 0 的占比应当是 0，实际 %v", line, e.Share)
+		}
+	}
+}
+
+// 已下线的节点**不进候选**：给一台已经退出的机器配权重是没有意义的动作。
+//
+// 但**它如果配过权重就仍然出现**——那份配置是人写下的意图，
+// 不该因为一次下线就从页面上消失（重新上线之后还要用）。
+func TestDrainedNodeIsNotACandidateButKeepsItsConfiguredWeight(t *testing.T) {
+	drained := func(id, ip string) dnssched.NodeState {
+		n := ok(id, ip)
+		n.Drained, n.DNSEnabled = true, false
+		return n
+	}
+
+	// **夹具里必须有一个没下线的节点。**
+	//
+	// 这条测试的主张几乎全是否定式（「不该出现」），而否定断言在**候选逻辑
+	// 整个不存在**时也会绿——那正是修这个 bug 之前的状态。
+	// 加一台在线机器，让这条测试自己带一个肯定断言：候选逻辑没了它就红。
+	p := dnssched.Build("cdn.example.com",
+		dnssched.Weights{"ct": {"配过的": 60}},
+		nodes(drained("配过的", "1.1.1.1"), drained("没配过的", "2.2.2.2"),
+			ok("在线的", "3.3.3.3")))
+
+	if _, found := entryOf(t, p, "ct", "在线的"); !found {
+		t.Fatal("装置坏了：没下线的节点本该进候选。" +
+			"这条测试下面全是否定断言，它们在候选逻辑整个失效时也会绿")
+	}
+
+	e, found := entryOf(t, p, "ct", "配过的")
+	if !found {
+		t.Fatal("配过权重的节点即使下线也该留在页面上：那是人写下的意图")
+	}
+	if e.Weight != 60 {
+		t.Errorf("配置值不该被下线改动，实际 %d", e.Weight)
+	}
+	if e.InRotation {
+		t.Error("下线的节点不该在轮换里")
+	}
+	if _, found := entryOf(t, p, "ct", "没配过的"); found {
+		t.Error("已下线且没配过权重的节点不该进候选 —— 给它配权重是没有意义的动作")
+	}
+	// 反过来也查一条：这个断言在**候选逻辑整个失效**时也会绿，
+	// 所以要有一条肯定断言兜着它。
+	if _, found := entryOf(t, p, "cu", "配过的"); found {
+		t.Error("cu 上没配过权重、且节点已下线，不该出现")
+	}
+}

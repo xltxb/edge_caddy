@@ -114,6 +114,7 @@ func (o *Orchestrator) CurrentPlan(ctx context.Context, weights dnssched.Weights
 	for _, n := range nodes {
 		states = append(states, dnssched.NodeState{
 			ID: n.ID, IP: n.PublicIP, DNSEnabled: n.DNSEnabled, Status: n.Status,
+			Drained: n.DrainedAt != nil,
 		})
 	}
 	return dnssched.Build(hostname(cfg), weights, states), nil
