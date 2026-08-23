@@ -60,7 +60,7 @@ defineEmits<{ (e: 'cancel'): void; (e: 'confirm', force: boolean): void }>()
           **删掉之后的边界要说在前面。**
 
           `load_pem` 是全量替换的，只有下一次下发才会把它从节点上摘掉 ——
-          后端在删除时会顺带触发一次，所以正常路径下「已删除」是真的。
+          **契约 §9**：后端在删除时会顺带触发一次，所以正常路径下「已删除」是真的。
           但那一步可能失败（`3001`），那时 detail 会说「已从库中删除，
           但节点上仍在服务它」——所以这里不预先承诺，由结果那句话来说。
         -->
@@ -205,7 +205,17 @@ defineEmits<{ (e: 'cancel'): void; (e: 'confirm', force: boolean): void }>()
   font-weight: var(--weight-semibold);
   cursor: pointer;
 }
-.danger {
+/*
+ * **限定在 .actions 下。**
+ *
+ * 不限定的话它会命中 `<p class="note danger">` —— 那一段拿到按钮的粉红底，
+ * 而 `.note.danger` 特异性更高又把文字设成同一个粉红：**粉底粉字，一个字
+ * 看不见**。而全套 9 步检查一条都不红：类型、单测、e2e、文案扫描，
+ * 没有一样看得见颜色。
+ *
+ * 这是起 dev server 看了一眼才发现的 —— **有些东西只有眼睛能验**。
+ */
+.actions .danger {
   padding: 6px 14px;
   border: 1px solid var(--danger-border, var(--danger-text));
   border-radius: var(--radius-sm);
@@ -215,7 +225,7 @@ defineEmits<{ (e: 'cancel'): void; (e: 'confirm', force: boolean): void }>()
   font-weight: var(--weight-semibold);
   cursor: pointer;
 }
-.danger:disabled {
+.actions .danger:disabled {
   opacity: 0.6;
   cursor: default;
 }

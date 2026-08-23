@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { http, errorText } from '@/api/http'
 import { useUiStore } from '@/stores/ui'
-import type { CertDeleteWire, CertWire, Paged } from '@/api/types'
+import type { CertDeleteWire, CertWire, Paged, SettingsWire } from '@/api/types'
 import { challengeText } from '@/certs/challenge'
 import { coverageText } from '@/certs/coverage'
 import { orphanNote } from '@/certs/orphan'
@@ -26,11 +26,29 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const openRow = ref<string | null>(null)
 
+/**
+ * 空态要说的两件事都在 `GET /settings` 里（契约 §9）：证书从哪来、那条链路通没通。
+ *
+ * **两者都只读**：`master_endpoint` 由主控启动配置决定，`ops_bot_token_configured`
+ * 只从环境变量 `EC_OPS_BOT_TOKEN` 读 —— `PUT` 里发它会被严格绑定当场拒掉。
+ * 所以它们在界面上是**陈述**，不是入口。
+ */
+const settings = ref<SettingsWire | null>(null)
+
 async function load(): Promise<void> {
   loading.value = true
   error.value = null
   try {
-    items.value = (await http.get<Paged<CertWire>>('/certs')).items
+    /*
+     * 并行拉。settings 失败**不算加载失败** —— 证书列表本身跟它无关，
+     * 为了空态里那两行附加信息把整页变成错误页是不成比例的。
+     */
+    const [certs, st] = await Promise.all([
+      http.get<Paged<CertWire>>('/certs'),
+      http.get<SettingsWire>('/settings').catch(() => null),
+    ])
+    items.value = certs.items
+    settings.value = st
   } catch (e) {
     error.value = errorText(e, '加载证书失败')
   } finally {
@@ -178,9 +196,55 @@ const mismatched = computed(() => items.value.filter((c) => c.loaded_nodes < c.e
       证书只从外部平台导入，`PUT /certs/:domain` 是唯一入口）。
       同一块地方，从「不用管」变成了「这里就是你该动手的地方」。
     -->
-    <div v-else-if="!items.length" class="hint">
-      还没有证书。证书不再由主控签发 —— 要在外部平台签好之后导入进来，
-      在这之前用到 HTTPS 的路由不会有可用的证书。
+    <div v-else-if="!items.length" class="empty">
+      <p class="lead">
+        还没有证书。证书由<b>外部证书平台推送</b>到主控 ——
+        控制台里没有上传的地方，<b>这是有意的</b>，不是还没做。
+      </p>
+
+      <!--
+        **这两行是陈述，不是入口。**
+
+        `master_endpoint` 由主控启动配置决定（它进了服务端证书的 SAN，运行时改不了）；
+        `ops_bot_token_configured` 只从环境变量 `EC_OPS_BOT_TOKEN` 读，`PUT` 里
+        发它会被严格绑定当场拒掉。两者在控制台里都改不了。
+
+        所以**不能做成看起来能点的样子** —— 一个标出来却点不动的东西，第一次让人
+        去找按钮找不到，第二次他就学会跳过这类提示了。用纯文本、标「只读」。
+      -->
+      <dl class="link-facts">
+        <dt>推送地址</dt>
+        <dd class="mono">
+          {{ settings?.master_endpoint || '—' }}
+          <span class="ro">只读 · 由主控启动配置决定</span>
+        </dd>
+        <dt>推送认证</dt>
+        <dd>
+          <span :class="settings?.ops_bot_token_configured ? 'okc' : 'warn'">
+            {{ settings?.ops_bot_token_configured ? '已配置' : '未配置' }}
+          </span>
+          <span class="ro">只读 · 从环境变量读，控制台改不了</span>
+          <!--
+            未配置时这条链路是断的 —— 而症状是「证书一直不来」，
+            那句话本身不会指向这里。
+          -->
+          <p v-if="settings && !settings.ops_bot_token_configured" class="warn small">
+            没配的话外部平台推不进来，而症状只是「证书一直没出现」。
+          </p>
+        </dd>
+      </dl>
+
+      <!--
+        **代价说出来，不藏着。** 契约 §9 明写了这一条：没有上传表单意味着
+        外部平台挂了、或临时要换一张证书时，控制台里做不了。
+        说清那时候走哪条路，人才不会去数据库里翻。
+      -->
+      <p class="note">
+        外部平台挂了、或者临时要换一张证书时，<b>控制台里做不了</b> ——
+        那时直接调 <code>PUT /certs/:domain</code>（curl + 上面那个 token），
+        不要去改数据库：绕过接口之后不会触发下发，节点上的证书不会变。
+      </p>
+
       <RouterLink class="mini" to="/routes">去看反代路由</RouterLink>
     </div>
 
@@ -321,6 +385,65 @@ const mismatched = computed(() => items.value.filter((c) => c.loaded_nodes < c.e
   font-size: var(--fs-micro);
   color: var(--text-faint);
   margin-top: 2px;
+}
+.empty {
+  padding: var(--space-6) var(--space-5);
+  max-width: 620px;
+}
+.empty .lead {
+  margin: 0 0 var(--space-4);
+  font-size: var(--fs-xs);
+  color: var(--text-body);
+  line-height: 1.8;
+}
+.empty .lead b {
+  color: var(--text-strong);
+  font-weight: var(--weight-semibold);
+}
+.link-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-2) var(--space-4);
+  margin: 0 0 var(--space-4);
+  font-size: var(--fs-2xs);
+}
+.link-facts dt {
+  color: var(--text-faint);
+}
+.link-facts dd {
+  margin: 0;
+  color: var(--text-body);
+}
+.link-facts .ro {
+  margin-left: var(--space-2);
+  font-size: var(--fs-micro);
+  color: var(--text-faint);
+}
+.link-facts .okc {
+  color: var(--success-text, var(--accent));
+}
+.link-facts .warn {
+  color: var(--warning-text);
+}
+.link-facts p {
+  margin: var(--space-1) 0 0;
+  line-height: 1.7;
+}
+.empty .note {
+  margin: 0 0 var(--space-4);
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  line-height: 1.8;
+}
+.empty .note b {
+  color: var(--warning-text);
+  font-weight: var(--weight-semibold);
+}
+.empty .note code {
+  font-family: var(--font-mono);
+  background: var(--surface-sunken);
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
 }
 .banner {
   padding: 9px var(--space-4);
