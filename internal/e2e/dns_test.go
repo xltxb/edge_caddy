@@ -589,3 +589,79 @@ func TestAutoOfflineHasNullActorInJSON(t *testing.T) {
 		t.Errorf("系统自动摘除时 dns_actor 必须是 null，实际 %q", *actor)
 	}
 }
+
+// TestConfiguringProviderPushesImmediately 钉的是**配好服务商那一刻就推一次**。
+//
+// 灰度上撞到的：把服务商换成 cloudflare_dns、填好凭证、保存成功、徽标变绿
+// —— 而服务商那边一条记录都没有。因为触发同步的是「保存权重 / 动节点开关 /
+// 改节点 IP / 心跳摘挂」，**改服务商本身不在其中**。
+// 人得再去随便碰一个别的东西才会推，而没有任何一处说得出这件事。
+//
+// **判据是假服务商收到了请求，不是接口回了 200。**
+// 后者只说明它没报错——而「什么也没做」也不报错，这正是这一整类缺陷的形状。
+func TestConfiguringProviderPushesImmediately(t *testing.T) {
+	r := newRig(t)
+
+	// 先有一个在轮换里的节点，否则推的时候没东西可推。
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	before := r.dnsHits()
+	e := r.mustDo("PUT", "/settings", map[string]any{
+		"dns_provider": map[string]any{
+			"kind": "dnspod", "domain": "example.com", "sub": "cdn",
+			"credential": "fake-token",
+		},
+	})
+
+	if got := r.dnsHits(); got == before {
+		t.Fatalf("配好服务商之后一个请求都没发给它（前 %d 后 %d）—— "+
+			"保存成功、徽标变绿，而解析一动不动", before, got)
+	}
+
+	// 响应要说出推没推，否则人只看得到一句「保存成功」。
+	var d struct {
+		Synced bool   `json:"dns_synced"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if !d.Synced {
+		t.Errorf("dns_synced 该是 true，detail=%q", d.Detail)
+	}
+	if d.Detail == "" {
+		t.Error("要说出这次推的结果 —— 只回一句「保存成功」的话，" +
+			"人无从知道解析动了没有")
+	}
+}
+
+// TestSettingsUnrelatedToDNSSaysNothingAboutDNS 是上一条的反面。
+//
+// **detail 在与 DNS 无关时必须是空串**（契约 §0.4）：一句「解析已同步」
+// 出现在只改了心跳间隔的那次响应里，是在报告一件没发生的事。
+//
+// 没有这一条，一个「无条件返回同步成功」的实现也能让上面那条通过。
+func TestSettingsUnrelatedToDNSSaysNothingAboutDNS(t *testing.T) {
+	r := newRig(t)
+	r.configureDNSProvider()
+
+	before := r.dnsHits()
+	e := r.mustDo("PUT", "/settings", map[string]any{"heartbeat_interval_s": 7})
+
+	if got := r.dnsHits(); got != before {
+		t.Errorf("只改了心跳间隔却推了 %d 次解析", got-before)
+	}
+	var d struct {
+		Synced bool   `json:"dns_synced"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Synced || d.Detail != "" {
+		t.Errorf("与 DNS 无关的一次修改，却说 synced=%v detail=%q",
+			d.Synced, d.Detail)
+	}
+}

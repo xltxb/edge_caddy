@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -8,6 +9,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/xltxb/edge_caddy/internal/dnsctl"
+	"github.com/xltxb/edge_caddy/internal/dnsops"
 	"github.com/xltxb/edge_caddy/internal/store"
 )
 
@@ -172,6 +175,10 @@ func (s *Server) handlePutSettings(c *gin.Context) {
 		return
 	}
 
+	// **detail 必须在与 DNS 无关时保持空串**（契约 §0.4）：
+	// 一句「解析已同步」出现在只改了心跳间隔的那次响应里，是在报告一件没发生的事。
+	synced, detail := false, ""
+
 	if p := req.DNSProvider; p != nil {
 		dns, err := s.store.GetDNSProvider(ctx, nil)
 		if err != nil {
@@ -249,8 +256,49 @@ func (s *Server) handlePutSettings(c *gin.Context) {
 			Fail(c, CodeDownstream, "保存失败")
 			return
 		}
+		synced, detail = s.syncAfterProviderChange(ctx)
 	}
-	OK(c, nil)
+	OK(c, gin.H{"dns_synced": synced, "detail": detail})
+}
+
+// syncAfterProviderChange 在服务商设置改动之后**立刻推一次**。
+//
+// **不推的话，配好服务商是一个什么也不会发生的动作。**
+//
+// 灰度上撞到的：把服务商从 cloudflare 换成 cloudflare_dns、填好凭证、
+// 保存成功、徽标变绿 —— 而 Cloudflare 那边一条记录都没有。
+// 因为触发同步的是「保存权重 / 动节点开关 / 改节点 IP / 心跳摘挂」，
+// **改服务商本身不在其中**。人得再去随便碰一个别的东西才会推。
+//
+// 这是这个仓库里数到第六次的同一个形状：**机制建好了，
+// 没接到最该接的那个输入上**。而它每次的症状都一样——
+// 每一步都成功，而什么也没发生。
+//
+// 三种结果分开说，因为人接下来的动作不同：
+//
+//	推上去了       什么都不用做
+//	推不上去       看 detail 里服务商回的原话
+//	没东西可推      解析轮换是空的 —— 去把节点的解析开回来，不是去查凭证
+func (s *Server) syncAfterProviderChange(ctx context.Context) (bool, string) {
+	if s.dns == nil {
+		return false, ""
+	}
+	switch err := s.dns.Sync(ctx, nil); {
+	case errors.Is(err, dnsops.ErrNoProvider):
+		// 配到一半（缺必填项）在上面就被拦下了，走到这里说明是清空了配置。
+		return false, ""
+	case err != nil:
+		var capErr *dnsctl.ErrCapability
+		if errors.As(err, &capErr) {
+			// **能力不足要与「下游失败」分开。** 后者会让人去查网络、查凭证，
+			// 而「没有节点在轮换里」要做的是去把节点的解析开回来。
+			return false, "服务商设置已保存，但这次没能推上去：" + capErr.Reason
+		}
+		s.log.Error("改完服务商后同步解析失败", "err", err)
+		return false, "服务商设置已保存，但同步到服务商失败：" + err.Error()
+	default:
+		return true, "服务商设置已保存，当前解析已推到服务商"
+	}
 }
 
 func (s *Server) handleGetAlerts(c *gin.Context) {

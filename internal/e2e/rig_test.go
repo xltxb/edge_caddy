@@ -18,6 +18,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -49,6 +50,10 @@ type rig struct {
 	caddy      *caddytest.Caddy
 	upstream   string
 	cookie     *http.Cookie
+
+	// dnsCalls 数假服务商收到了几个请求。**「推没推」只有在这一侧才看得出来**：
+	// 接口回 200 说明它没报错，不说明它真去推了。
+	dnsCalls *int32
 }
 
 func newRig(t *testing.T) *rig {
@@ -128,7 +133,9 @@ func newRig(t *testing.T) *rig {
 	//
 	// 光有这个 server 还不够，得有测试**真的去配**它（configureDNSProvider）；
 	// 不配的话 Sync 仍然返回 ErrNoProvider，跟从前一样。
+	var dnsCalls int32
 	dnsAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&dnsCalls, 1)
 		body := `{"status":{"code":"10","message":"No records"}}`
 		if r.URL.Path != "/Record.List" {
 			body = `{"status":{"code":"1","message":"Action completed successful"}}`
@@ -151,6 +158,7 @@ func newRig(t *testing.T) *rig {
 	r := &rig{
 		t: t, store: st, http: srv, tunnelAddr: lis.Addr().String(),
 		caPin: caPin, caddy: cad, upstream: strings.TrimPrefix(up.URL, "http://"),
+		dnsCalls: &dnsCalls,
 	}
 	r.login()
 	return r
@@ -491,3 +499,6 @@ func importableCert(t *testing.T, domain string) (certPEM, keyPEM []byte) {
 	return append(leaf, inter...),
 		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kb})
 }
+
+// dnsHits 是假服务商到目前为止收到的请求数。
+func (r *rig) dnsHits() int { return int(atomic.LoadInt32(r.dnsCalls)) }
