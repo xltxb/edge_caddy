@@ -90,6 +90,16 @@ func (c DNSProviderSettings) MissingFields() []string {
 		if c.CredentialMode == "global_key" && c.Email == "" {
 			missing = append(missing, "email")
 		}
+	case "cloudflare_dns":
+		// **不要 account_id。** 普通 DNS 记录挂在 zone 上，
+		// 账号级的 Load Balancing 权限根本用不上——这正是这条路的好处之一：
+		// 少一个要人去 Cloudflare 后台翻的值，也少一类权限不足。
+		if c.ZoneID == "" {
+			missing = append(missing, "zone_id")
+		}
+		if c.CredentialMode == "global_key" && c.Email == "" {
+			missing = append(missing, "email")
+		}
 	}
 	return missing
 }
@@ -99,7 +109,7 @@ func (c DNSProviderSettings) MissingFields() []string {
 // 此前 settings 的校验里写着 `k != "dnspod" && k != "cloudflare"`，
 // 而 dnsops 的装配是另一个 switch —— 加一家时改了一处忘了另一处，
 // 症状是「保存成功、装配时报未知服务商」，或者反过来「代码支持它、而校验不让存」。
-var ProviderKinds = []string{"dnspod", "cloudflare"}
+var ProviderKinds = []string{"dnspod", "cloudflare", "cloudflare_dns"}
 
 // KnownKind 说这个 kind 主控认不认。
 func KnownKind(k string) bool {
@@ -113,8 +123,9 @@ func KnownKind(k string) bool {
 
 // CredentialModes 是每家支持的凭证模式。空串表示这一家没有模式之分。
 var CredentialModes = map[string][]string{
-	"dnspod":     {""},
-	"cloudflare": {"api_token", "global_key"},
+	"dnspod":         {""},
+	"cloudflare":     {"api_token", "global_key"},
+	"cloudflare_dns": {"api_token", "global_key"},
 }
 
 // ProviderRequirements 报出每个 kind × mode 还要人填哪些字段。

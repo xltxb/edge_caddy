@@ -1772,16 +1772,46 @@ cursor 分页（§0.5），可选 `?operator=abiu`。倒序。
 
 **`PUT` 时 `dns_provider` 的字段**（两家不同，界面按 `kind` 切换）：
 
-| 字段 | dnspod | cloudflare |
-|---|---|---|
-| `kind` | ✓ | ✓ |
-| `domain` / `sub` | ✓ | ✓ |
-| `credential` | `ID,Token` | API Token 或 Global Key |
-| `credential_mode` | — | `api_token` \| `global_key` |
-| `zone_id` | — | **必填** |
-| `email` | — | **`global_key` 时必填** |
-| `account_id` | — | **必填** |
-| `clear` | ✓ | ✓ |（独立动作，见下）
+**`kind` 有三种**，其中两种都是 Cloudflare：
+
+| `kind` | 靠什么调度 | 能做到 | 要花钱吗 |
+|---|---|---|---|
+| `dnspod` | DNSPod 原生线路 + 权重 | 电信/联通/移动分线、权重 | 线路免费，**权重要付费套餐** |
+| `cloudflare` | Load Balancing | 按国家/大洲分流、权重 | **Load Balancing 是付费附加产品** |
+| `cloudflare_dns` | 普通 A / AAAA 记录轮换 | **只有进出轮换** | 免费 |
+
+> **`cloudflare_dns` 是灰度上撞出来的。** 那边没开通 Load Balancing，
+> 于是 `cloudflare` 一步都走不了——报的是 `10000 Authentication error`，
+> 而那句话不会告诉人「这个产品你没买」。
+>
+> 它做得到「节点挂了自动摘解析、下线时真的移出轮换」，做不到权重和地域分流。
+> **前一半才是这套系统里最要命的那半**：一台死掉的机器还留在解析里，
+> 意味着一部分用户直接打不开；而权重分配不均只是效率问题。
+>
+> **五条线必须配同一组节点、且权重全部相同，否则明确报错。**
+> 普通 DNS 记录既没有权重也没有线路，默默按等权处理的话，
+> 界面上权重条画着 60/40 而实际是轮询——**而那种不一致没有任何地方会说出来**。
+> 它的 `Caps.Lines` 只有一条 `all`（`covers` 盖住全部五条），
+> 界面据此把五个输入框合成一个，于是那个会被拒绝的状态**在界面上造不出来**。
+>
+> **写进去的记录一律 `proxied: false`。** 开了橙云，到达用户的是 Cloudflare 的边缘
+> 而不是我们的节点，这套系统就成了一个没人经过的摆设——
+> 而它最难查的地方在于**它看起来是好的**：域名能打开、证书也正常，只有回源日志是空的。
+>
+> 同步是**先加后删**：反过来中间会有一个旧记录已删、新记录未建的窗口，
+> 那期间域名解析不出来。一个节点都不在轮换里时**不动记录**，
+> 理由与 `cloudflare` 相同——不要主动制造一次 NXDOMAIN。
+
+| 字段 | dnspod | cloudflare | cloudflare_dns |
+|---|---|---|---|
+| `kind` | ✓ | ✓ | ✓ |
+| `domain` / `sub` | ✓ | ✓ | ✓ |
+| `credential` | `ID,Token` | API Token 或 Global Key | 同左 |
+| `credential_mode` | — | `api_token` \| `global_key` | 同左 |
+| `zone_id` | — | **必填** | **必填** |
+| `email` | — | **`global_key` 时必填** | 同左 |
+| `account_id` | — | **必填** | **不需要**（记录挂在 zone 上） |
+| `clear` | ✓ | ✓ | ✓ |（独立动作，见下）
 
 > `account_id` 这一行**此前写的是「可选」，那是错的**，前端的输入框因此
 > 标着「可空」。灰度上的症状：Cloudflare 只填 kind / domain / token 保存成功、

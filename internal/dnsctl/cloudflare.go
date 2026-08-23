@@ -22,23 +22,40 @@ import (
 //
 // 因此这个适配把 ct/cu/cm 塌缩成「中国」。三者权重不同时它**明确报错**：
 // 取个平均值会给出一个用户没要过的配置，而且没人会发现。
-type Cloudflare struct {
+// cfAPI 是两个 Cloudflare 适配共用的那一层：鉴权、发请求、翻错误码。
+//
+// **抽出来是因为它们必须一样。** 分开写的话，「权限不足该去改哪里」这类
+// 翻译只会加在其中一个上，而人撞到的是另一个——那时候的症状是
+// 「同一个错误，有的地方说得清有的地方说不清」，而它看起来像是随机的。
+type cfAPI struct {
 	// Token 是 API Token；GlobalKey + Email 是旧的 Global API Key 模式。
 	Token     string
 	Email     string
 	GlobalKey string
 
-	AccountID string
-	ZoneID    string
-	Hostname  string
-
 	HTTP *http.Client
 	Base string
 }
 
+// Cloudflare 用 Load Balancing 做加权调度。要账号级的 Load Balancing 权限，
+// 而且那是个付费附加产品。用不了它的话看 CloudflareDNS。
+type Cloudflare struct {
+	cfAPI
+
+	AccountID string
+	ZoneID    string
+	Hostname  string
+}
+
 func NewCloudflare(accountID, zoneID, hostname string) *Cloudflare {
 	return &Cloudflare{
+		cfAPI:     newCFAPI(),
 		AccountID: accountID, ZoneID: zoneID, Hostname: hostname,
+	}
+}
+
+func newCFAPI() cfAPI {
+	return cfAPI{
 		HTTP: &http.Client{Timeout: 20 * time.Second},
 		Base: "https://api.cloudflare.com/client/v4",
 	}
@@ -286,7 +303,7 @@ type cfEnvelope struct {
 	} `json:"errors"`
 }
 
-func (c *Cloudflare) call(ctx context.Context, method, path string, body, out any) error {
+func (c *cfAPI) call(ctx context.Context, method, path string, body, out any) error {
 	// **拼出空路径段就地拦下，别把它发出去。**
 	//
 	// account_id 为空时 "/accounts/"+id+"/load_balancers/pools" 会变成

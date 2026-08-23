@@ -73,6 +73,17 @@ func (o *Orchestrator) Provider(ctx context.Context) (dnsctl.Provider, store.DNS
 			p.Base = o.BaseOverride
 		}
 		return p, cfg, nil
+	case "cloudflare_dns":
+		cf := dnsctl.NewCloudflareDNS(cfg.ZoneID, hostname(cfg))
+		if cfg.CredentialMode == "global_key" {
+			cf.Email, cf.GlobalKey = cfg.Email, cfg.Credential
+		} else {
+			cf.Token = cfg.Credential
+		}
+		if o.BaseOverride != "" {
+			cf.Base = o.BaseOverride
+		}
+		return cf, cfg, nil
 	case "cloudflare":
 		cf := dnsctl.NewCloudflare(cfg.AccountID, cfg.ZoneID, hostname(cfg))
 		if cfg.CredentialMode == "global_key" {

@@ -52,6 +52,36 @@ func TestCloudflareNeedsMoreThanTheCommonThree(t *testing.T) {
 	}
 }
 
+// TestCloudflareDNSDoesNotNeedAccountID 钉的是**这条路少一个必填项**。
+//
+// 普通 DNS 记录挂在 zone 上，账号级的 Load Balancing 权限根本用不上。
+// 这不只是「少填一个框」：account_id 要人去 Cloudflare 后台翻，
+// 而它对应的那类权限不足（10000）正是灰度上撞到的第二个坑。
+//
+// 反过来也要守：zone_id 仍然必填 —— 它是拼进 URL 的路径段，
+// 空了会拼出 //，然后由对方回一句「路由不到」。
+func TestCloudflareDNSDoesNotNeedAccountID(t *testing.T) {
+	base := store.DNSProviderSettings{
+		Kind: "cloudflare_dns", Domain: "example.com", Credential: "tok",
+		ZoneID: "zone",
+	}
+	if !base.Usable() {
+		t.Errorf("纯 DNS 模式不该要 account_id，实际还缺 %v", base.MissingFields())
+	}
+
+	noZone := base
+	noZone.ZoneID = ""
+	if !contains(noZone.MissingFields(), "zone_id") {
+		t.Error("zone_id 仍然必填 —— 它是拼进 URL 的路径段，空了会拼出 //")
+	}
+
+	gk := base
+	gk.CredentialMode = "global_key"
+	if !contains(gk.MissingFields(), "email") {
+		t.Error("global_key 模式缺 email 却说完整 —— X-Auth-Email 配不上就是 401")
+	}
+}
+
 // TestDNSPodIsNotDraggedIntoCloudflaresRequirements 守的是反向：
 // 给 Cloudflare 加必填项时，别顺手把另一家也一起拦了。
 func TestDNSPodIsNotDraggedIntoCloudflaresRequirements(t *testing.T) {

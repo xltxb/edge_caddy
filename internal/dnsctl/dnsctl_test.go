@@ -535,3 +535,153 @@ func TestCloudflareAuthErrorSaysWhichPermission(t *testing.T) {
 		}
 	}
 }
+
+// --- Cloudflare 纯 DNS ---
+
+func plainPlan(t *testing.T, nodes ...dnssched.NodeState) dnssched.Plan {
+	t.Helper()
+	w := dnssched.Weights{}
+	for _, l := range []string{"ct", "cu", "cm", "tw", "ov"} {
+		m := map[string]int{}
+		for _, n := range nodes {
+			m[n.ID] = 100
+		}
+		w[l] = m
+	}
+	return dnssched.Build("cdn.example.com", w, nodes)
+}
+
+// TestCloudflareDNSAddsBeforeDeleting 钉的是**先加后删**。
+//
+// 反过来的话，中间会有一个「旧记录都删了、新记录还没建上」的窗口，
+// 那期间这个域名**解析不出来**——而那不是降级，是彻底不可达。
+//
+// 这条不看返回值，只看调用顺序：正确性完全在时序里，
+// 而时序是那种「跑一百次都不出错、出错时是灾难」的东西。
+func TestCloudflareDNSAddsBeforeDeleting(t *testing.T) {
+	api := &fakeAPI{respond: map[string]string{
+		// 现状：一条旧记录（1.1.1.1），要换成 2.2.2.2
+		"GET /zones/z/dns_records": `{"success":true,"result":[
+			{"id":"rec-old","type":"A","name":"cdn.example.com","content":"1.1.1.1"}]}`,
+		"POST /zones/z/dns_records":           `{"success":true,"result":{"id":"rec-new"}}`,
+		"DELETE /zones/z/dns_records/rec-old": `{"success":true,"result":{}}`,
+	}}
+	cf := dnsctl.NewCloudflareDNS("z", "cdn.example.com")
+	cf.Token = "tok"
+	cf.Base = api.server(t)
+
+	if err := cf.Sync(context.Background(), plainPlan(t, node("b", "2.2.2.2"))); err != nil {
+		t.Fatalf("同步失败: %v", err)
+	}
+
+	var postAt, deleteAt = -1, -1
+	for i, c := range api.seen() {
+		switch {
+		case c.Method == "POST" && strings.Contains(c.Path, "/dns_records"):
+			postAt = i
+		case c.Method == "DELETE" && strings.Contains(c.Path, "/dns_records/"):
+			deleteAt = i
+		}
+	}
+	if postAt < 0 || deleteAt < 0 {
+		t.Fatalf("装置坏了：没看到 POST(%d) / DELETE(%d)，调用是 %+v",
+			postAt, deleteAt, api.seen())
+	}
+	if postAt > deleteAt {
+		t.Error("先删后加 —— 中间那个窗口里这个域名解析不出来")
+	}
+}
+
+// TestCloudflareDNSNeverProxies 钉的是 proxied 必须是 false。
+//
+// **打开橙云的话，到达用户的是 Cloudflare 的边缘，不是我们的节点**，
+// 这套系统就成了一个没人经过的摆设。而它最难查的地方在于**它看起来是好的**：
+// 域名能打开、证书也正常，只有回源日志是空的。
+func TestCloudflareDNSNeverProxies(t *testing.T) {
+	api := &fakeAPI{respond: map[string]string{
+		"GET /zones/z/dns_records":  `{"success":true,"result":[]}`,
+		"POST /zones/z/dns_records": `{"success":true,"result":{"id":"r1"}}`,
+	}}
+	cf := dnsctl.NewCloudflareDNS("z", "cdn.example.com")
+	cf.Token = "tok"
+	cf.Base = api.server(t)
+
+	if err := cf.Sync(context.Background(), plainPlan(t, node("a", "1.1.1.1"))); err != nil {
+		t.Fatalf("同步失败: %v", err)
+	}
+	var sawPost bool
+	for _, c := range api.seen() {
+		if c.Method != "POST" {
+			continue
+		}
+		sawPost = true
+		if p, ok := c.Body["proxied"]; !ok || p != false {
+			t.Errorf("proxied=%v（要 false）—— 开了橙云，流量到不了我们的节点", p)
+		}
+		if c.Body["type"] != "A" {
+			t.Errorf("IPv4 该建 A 记录，实际 %v", c.Body["type"])
+		}
+	}
+	if !sawPost {
+		t.Fatal("装置坏了：一个 POST 都没发出去")
+	}
+}
+
+// TestCloudflareDNSRefusesWhatItCannotExpress 钉的是**塌缩要报错，不能默默取平均**。
+//
+// 普通 DNS 记录既没有权重也没有线路。按等权处理的话，界面上权重条画着 60/40
+// 而实际是轮询，**而那种不一致没有任何地方会说出来**。
+func TestCloudflareDNSRefusesWhatItCannotExpress(t *testing.T) {
+	cf := dnsctl.NewCloudflareDNS("z", "cdn.example.com")
+	cf.Token = "tok"
+	cf.Base = "http://127.0.0.1:1" // 不该被用到
+
+	nodes := []dnssched.NodeState{node("a", "1.1.1.1"), node("b", "2.2.2.2")}
+
+	// 一、权重不同
+	w := dnssched.Weights{}
+	for _, l := range []string{"ct", "cu", "cm", "tw", "ov"} {
+		w[l] = map[string]int{"a": 60, "b": 40}
+	}
+	err := cf.Sync(context.Background(), dnssched.Build("cdn.example.com", w, nodes))
+	if err == nil {
+		t.Fatal("权重不同却收下了 —— 界面画 60/40 而实际轮询，没人会发现")
+	}
+	if !strings.Contains(err.Error(), "权重") {
+		t.Errorf("报错要说清是权重的问题：%v", err)
+	}
+
+	// 二、线路配得不一样
+	w2 := dnssched.Weights{
+		"ct": {"a": 100}, "cu": {"a": 100}, "cm": {"a": 100},
+		"tw": {"b": 100}, "ov": {"a": 100},
+	}
+	err = cf.Sync(context.Background(), dnssched.Build("cdn.example.com", w2, nodes))
+	if err == nil {
+		t.Fatal("五条线配得不一样却收下了")
+	}
+	if !strings.Contains(err.Error(), "线路") {
+		t.Errorf("报错要说清是线路的问题：%v", err)
+	}
+}
+
+// TestCloudflareDNSKeepsRecordsWhenNothingIsInRotation：
+// 一个节点都不在轮换里时**不清空记录**。
+//
+// 把最后一条记录撤掉等于主动让域名解析不出来，而「全体离线」多半是短暂的。
+// 宁可让流量继续打到已知的机器上，也不要主动制造一次 NXDOMAIN。
+func TestCloudflareDNSKeepsRecordsWhenNothingIsInRotation(t *testing.T) {
+	api := &fakeAPI{respond: map[string]string{}}
+	cf := dnsctl.NewCloudflareDNS("z", "cdn.example.com")
+	cf.Token = "tok"
+	cf.Base = api.server(t)
+
+	dead := dnssched.NodeState{ID: "a", IP: "1.1.1.1", DNSEnabled: true, Status: "down"}
+	err := cf.Sync(context.Background(), plainPlan(t, dead))
+	if err == nil {
+		t.Fatal("一个节点都没有时该明确报错，而不是默默把记录清空")
+	}
+	if n := len(api.seen()); n != 0 {
+		t.Errorf("发出了 %d 个请求 —— 这种情况一个都不该发", n)
+	}
+}
