@@ -54,10 +54,39 @@ out="dist"
 #
 # 两种结果都出现，这个探法才可信。清一色「不触发」跟「规则全生效」
 # 长得一模一样。
-mine="cmd internal proto go.mod go.sum scripts deploy"
+# **黑名单，不是白名单。这个方向是承重的。**
+#
+# 原先这里是一张白名单（`cmd internal proto go.mod go.sum scripts deploy`），
+# 而 `gen/` 不在里面 —— 那是 protoc 生成的 Go 代码，被 internal/tunnel 导入，
+# **实实在在编进二进制**。改一行 `gen/edge/v1/edge.pb.go`，产物变了，
+# 而戳说自己是干净的。实测过。
+#
+# 两种漏法的代价完全不对称：
+#
+#	白名单漏一个真正的构建输入 → 产物变而戳不变 → **说干净而实际脏**
+#	黑名单漏一个不进产物的东西 → 多标一次 dirty  → 噪音
+#
+# **而白名单必然会漏**：它要求每加一个构建输入就有人记得回来改这张表，
+# 而没有任何东西会提醒他。下一个 `gen/` 或者一个新的根目录同样不会。
+#
+# （这条论证是前端 agent 在他的打包脚本里推出来的，我照着量自己的，一量就中。）
+#
+# 所以默认全算，只排除**确知不进产物**的，每一条都验过：
+#
+#	web/        前端的，后端二进制里没有它
+#	docs/       文档
+#	*_test.go   测试不进二进制。**排它是为了减噪**：不排的话每改一条测试
+#	            都会标 dirty，而戳被标习惯之后就不再被读了 ——
+#	            跟「重启就重复报警会教会人忽略告警」是同一条。
+#	CLAUDE.md / CONTEXT.md / .gitignore   同上，都不进产物
+#
+# 注意 deploy/ 和 scripts/ **不在排除项里**：edge-node.sh 与 README.md
+# 真的进包，而 build.sh 决定了产物怎么被构建。
 dirty=""
-# shellcheck disable=SC2086
-if [ -n "$(git status --porcelain -- $mine 2>/dev/null)" ]; then
+if [ -n "$(git status --porcelain -- . \
+    ':(exclude)web' ':(exclude)docs' ':(exclude)*_test.go' \
+    ':(exclude)CLAUDE.md' ':(exclude)CONTEXT.md' ':(exclude).gitignore' \
+    2>/dev/null)" ]; then
   dirty="-dirty"
 fi
 version="${1:-$(git describe --tags --always 2>/dev/null || echo dev)${dirty}}"
