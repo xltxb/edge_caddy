@@ -116,6 +116,27 @@ export const handlers = [
     delete b.dns_provider
     Object.assign(seed.settings, b)
 
+    /*
+     * `clear` 是独立动作，不能与其他字段同给 —— 同给返回 1002（契约 §11）。
+     * 后端不肯在「先清再设」和「清掉一切」两种读法里替人挑一种，mock 也别挑。
+     */
+    if (dns && 'clear' in dns) {
+      const extra = Object.keys(dns).filter((k) => k !== 'clear')
+      if (extra.length) {
+        return fail(1002, 'clear 不能与其他字段同时给')
+      }
+      if (dns.clear) {
+        seed.settings.dns_provider = {
+          kind: '',
+          domain: '',
+          sub: '',
+          credential_mode: '',
+          configured: false,
+        }
+      }
+      return ok(null)
+    }
+
     // 不带 dns_provider = 不动它（契约 §11）。带了就逐字段合并。
     if (dns) {
       const cur = seed.settings.dns_provider

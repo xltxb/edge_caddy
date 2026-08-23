@@ -143,3 +143,82 @@
 .group-lead.warn {
   color: var(--warning-text);
 }
+
+/* ── 清除服务商的确认层。与 DrainConfirm 同一套 token，看起来是同一类动作 ── */
+.mask {
+  position: fixed;
+  inset: 0;
+  background: var(--surface-overlay);
+  z-index: var(--z-modal);
+  display: grid;
+  place-items: center;
+  padding: var(--space-6);
+}
+.modal {
+  width: min(440px, 100%);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl);
+  padding: var(--space-5);
+}
+.modal .title {
+  font-family: var(--font-mono);
+  font-size: var(--fs-base);
+  font-weight: var(--weight-bold);
+  color: var(--text-strong);
+  margin-bottom: var(--space-3);
+}
+.modal .willgo {
+  margin: 0 0 var(--space-3);
+  padding-left: 20px;
+  font-size: var(--fs-xs);
+  color: var(--text-body);
+  line-height: 1.9;
+}
+.modal .note {
+  margin: 0 0 var(--space-4);
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  line-height: 1.7;
+}
+.modal .actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+.modal .ghost {
+  padding: 6px 14px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-card);
+  color: var(--text-strong);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.modal .danger {
+  padding: 6px 14px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-sm);
+  background: var(--danger);
+  color: #fff;
+  font-size: var(--fs-xs);
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+}
+.modal .danger:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* 清除是危险动作，但不是主动作 —— 做成链接的样子，不跟「保存」抢注意力 */
+.linkish {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--danger);
+  font-size: var(--fs-xs);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}

@@ -670,7 +670,7 @@ export interface DnsProviderWire {
  *
  * `credential` 留空 = 保持不变，带了 = 替换。
  */
-export interface DnsProviderPatch {
+export interface DnsProviderFields {
   kind?: string
   domain?: string
   sub?: string
@@ -679,7 +679,21 @@ export interface DnsProviderPatch {
   account_id?: string
   email?: string
   credential?: string
+  clear?: never
 }
+
+/**
+ * 清掉整份配置（含凭证）。**独立动作，不能与其他字段同给**——同给返回 `1002`。
+ *
+ * 后端不肯替人在两种读法（先清再设 / 清掉一切）里挑一种。写成联合类型是为了
+ * 让这条约束由类型检查器管：`{ clear: true, kind: 'dnspod' }` 编译就不过，
+ * 而不是等运行时换回一个 1002。
+ */
+export interface DnsProviderClear {
+  clear: true
+}
+
+export type DnsProviderPatch = DnsProviderFields | DnsProviderClear
 
 export interface SettingsWire {
   /**

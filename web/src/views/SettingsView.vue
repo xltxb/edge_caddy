@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { http, errorText } from '@/api/http'
-import type { DnsProviderPatch, SettingsWire } from '@/api/types'
+import type { DnsProviderFields, SettingsWire } from '@/api/types'
 import { useUiStore } from '@/stores/ui'
 
 /**
@@ -65,7 +65,7 @@ const dropAfter = computed(() =>
  *
  * 一个字段回不回显是后端的事；**它能不能显示是界面的事，不该跟着一起丢**。
  */
-const dnsEdit = ref<DnsProviderPatch>({})
+const dnsEdit = ref<DnsProviderFields>({})
 
 /** 只有不回显的那几个才需要「填了才发」。回显字段的脏值走 `dirty` 的整体比对。 */
 const dnsDirty = computed(() => Object.values(dnsEdit.value).some((v) => v !== undefined && v !== ''))
@@ -130,11 +130,11 @@ async function save(): Promise<void> {
        * 我没验过：真主控收下了，`code: 0`，清空生效。拦住它等于把「取消配置」
        * 这条路堵死，还堵得悄无声息。
        */
-      const p: DnsProviderPatch = {
-        kind: cur.kind as DnsProviderPatch['kind'],
+      const p: DnsProviderFields = {
+        kind: cur.kind as DnsProviderFields['kind'],
         domain: cur.domain,
         sub: cur.sub,
-        credential_mode: cur.credential_mode as DnsProviderPatch['credential_mode'],
+        credential_mode: cur.credential_mode as DnsProviderFields['credential_mode'],
       }
       for (const [k, v] of Object.entries(dnsEdit.value)) {
         if (v !== undefined && v !== '') (p as Record<string, unknown>)[k] = v
@@ -146,7 +146,7 @@ async function save(): Promise<void> {
      *
      * 这里原先把返回值直接赋给 `form` —— 于是保存成功之后整页变空白，
      * 而 toast 说「设置已保存」。它确实保存了，只是界面把自己清掉了：
-     * **一个正确的操作配一个坏掉的回显**，比操作失败更让人confused，
+     * **一个正确的操作配一个坏掉的回显**，比操作失败更让人摸不着头脑，
      * 因为人会以为自己刚把配置弄没了。
      *
      * 保存后重新 GET 一次。多一趟请求，换掉一整类「回显与真相不一致」。
@@ -159,6 +159,35 @@ async function save(): Promise<void> {
     ui.toast('warn', '保存失败', errorText(e, ''))
   } finally {
     saving.value = false
+  }
+}
+
+const clearing = ref(false)
+const askClear = ref(false)
+
+/**
+ * 清掉整份 DNS 服务商配置，**凭证一起删**。
+ *
+ * 单独一个动作，不跟保存混在一起，因为它和保存做的是两件事：保存是「把我填的
+ * 写进去」，清除是「把里面的拿出来」。契约 §11 也不许它俩同给 —— `clear` 与
+ * 任何其他字段并存返回 `1002`，后端不肯在「先清再设」和「清掉一切」两种读法里
+ * 替人挑一种。
+ *
+ * 这是**唯一**能删掉凭证的路径：逐字段填空清不掉它（空串 = 不改动，那是凭证不
+ * 回显换来的语义），而一份再也用不到、也删不掉的凭证仍然是一把有效的 API Token。
+ */
+async function clearProvider(): Promise<void> {
+  clearing.value = true
+  try {
+    await http.put('/settings', { dns_provider: { clear: true } })
+    dnsEdit.value = {}
+    await load()
+    askClear.value = false
+    ui.toast('ok', '已清除 DNS 服务商配置')
+  } catch (e) {
+    ui.toast('warn', '清除失败', errorText(e, ''))
+  } finally {
+    clearing.value = false
   }
 }
 </script>
@@ -368,6 +397,35 @@ async function save(): Promise<void> {
           </div>
         </div>
 
+        <!--
+
+          清除是**独立的动作**，所以它在这里，不在页头的「保存」旁边。
+
+          两者做的事相反：保存是把我填的写进去，清除是把里面的拿出来。
+
+          混在一起的话，一次「只想改域名」的保存有机会顺手删掉凭证。
+
+        -->
+
+        <div v-if="form.dns_provider.kind || form.dns_provider.configured" class="row">
+
+          <label>清除配置</label>
+
+          <div class="ctl">
+
+            <button class="linkish" type="button" @click="askClear = true">
+
+              清除 DNS 服务商配置
+
+            </button>
+
+            <p class="note">连凭证一起删。这是唯一能删掉凭证的路径。</p>
+
+          </div>
+
+        </div>
+
+
         <div class="row">
           <label>ops-bot Token</label>
           <div class="ctl">
@@ -378,6 +436,34 @@ async function save(): Promise<void> {
           </div>
         </div>
       </section>
+    </div>
+
+    <!--
+      确认层。**说清楚会没掉什么，不问「你确定吗」。**
+
+      三条链路会一起停：证书签发与续期（走 DNS-01，ADR-0001 定的主控集中签发）、
+      解析权重下发、节点下线时摘解析。已经签发的证书还在机器上，到期前照常能用，
+      但**续不了期** —— 这句要说，因为它的后果不在今天，人不会自己想到。
+    -->
+    <div v-if="askClear" class="mask" @click.self="askClear = false">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="清除 DNS 服务商配置">
+        <div class="title">清除 DNS 服务商配置</div>
+        <ul class="willgo">
+          <li>服务商、解析域名、子域前缀、凭证方式全部清空</li>
+          <li><b>凭证一并删除</b> —— 删了就没有了，主控不保留副本</li>
+        </ul>
+        <p class="note">
+          之后这三件事会停：证书签发与续期（走 DNS-01）、解析权重下发、
+          节点下线时摘解析。已签发的证书还在节点上、到期前照常能用，
+          但没有服务商就<b>续不了期</b>。
+        </p>
+        <div class="actions">
+          <button class="ghost" type="button" @click="askClear = false">取消</button>
+          <button class="danger" type="button" :disabled="clearing" @click="clearProvider">
+            {{ clearing ? '清除中…' : '确认清除' }}
+          </button>
+        </div>
+      </div>
     </div>
   </section>
 </template>
