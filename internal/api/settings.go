@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"fmt"
+	"github.com/xltxb/edge_caddy/internal/store"
 	"net"
 
 	"github.com/gin-gonic/gin"
@@ -66,6 +67,13 @@ type dnsProviderReq struct {
 	CredentialMode *string `json:"credential_mode"`
 	// Credential 空串表示保持不变——凭证不回显，前端也带不出原值（PRD §7）。
 	Credential *string `json:"credential"`
+
+	// Clear 把整个服务商配置连同凭证一起清掉。
+	//
+	// **需要一个独立的动作，而不是「把每个字段填成空串」。** 空串对凭证
+	// 是「不改动」（见上），所以逐字段清空之后会留下一个能到达的矛盾状态：
+	// 库里有凭证、而没有服务商——一把再也用不到、也删不掉的 API Token。
+	Clear *bool `json:"clear"`
 }
 
 type systemReq struct {
@@ -154,6 +162,28 @@ func (s *Server) handlePutSettings(c *gin.Context) {
 		if err != nil {
 			s.log.Error("读取 DNS 服务商设置失败", "err", err)
 			Fail(c, CodeDownstream, "保存失败")
+			return
+		}
+		if p.Clear != nil && *p.Clear {
+			// **clear 与其他字段同时出现时拒绝，不静默取舍。**
+			//
+			// `{"clear":true,"kind":"dnspod"}` 有两种合理读法（先清再设 /
+			// 清掉一切），而挑一种执行等于替人做了他没做的决定。
+			if p.Kind != nil || p.Domain != nil || p.Sub != nil ||
+				p.AccountID != nil || p.ZoneID != nil || p.Email != nil ||
+				p.CredentialMode != nil || p.Credential != nil {
+				FailValidation(c, "系统设置未通过校验", []FieldError{
+					{ResKey: "settings", Field: "dns_provider.clear", Reason: "clear 是一个独立的动作，不能与其他字段同时给"},
+				})
+				return
+			}
+			if err := s.store.PutDNSProvider(ctx,
+				store.DNSProviderSettings{ClearCredential: true}, s.sealer); err != nil {
+				s.log.Error("清除 DNS 服务商设置失败", "err", err)
+				Fail(c, CodeDownstream, "保存失败")
+				return
+			}
+			OK(c, nil)
 			return
 		}
 		assign(&dns.Kind, p.Kind)

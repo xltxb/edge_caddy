@@ -27,6 +27,13 @@ type DNSProviderSettings struct {
 	// 明文只在装配服务商客户端时出现，不经任何读接口回显。
 	Credential   string `json:"-"`
 	CredentialOK bool   `json:"-"`
+
+	// ClearCredential 是删除凭证的信号，**不落库**。
+	//
+	// 需要一个独立字段是因为空串已经被占用了：它表示「不改动」
+	// （凭证不回显，前端带不出原值）。用空串表示删除的话，
+	// 一次「只改域名」的保存会顺手把凭证清掉。
+	ClearCredential bool `json:"-"`
 }
 
 type dnsRow struct {
@@ -64,6 +71,17 @@ func (s *Store) PutDNSProvider(ctx context.Context, in DNSProviderSettings, seal
 		}
 	}
 	row.DNSProviderSettings = in
+	if in.ClearCredential {
+		// **凭证的唯一一条删除路径。**
+		//
+		// 空串对凭证是「不改动」（凭证不回显，前端带不出原值），
+		// 所以清掉它需要一个跟「留空」分得开的信号。没有这条路径的话，
+		// 库里会留下一份**再也用不到、也删不掉**的凭证——而它仍然是一把
+		// 有效的 API Token。
+		row.CredB64 = ""
+		row.Credential = ""
+		return s.putSettings(ctx, KeyDNS, row)
+	}
 	if in.Credential != "" {
 		if sealer == nil {
 			return fmt.Errorf("要写入 DNS 凭证，但没有可用的密封器（装配漏了 Sealer）")
