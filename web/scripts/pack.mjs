@@ -54,7 +54,12 @@
  * 3. 每个条目 `go+rX`：目录 `o+x`、文件 `o+r`。
  * 4. 解包后与 `dist/` 逐字节一致 —— 打包过程没吞掉也没改写任何东西。
  * 5. 没有 mock（`check:dist` 也查，这里再查一遍：**这一份才是发出去的**）。
- * 6. 有 `版本.txt`，且里面的 commit 是当前 HEAD。
+ * 6. 有 `版本.txt`，且里面的版本戳与这次打包算出来的一致。
+ *
+ * **第 6 条守不住「产物真的对应那个 commit」** —— 它比的是同一个变量，
+ * 验的是「我写进去的等于我算出来的」。那件事由版本戳自己带 `-dirty` 来说，
+ * 见下面 SCOPE / dirty 那两段：这个包一度戳着一个干净的 commit，
+ * 而里面装着一整套那个 commit 上根本不存在的功能。
  *
  *   node scripts/pack.mjs
  */
@@ -74,6 +79,113 @@ const sh = (cmd, args, cwd) =>
   execFileSync(cmd, args, { cwd: cwd ?? REPO, encoding: 'utf8' }).trim()
 
 const sha = sh('git', ['rev-parse', '--short', 'HEAD'])
+
+/**
+ * **决定 dist 内容的那些路径。** 版本戳的作用域必须和产物的作用域一致。
+ *
+ * 不在这张表里的东西改了，产物一个字节都不会变，标成 dirty 就是在说一个
+ * 不存在的差异 —— 后端撞过反过来的那一面：它的二进制里根本没有 `web/`，
+ * 而我这边三个未提交的文件让它的产物叫上了 `-dirty`，**一个说「含未提交改动」
+ * 而实际不含的版本戳，会让人去找一个找不到的差异。**
+ *
+ * ## 为什么是「整个 web/ 减去几样」，而不是列出该算的那几样
+ *
+ * 这里原先是白名单（`index.html` / `src` / `public` / 几个配置文件）。它当时
+ * 是对的，而**它的失败方向是错的**：白名单漏掉一个真正影响构建的输入，
+ * 产物变了而戳不变 —— 说干净而实际脏，那是贵的那一半。黑名单漏掉一个，
+ * 只是多标一次 dirty —— 噪音。
+ *
+ * 而白名单**必然**会漏：它要求每加一个构建输入就有人记得回来改这张表。
+ * 已经差点漏掉一个：`web/.env.real` 被 git 跟踪、不在白名单里。它眼下确实
+ * 不影响生产构建（`vite build` 走 production，不读 `.env.real`），
+ * 但**下一个 `.env.production` 就会影响，而没有任何东西会提醒谁来改这里**。
+ *
+ * 所以反过来：默认算数，排除项只留那些**确知不进产物**的，每一条都验过。
+ *
+ * `*.test.ts` 排掉：它们在 src 底下，但不进 import 图，改了不影响 dist。
+ * `mocks/` `tests/` `scripts/` 同理 —— mock 是 dev-only 插件路径，
+ * 生产构建里没有它（`check:dist` 每次都验这一条）。
+ *
+ * **排除项要两条，不是一条。** `web/src/**\/*.test.ts` 里的 `**` 要求至少一层
+ * 中间目录，`web/src/model.test.ts` 这种直接躺在 src 下的匹配不上 —— 只写那
+ * 一条的话，改一个 model.test.ts 就会让包叫上 `-dirty`，而产物一个字节没变。
+ *
+ * 这是写完之后跑一遍 `git status --porcelain -- <SCOPE>` 才发现的：
+ * `nodes/flags.test.ts` 被排掉了、`model.test.ts` 还在列表里。
+ * **一条只在某些输入上生效的排除规则，看起来和完全生效一模一样。**
+ *
+ * ## 改这张表之前，拿真实输入跑一遍
+ *
+ * 光看规则看不出它作用在谁身上 —— 上面那个 `**` 的洞，抽样查 `nodes/` 和
+ * `palette/` 下的两个 test 文件都显示"排掉了"，规则看起来完全生效。
+ *
+ * 探法：往一个位置 `echo` 一个新文件，看它进不进
+ * `git status --porcelain -- <SCOPE>` 的输出，然后删掉。
+ * **只碰自己新建的文件**，别拿别人正在编辑的东西当探针素材。
+ *
+ * 量出来的结果（✓ = 与预期一致）：
+ *
+ *   web/src/xx.ts              触发    ✓  产物真的会变
+ *   web/public/xx.txt          触发    ✓  会被原样拷进产物
+ *   web/.env.production        触发    ✓  ← 白名单那版会漏掉它
+ *   web/xx.config.ts           触发    ✓  ← 顶层新配置默认算数，这就是改黑名单的收益
+ *   web/src/xx.test.ts         不触发  ✓  ← 要两条排除项，见下
+ *   web/src/nodes/xx.test.ts   不触发  ✓
+ *   web/src/xx.pem             不触发  ✓  ┐ 作用域**内**而被 .gitignore 忽略
+ *   web/src/.DS_Store          不触发  ✓  ┘ —— 这两条才验得了「--porcelain 尊重 gitignore」
+ *   web/mocks/xx.ts            不触发  ✓  dev-only，生产构建里没有
+ *   web/tests/xx.ts            不触发  ✓
+ *   web/scripts/xx.mjs         不触发  ✓
+ *   request-shapes.json        不触发  ✓  拿它当时正 modified 的真实状态验的
+ *
+ * **两种结果都要出现**，否则说明探针本身坏了：一个永远匹配不上的探测会给出
+ * 清一色的"不触发"，而那跟"排除项全生效"长得一模一样 —— 这一族错误没有一个
+ * "零"可以看，不像"0 条测试跑了"那么显眼。
+ *
+ * ## 有一条探测我删了，因为它什么都没验到
+ *
+ * 原来这张表里有 `web/dist/xx.js → 不触发`，注解写着「.gitignore 挡着，
+ * 构建产物不误伤」。**那个归因是错的**：`web/dist` 根本不在 SCOPE 里，
+ * 它不触发是因为**不在作用域内**，跟 gitignore 一点关系都没有。两个原因
+ * 各自都足以让它不触发，所以那条探测对「gitignore 起没起作用」零信息。
+ *
+ * > **一条探测「通过」了，不代表它验的是你以为的那件事** —— 它可能因为一个
+ * > 完全无关的原因通过，而通过的样子一模一样。
+ *
+ * 换成了 `web/src/xx.pem` 和 `web/src/.DS_Store`：作用域**内**、被忽略，
+ * 而同一个目录下的 `xx.ts` 触发 —— 有了这个对照，那句话才有依据。
+ * （`*.pem` `*.key` `.DS_Store` 在 .gitignore 里都不带前导斜杠，任何目录都生效。）
+ */
+const SCOPE = [
+  'web',
+  // 只在 dev / 测试里跑，生产构建里没有它们（`check:dist` 每次验「没有 mock」）
+  ':(exclude)web/mocks',
+  ':(exclude)web/tests',
+  ':(exclude)web/scripts',
+  ':(exclude)web/playwright.config.ts',
+  ':(exclude)web/vitest.config.ts',
+  // 在 src 底下，但不进 import 图。两条：`**` 要求至少一层中间目录，
+  // 直接躺在 src 下的 `model.test.ts` 匹配不上第二条。
+  ':(exclude)web/*.test.ts',
+  ':(exclude)web/**/*.test.ts',
+  // 由 `pnpm gen:requests` 从 requests.ts 生成，给后端读的，不进产物
+  ':(exclude)web/request-shapes.json',
+]
+
+/**
+ * 作用域内有没有**没提交的**改动 —— 已跟踪的改动和新文件都算。
+ *
+ * 加这个是因为反过来那种错更坏：这个包一度戳着一个干净的 commit，而里面装着
+ * 一整套那个 commit 上根本不存在的功能（`EditNodeModal.vue` 当时连文件都还没
+ * 提交）。**说脏而实际干净，让人白找一遍；说干净而实际脏，让人拿错的东西上线。**
+ *
+ * 原来那条自检（「版本.txt 里的 commit 是 sha」）挡不住它：它比的是同一个变量，
+ * 验的是「我写进去的等于我算出来的」，而不是「产物真的对应那个 commit」——
+ * 在脏工作树上必然通过。
+ */
+const dirty = sh('git', ['status', '--porcelain', '--', ...SCOPE]) !== ''
+const stamp = dirty ? `${sha}-dirty` : sha
+
 const built = new Date().toISOString().replace(/\.\d+Z$/, 'Z')
 
 /* ── 摆产物 ─────────────────────────────────────────────────────────── */
@@ -98,9 +210,17 @@ cpSync(join(DIST_SRC, 'index.html'), join(root, 'index.html'))
 writeFileSync(
   join(root, '版本.txt'),
   `edge-console
-commit  ${sha}
+commit  ${stamp}
 built   ${built}
-
+${
+  dirty
+    ? `
+⚠ 这个包**不对应任何一个 commit**。打包时工作树里有未提交的改动，
+  内容比 ${sha} 多（或少）一些东西，而那些东西不在版本库里。
+  出了问题没法靠 commit 号复现出这一版 —— 正式发布前先提交再重打。
+`
+    : ''
+}
 伺服方式：主控 EC_WEB_ROOT 指向本包解包后的目录。
   - 资源路径是根绝对路径，必须挂在域名根下
   - 深层路由要 SPA fallback（/nodes、/workbench/route:api.example.com 这类）
@@ -136,7 +256,7 @@ normalize(root)
 /* ── 打 ─────────────────────────────────────────────────────────────── */
 
 mkdirSync(OUT_DIR, { recursive: true })
-const tgz = join(OUT_DIR, `edge-console-${sha}.tar.gz`)
+const tgz = join(OUT_DIR, `edge-console-${stamp}.tar.gz`)
 /*
  * `--uid 0 --gid 0 --uname root --gname root`：**归档不带打包机器的身份**。
  * 灰度上 `/opt` 的属主变成 UID 501 / staff，就是我的 macOS 账号跟着包过去的。
@@ -257,7 +377,7 @@ for (const f of all) {
 // 4. 版本戳指向当前 HEAD
 if (existsSync(join(unpacked, '版本.txt'))) {
   const ver = readFileSync(join(unpacked, '版本.txt'), 'utf8')
-  if (!ver.includes(`commit  ${sha}`)) problems.push(`版本.txt 里的 commit 不是 ${sha}`)
+  if (!ver.includes(`commit  ${stamp}`)) problems.push(`版本.txt 里的 commit 不是 ${stamp}`)
 } else {
   problems.push('包里没有 版本.txt')
 }
@@ -266,7 +386,7 @@ rmSync(check, { recursive: true, force: true })
 /* ── 校验和 ─────────────────────────────────────────────────────────── */
 
 if (problems.length === 0) {
-  const sum = sh('shasum', ['-a', '256', `edge-console-${sha}.tar.gz`], OUT_DIR)
+  const sum = sh('shasum', ['-a', '256', `edge-console-${stamp}.tar.gz`], OUT_DIR)
   writeFileSync(join(OUT_DIR, 'SHA256SUMS.web'), sum + '\n', 'utf8')
 }
 
@@ -281,7 +401,7 @@ if (problems.length) {
   process.exit(1)
 }
 console.log(`✓ ${relative(REPO, tgz)}`)
-console.log(`    ${all.length} 个文件 · commit ${sha}`)
+console.log(`    ${all.length} 个文件 · commit ${stamp}`)
 console.log(`    顶层 ${TOP}/ · 属主 root/root · 目录 755 / 文件 644`)
 console.log(`    归档对解包目标目录没有任何意见（模式和属主都不碰）`)
 console.log(`    解包后与 web/dist 逐字节一致，没有 mock`)
