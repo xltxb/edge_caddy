@@ -53,6 +53,22 @@ onMounted(() => {
 
 const caps = computed(() => data.value?.capabilities)
 const configured = computed(() => !!caps.value?.kind)
+
+/**
+ * 这家服务商表达得了权重吗（契约 §8 的 `capabilities.weights`）。
+ *
+ * **此前这个字段前端一个人都没读** —— 于是 `cloudflare_dns`（普通 A/AAAA 轮换，
+ * 只有进出、没有轻重）那一档照样渲染权重输入框，人配完 60/40 点保存，
+ * 后端才明确报错。
+ *
+ * 而这跟同一页那个「五条线合并成一个输入框」是同一条理由（见 `@/dns/capability`）：
+ * **让表达不了的状态在界面上造不出来，比让人配完再拒绝好** —— 后者是最差的
+ * 告知时机。
+ *
+ * 未配置服务商时按「能表达」走：那时权重只是本地意图（横幅已经说了它推不出去），
+ * 拦着人填反而把两件事混成一件。
+ */
+const supportsWeights = computed(() => !configured.value || caps.value?.weights !== false)
 const sync = computed(() => data.value?.dns_sync)
 
 /*
@@ -299,7 +315,12 @@ async function save(): Promise<void> {
             :class="{ off: !entryOf(g, n)?.dns_enabled }"
           >
             <span class="node">{{ n }}</span>
+            <!--
+              **表达不了权重时不给输入框**，而不是给一个填了会被拒的框。
+              与这一页把五条线合并成一个输入框是同一条：让非法状态造不出来。
+            -->
             <input
+              v-if="supportsWeights"
               class="w"
               type="text"
               inputmode="numeric"
@@ -307,6 +328,7 @@ async function save(): Promise<void> {
               :value="weightOf(g, n)"
               @input="setWeight(g, n, ($event.target as HTMLInputElement).value)"
             />
+            <span v-else class="w-off" title="这家服务商只做轮换，权重表达不了">轮换</span>
             <span class="bar">
               <span
                 class="fill"

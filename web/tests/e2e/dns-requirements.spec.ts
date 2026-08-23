@@ -107,18 +107,55 @@ test.describe('必填字段都得有地方填', () => {
   })
 
   /*
-   * 反面：**不在必填清单里的字段不该被这条测试当成必填**。
+   * 反面：**不该有的也不该有。**
    *
-   * 没有这一条的话，一个「把所有框都渲染出来」的实现也能让上面那条全绿 ——
-   * 而那会让人在 dnspod 下看到 Cloudflare 的 Zone ID。
+   * 上面那条守「该有的都有」，而一个「把所有框都渲染出来」的实现能让它全绿 ——
+   * 那时人会在 dnspod 下看到 Cloudflare 的 Zone ID，或者在 `cloudflare_dns` 下
+   * 填一个**根本用不上**的 Account ID（那家的记录挂在 zone 上，账号级权限
+   * 用不到）。填一个没用的值不会报错，只会让人以为自己配全了。
+   *
+   * ## 判据不硬编码字段名
+   *
+   * 「某个字段出现在**任何** kind 的必填清单里」= 它是一个按服务商区分的字段。
+   * 那么在不需要它的 kind × mode 下，它就不该渲染。加第四个 kind 时这条自动覆盖。
+   *
+   * **它依赖一个假设**：不存在「必填于 A、可选于 B」的字段。当前成立 ——
+   * 可选字段（`sub` 子域前缀）不在任何清单里，所以压根不进这个集合。
+   * 哪天出现那种字段，这条会红，**而那时该改的是判据不是界面**。
    */
-  test('dnspod 下不出现 Cloudflare 专属的那几个框', async ({ page }) => {
-    await page.selectOption('#dns-kind', 'dnspod')
-    for (const field of ['zone_id', 'account_id', 'email']) {
-      await expect(
-        page.locator(`[data-field="${field}"]`),
-        `dnspod 不需要 ${field}，而界面上有这个框`,
-      ).toHaveCount(0)
+  test('不在这个 kind 必填清单里的按服务商字段，不该渲染', async ({ page }) => {
+    await page.waitForSelector('#dns-kind')
+    const reqs = await page.evaluate(async () => {
+      const r = await fetch('/api/v1/settings', { credentials: 'same-origin' })
+      return (await r.json())?.data?.dns_provider_requirements as Record<
+        string,
+        Record<string, string[]>
+      >
+    })
+    expect(reqs).toBeTruthy()
+
+    /** 所有 kind 的必填字段并集 —— 「按服务商区分的字段」就是这个集合。 */
+    const byProvider = new Set(Object.values(reqs).flatMap((m) => Object.values(m).flat()))
+    expect(byProvider.size, '并集是空的，下面一条都不会检查').toBeGreaterThan(0)
+
+    let checked = 0
+    for (const [kind, modes] of Object.entries(reqs)) {
+      await page.selectOption('#dns-kind', kind)
+      for (const [mode, need] of Object.entries(modes)) {
+        if (mode !== NO_MODE) await page.selectOption('#dns-mode', mode)
+        const needed = new Set(need)
+        for (const field of byProvider) {
+          if (needed.has(field)) continue
+          await expect(
+            page.locator(`[data-field="${field}"]`),
+            `${kind}${mode ? ` / ${mode}` : ''} 不需要 ${field}，而界面上有这个框 —— ` +
+              `人会填一个用不上的值，而那不会报错`,
+          ).toHaveCount(0)
+          checked += 1
+        }
+      }
     }
+    expect(checked, '一个「不该有」都没检查到').toBeGreaterThan(0)
+    console.log(`检查了 ${checked} 处「不该出现的框」`)
   })
 })

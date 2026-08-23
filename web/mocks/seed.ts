@@ -425,6 +425,15 @@ export const settings: SettingsWire & Record<string, unknown> = {
       api_token: ['domain', 'credential', 'account_id', 'zone_id'],
       global_key: ['domain', 'credential', 'account_id', 'zone_id', 'email'],
     },
+    /*
+     * **没有 `account_id`** —— 记录挂在 zone 上，账号级 LB 权限根本用不上。
+     * 所以选了这个 kind 之后那个框不该出现，而那是「不该有的没有」那一侧，
+     * 靠 dns-requirements.spec.ts 里的反向那条守。
+     */
+    cloudflare_dns: {
+      api_token: ['domain', 'credential', 'zone_id'],
+      global_key: ['domain', 'credential', 'zone_id', 'email'],
+    },
   },
   ops_bot_token_configured: true,
 }

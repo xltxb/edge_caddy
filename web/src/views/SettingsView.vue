@@ -80,6 +80,18 @@ const credTag = computed(() => {
 })
 
 /** Cloudflare 的两种凭证方式要的字段不同（契约 §11）。 */
+/**
+ * **两个 Cloudflare 共用同一套凭证模型**（credential_mode + zone_id），
+ * 差别只在 `account_id`：负载均衡那个要（pool 是账号级的），纯 DNS 那个不要
+ * （记录挂在 zone 上，账号级权限用不上）。
+ *
+ * 列在一处而不是散在各个 `v-if` 里 —— 加第三个 kind 时我正是漏改了那几处
+ * `kindNow === 'cloudflare'`，于是纯 DNS 下凭证方式和 Zone ID 都不渲染，
+ * 而人填不了它们。**那是 e2e 抓到的，不是我看出来的。**
+ */
+const CF_KINDS = ['cloudflare', 'cloudflare_dns']
+const isCloudflare = computed(() => CF_KINDS.includes(kindNow.value))
+
 const cfMode = computed(() => form.value?.dns_provider.credential_mode ?? '')
 const kindNow = computed(() => form.value?.dns_provider.kind ?? '')
 
@@ -289,16 +301,36 @@ async function clearProvider(): Promise<void> {
         <div class="row">
           <label for="dns-kind">服务商</label>
           <div class="ctl">
+            <!--
+              **两个 Cloudflare 必须写清楚靠什么** —— 只写「Cloudflare」的话，
+              人会以为是同一家的两种接法，而它们的失败方式完全不同：
+              负载均衡那个依赖 Load Balancing（**付费附加产品**，没开通的话
+              一步都走不了，而报错是 Cloudflare 的「路由不到」）；
+              纯 DNS 那个只有 A/AAAA 轮换，表达不了权重和线路。
+            -->
             <select id="dns-kind" v-model="form.dns_provider.kind" class="text sel">
               <option value="">（未选择）</option>
-              <option value="cloudflare">Cloudflare</option>
               <option value="dnspod">DNSPod</option>
+              <option value="cloudflare">Cloudflare（负载均衡）</option>
+              <option value="cloudflare_dns">Cloudflare（纯 DNS）</option>
             </select>
             <p class="note">
-              两家能表达的东西不一样：Cloudflare 的 DNS 记录没有线路概念，
-              电信 / 联通 / 移动会被合并成「中国」。选定之后 DNS 调度页会按它的
-              能力合并输入框。
+              三家能表达的东西不一样，选定之后 DNS 调度页会按它的能力合并输入框：
             </p>
+            <dl class="kinds">
+              <dt>DNSPod</dt>
+              <dd>原生线路 + 权重 —— 电信 / 联通 / 移动能分开。线路免费，权重要付费套餐。</dd>
+              <dt>Cloudflare（负载均衡）</dt>
+              <dd>
+                按国家分流 + 权重，电信 / 联通 / 移动合并成「中国」。
+                <b>依赖 Load Balancing，那是付费附加产品</b> —— 没开通的话一步都走不了。
+              </dd>
+              <dt>Cloudflare（纯 DNS）</dt>
+              <dd>
+                普通 A / AAAA 轮换，免费。<b>只有进出轮换</b> ——
+                分不了线路，也表达不了权重。
+              </dd>
+            </dl>
           </div>
         </div>
 
@@ -329,8 +361,8 @@ async function clearProvider(): Promise<void> {
           </div>
         </div>
 
-        <!-- Cloudflare 两种凭证方式要的字段不同（契约 §11） -->
-        <div v-if="kindNow === 'cloudflare'" class="row">
+        <!-- 两个 Cloudflare 的凭证方式一样（契约 §11），DNSPod 没有这一档 -->
+        <div v-if="isCloudflare" class="row">
           <label for="dns-mode">凭证方式</label>
           <div class="ctl">
             <select id="dns-mode" v-model="form.dns_provider.credential_mode" class="text sel">
@@ -360,7 +392,7 @@ async function clearProvider(): Promise<void> {
           契约那张表当时把 `account_id` 写成「可选」，这个框是照它做的 ——
           **契约里的一句错会被忠实地复制出去**。
         -->
-        <div v-if="kindNow === 'cloudflare'" class="row">
+        <div v-if="isCloudflare" class="row">
           <label for="dns-zone">Zone ID</label>
           <div class="ctl">
             <input
@@ -373,6 +405,10 @@ async function clearProvider(): Promise<void> {
           </div>
         </div>
 
+        <!--
+          **只有负载均衡那个要。** 纯 DNS 的记录挂在 zone 上，账号级 LB 权限
+          根本用不上 —— 渲染出来只会让人填一个没用的值，而那不会报错。
+        -->
         <div v-if="kindNow === 'cloudflare'" class="row">
           <label for="dns-account">Account ID</label>
           <div class="ctl">
@@ -391,7 +427,7 @@ async function clearProvider(): Promise<void> {
         </div>
 
         <!-- email 只有 Global Key 模式要（契约 §11），它才是真的按模式分的那个 -->
-        <template v-if="kindNow === 'cloudflare' && cfMode === 'global_key'">
+        <template v-if="isCloudflare && cfMode === 'global_key'">
           <div class="row">
             <label for="dns-email">账号邮箱</label>
             <div class="ctl">

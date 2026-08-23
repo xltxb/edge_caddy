@@ -139,6 +139,56 @@ function dnsSync() {
 }
 
 /**
+ * 各服务商能表达什么（契约 §8）。**covers 由服务商给** —— 前端不持有任何
+ * 服务商的地理模型，加第四家时前端不用改。
+ */
+const CAPS: Record<string, unknown> = {
+  dnspod: {
+    kind: 'dnspod',
+    lines: [
+      { code: 'ct', name: '电信', covers: ['ct'] },
+      { code: 'cu', name: '联通', covers: ['cu'] },
+      { code: 'cm', name: '移动', covers: ['cm'] },
+      { code: 'tw', name: '台湾', covers: ['tw'] },
+      { code: 'ov', name: '境外 / 默认', covers: ['ov'] },
+    ],
+    weights: true,
+    notes: 'DNSPod 原生支持线路与权重；线路免费，权重需要付费套餐。',
+  },
+  cloudflare: {
+    kind: 'cloudflare',
+    lines: [
+      { code: 'cn', name: '中国（电信 / 联通 / 移动合并）', covers: ['ct', 'cu', 'cm'] },
+      { code: 'tw', name: '台湾', covers: ['tw'] },
+      { code: 'ov', name: '境外 / 默认', covers: ['ov'] },
+    ],
+    weights: true,
+    notes:
+      'Cloudflare 的 DNS 记录没有权重与线路概念，加权调度走 Load Balancing，' +
+      '其地理维度是国家 / 大洲：电信 / 联通 / 移动无法区分，三者会被合并为「中国」。',
+  },
+  /*
+   * **只有进出轮换**：普通 A / AAAA 记录，分不了线路也表达不了权重。
+   * 五条线合成一条 `all`，于是「五条线配得不一样」在界面上造不出来；
+   * `weights: false` 让权重输入框换成一句说明。
+   */
+  cloudflare_dns: {
+    kind: 'cloudflare_dns',
+    lines: [{ code: 'all', name: '全部（不分线路）', covers: ['ct', 'cu', 'cm', 'tw', 'ov'] }],
+    weights: false,
+    notes:
+      '普通 A / AAAA 记录轮换，免费。分不了线路、也表达不了权重 —— ' +
+      '各节点只有「在或不在解析里」，进出等价。',
+  },
+}
+
+/** 当前配的是哪家 —— 设置页改了 kind，这一页的能力要跟着变。 */
+function settingsKind(): string {
+  return String((seed.settings as Record<string, unknown>).dns_provider &&
+    (seed.settings.dns_provider as { kind?: string }).kind || 'cloudflare')
+}
+
+/**
  * 两个字符串是不是**同一个 IP**。
  *
  * 不能直接比字符串：`2001:db8::1` 和 `2001:0db8:0:0:0:0:0:1` 是同一个地址而
@@ -467,19 +517,14 @@ export async function handleDns(req: IncomingMessage, res: ServerResponse): Prom
         domain: 'cdn.example.com',
         dns_sync: dnsSync(),
         lines: buildLines(),
-        capabilities: {
-          kind: 'cloudflare',
-          // covers 由服务商给：前端不持有任何服务商的地理模型
-          lines: [
-            { code: 'cn', name: '中国（电信 / 联通 / 移动合并）', covers: ['ct', 'cu', 'cm'] },
-            { code: 'tw', name: '台湾', covers: ['tw'] },
-            { code: 'ov', name: '境外 / 默认', covers: ['ov'] },
-          ],
-          weights: true,
-          notes:
-            'Cloudflare 的 DNS 记录没有权重与线路概念，加权调度走 Load Balancing，' +
-            '其地理维度是国家 / 大洲：电信 / 联通 / 移动无法区分，三者会被合并为「中国」。',
-        },
+        /*
+         * **capabilities 跟着 kind 走。**
+         *
+         * 写死成 cloudflare 的话，`cloudflare_dns`（普通 A/AAAA 轮换）那一档在
+         * dev 下永远看不到 —— 而它恰好是 `weights: false` 唯一的来源。
+         * 那时界面上「轮换」那一支就是一段没人走过的代码。
+         */
+        capabilities: CAPS[settingsKind()] ?? CAPS.cloudflare,
       }),
       true
     )
