@@ -375,14 +375,52 @@ func (m *Monitor) recover(nodeID string) {
 	ctx := context.Background()
 	m.Log.Info("节点心跳恢复", "node", nodeID)
 
+	// **先把标志位放回去，再推服务商。顺序不能反。**
+	//
+	// dnsops.Attach 只负责「让服务商侧跟上」，它读的是库里的标志位——
+	// 标志位还是 false 时推过去，推的是一份**不含这台机器**的安排。
+	//
+	// 而这一步此前根本不存在：摘的时候 SetNodeDown 在 SQL 里直接置 false，
+	// 恢复的时候只调 Attach。**摘写库、恢复不写库**，于是标志位一旦被
+	// 自动摘掉就再也回不来。灰度上的形态是：主控每重启一次，
+	// 所有节点都被自动摘掉（重启窗口里它们必然错过几个心跳），而重启是例行操作。
+	reattached := false
+	if r, err := m.Store.ReattachAfterRecovery(ctx, nodeID); err != nil {
+		m.Log.Error("恢复解析标志位失败", "node", nodeID, "err", err)
+	} else {
+		reattached = r
+	}
+
+	synced := false
 	if m.DNS != nil {
 		if err := m.DNS.Attach(ctx, nodeID); err != nil {
 			m.Log.Error("恢复解析失败", "node", nodeID, "err", err)
+		} else {
+			synced = true
 		}
 	}
-	m.emit(ctx, nodeID, "ok", "心跳已恢复")
+
+	// **措辞必须与实际发生的事一致**，跟 markDown 那边同一条规矩。
+	//
+	// 三种情况读起来完全不同，而人接下来的动作也不同：
+	//
+	//	放回去了、也推上去了 → 什么都不用做
+	//	放回去了、没推上去   → 库里对了而服务商上没有，要去看服务商
+	//	没放回去             → 这台机器的解析是**人**关的，系统不会替他开
+	msg := "心跳已恢复"
+	switch {
+	case reattached && synced:
+		msg += "，解析已恢复"
+	case reattached:
+		msg += "，解析标志位已恢复，但没能同步到服务商"
+	default:
+		// 没放回去只有一种来路：它不是系统摘的。人关的解析要人自己开，
+		// 一次心跳抖动不该撤销人的决定。
+		msg += "；解析仍是暂停状态（不是系统摘的，要人手动恢复）"
+	}
+	m.emit(ctx, nodeID, "ok", msg)
 	if m.Alert != nil {
-		m.Alert.Notify(ctx, "warn", "节点恢复 "+nodeID, "心跳已恢复")
+		m.Alert.Notify(ctx, "warn", "节点恢复 "+nodeID, msg)
 	}
 }
 

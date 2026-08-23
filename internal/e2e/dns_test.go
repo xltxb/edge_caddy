@@ -557,16 +557,35 @@ func TestAutoOfflineHasNullActorInJSON(t *testing.T) {
 		t.Fatalf("人手动关的要记下是谁，实际 reason=%q actor=%v", reason, actor)
 	}
 
-	// 二、系统自动摘除：actor 必须是 JSON 的 null。
+	// 二、**解析本来就是关着的时候，自动摘除不覆盖 reason。**
+	//
+	// 这一段此前写的是「手动关掉之后直接 SetNodeDown，期望 reason 变成
+	// auto_offline」—— 而那正是一个 bug 的编码：一台**人手动关了解析**的机器
+	// 掉线之后，人的决定被覆盖成「系统摘的」，而心跳一恢复系统又会把解析
+	// 开回去（ReattachAfterRecovery 只放回 auto_offline 那一种）。
+	// **一次掉线撤销了一个人为的决定，而没有任何地方记下这件事。**
+	//
+	// 修完之后这条测试红了。**红的原因是它原先在验一件错的事。**
+	if err := r.store.SetNodeDown(context.Background(), "node-hk-01"); err != nil {
+		t.Fatal(err)
+	}
+	if reason, actor := read(); reason != "manual" || actor == nil {
+		t.Fatalf("解析本来就是人关着的，自动摘除不该覆盖它，"+
+			"实际 reason=%q actor=%v", reason, actor)
+	}
+
+	// 三、**解析开着的时候被自动摘除：reason 是 auto_offline、actor 是 null。**
+	//
+	// 空串会让界面走进「谁关的」那条分支，然后显示一个空的名字。
+	r.mustDo("POST", "/nodes/node-hk-01/dns", map[string]any{"enabled": true})
 	if err := r.store.SetNodeDown(context.Background(), "node-hk-01"); err != nil {
 		t.Fatal(err)
 	}
 	reason, actor := read()
 	if reason != "auto_offline" {
-		t.Fatalf("reason = %q，想要 auto_offline", reason)
+		t.Fatalf("解析开着时被自动摘除，reason 该是 auto_offline，实际 %q", reason)
 	}
 	if actor != nil {
-		t.Errorf("系统自动摘除时 dns_actor 必须是 null，实际 %q —— "+
-			"空串会让界面走进「谁关的」那条分支，然后显示一个空的名字", *actor)
+		t.Errorf("系统自动摘除时 dns_actor 必须是 null，实际 %q", *actor)
 	}
 }

@@ -145,8 +145,22 @@ func (s *Store) SetNodeCfgVersion(ctx context.Context, nodeID, cfgVersion string
 func (s *Store) SetNodeDown(ctx context.Context, nodeID string) error {
 	_, err := s.Pool.Exec(ctx,
 		`UPDATE edge_nodes
-		    SET status = 'down', dns_enabled = FALSE,
-		        dns_reason = 'auto_offline', dns_actor = NULL, dns_changed_at = now()
+		    SET status = 'down',
+		        dns_enabled = FALSE,
+		        -- **只有解析当时是开着的，才算「系统把它摘了」。**
+		        --
+		        -- 无条件改写的话，一台**人手动关掉解析**的机器掉线之后，
+		        -- reason 会被覆盖成 auto_offline —— 人的决定就此消失，
+		        -- 而心跳一恢复系统又会把解析开回去（见 ReattachAfterRecovery）。
+		        -- **一次掉线撤销了一个人为的决定，而没有任何地方记下这件事。**
+		        --
+		        -- 这是 ADR-0014 那条「意图与观察分开」的一个漏洞：
+		        -- 观察（掉线）不该覆盖意图（人关的）。
+		        dns_reason = CASE WHEN dns_enabled
+		                          THEN 'auto_offline'::dns_change_reason
+		                          ELSE dns_reason END,
+		        dns_actor = CASE WHEN dns_enabled THEN NULL ELSE dns_actor END,
+		        dns_changed_at = CASE WHEN dns_enabled THEN now() ELSE dns_changed_at END
 		  WHERE id = $1`, nodeID)
 	return err
 }
@@ -284,4 +298,42 @@ func (s *Store) GetNode(ctx context.Context, id string) (Node, error) {
 		return n, ErrNotFound
 	}
 	return n, err
+}
+
+// ReattachAfterRecovery 在心跳恢复时把**系统自己摘掉的**解析放回去。
+// 返回是否真的放回了。
+//
+// **摘和恢复此前不对称，而那是个真 bug。** SetNodeDown 在 SQL 里直接把
+// dns_enabled 置 false，而恢复那一侧只调 dnsops.Attach —— 那个函数
+// 「只负责让服务商侧跟上」，不写库。于是标志位一旦被自动摘掉就**再也回不来**。
+//
+// 后果比「一台机器掉出解析」大得多：**主控每重启一次，所有节点都会被
+// 自动摘掉**（重启窗口里它们必然错过几个心跳），而重启是例行操作。
+// 灰度上就是这么发生的——部署完新版本，节点几秒后就重连回来了，
+// 而它已经不在解析里，且没有任何东西会把它放回去。
+//
+// # 只放回系统自己摘的那一种
+//
+//	auto_offline  系统摘的 → 系统放回
+//	manual        人摘的   → **不碰**，否则一次心跳抖动就撤销了人的决定
+//	drained       人下线的 → 不碰，它本来就不该在解析里（ADR-0014）
+//
+// **「系统摘的系统放回，人摘的人放回」** 是这条 SQL 里 WHERE 子句的全部内容，
+// 而它同时也是 ADR-0014 那条「意图与观察分开」在这一处的具体形态：
+// auto_offline 是观察驱动的，观察变了就该跟着变；manual 是意图，不随观察动。
+//
+// 恢复之后 reason / actor 一起清空 —— 回到「没有人为干预」的状态。
+// 留着 auto_offline 而 dns_enabled 是 true，是一句自相矛盾的记录，
+// 而界面会照着 reason 引导人「先去修那台机器」，那时已经没什么要修的了。
+func (s *Store) ReattachAfterRecovery(ctx context.Context, nodeID string) (bool, error) {
+	tag, err := s.Pool.Exec(ctx,
+		`UPDATE edge_nodes
+		    SET dns_enabled = TRUE, dns_reason = NULL, dns_actor = NULL,
+		        dns_changed_at = now()
+		  WHERE id = $1 AND dns_reason = 'auto_offline' AND drained_at IS NULL`,
+		nodeID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }

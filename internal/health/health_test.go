@@ -2,6 +2,7 @@ package health_test
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -395,4 +396,124 @@ func TestAlreadyDownNodeDoesNotReAlertAfterRestart(t *testing.T) {
 		}
 		return false
 	})
+}
+
+// **系统自己摘掉的解析，心跳恢复时要放回去。**
+//
+// 摘和恢复此前不对称：SetNodeDown 在 SQL 里直接把 dns_enabled 置 false，
+// 而恢复那一侧只调 dnsops.Attach —— 那个函数「只负责让服务商侧跟上」，
+// **不写库**。于是标志位一旦被自动摘掉就再也回不来。
+//
+// 后果比「一台机器掉出解析」大得多：**主控每重启一次，所有节点都会被
+// 自动摘掉**（重启窗口里它们必然错过几个心跳），而重启是例行操作。
+// 灰度上就是这么发生的：部署完新版本，节点 7 秒后重连回来，
+// 而它已经不在解析里，且没有任何东西会把它放回去。
+func TestAutoDetachedDNSComesBackOnRecovery(t *testing.T) {
+	a := &recordingAlerter{}
+	d := &fakeDNS{}
+	m, st := newMonitor(t, a, d)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go m.Run(ctx)
+
+	// 先让它被判离线（系统摘解析）。
+	waitFor(t, 3*time.Second, func() bool { return len(a.all()) > 0 })
+	var enabled bool
+	var reason *string
+	if err := st.Pool.QueryRow(ctx,
+		`SELECT dns_enabled, dns_reason::text FROM edge_nodes WHERE id='node-a'`).
+		Scan(&enabled, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if enabled || reason == nil || *reason != "auto_offline" {
+		t.Fatalf("前置条件不成立：enabled=%v reason=%v", enabled, reason)
+	}
+
+	// 心跳回来。
+	m.Observe(hb(10))
+	waitFor(t, 3*time.Second, func() bool {
+		var on bool
+		_ = st.Pool.QueryRow(ctx,
+			`SELECT dns_enabled FROM edge_nodes WHERE id='node-a'`).Scan(&on)
+		return on
+	})
+
+	// reason / actor 一起清掉：留着 auto_offline 而 dns_enabled 是 true，
+	// 是一句自相矛盾的记录，而界面会照着它引导人「先去修那台机器」。
+	if err := st.Pool.QueryRow(ctx,
+		`SELECT dns_enabled, dns_reason::text FROM edge_nodes WHERE id='node-a'`).
+		Scan(&enabled, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if !enabled {
+		t.Error("系统摘的解析，心跳恢复时该放回去")
+	}
+	if reason != nil {
+		t.Errorf("恢复之后 reason 该清空，实际 %q —— "+
+			"auto_offline 配上 dns_enabled=true 是一句自相矛盾的记录", *reason)
+	}
+
+	// **恢复的措辞要说出解析也回来了。** 只说「心跳已恢复」的话，
+	// 人无从知道那台机器现在在不在解析里。
+	var found bool
+	for _, x := range a.all() {
+		if strings.Contains(x, "节点恢复") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("应当发一条恢复告警，实际 %v", a.all())
+	}
+}
+
+// **人手动关掉的解析，系统不能替他开。**
+//
+// 没有这一条，一个「恢复时无条件置 true」的实现也能让上面那条通过 ——
+// 而它会让一次心跳抖动撤销掉人的决定。
+//
+// 这是 ADR-0014「意图与观察分开」在这一处的具体形态：
+// auto_offline 是观察驱动的，观察变了就跟着变；manual 是意图，不随观察动。
+func TestManuallyPausedDNSIsNotReattachedBySystem(t *testing.T) {
+	a := &recordingAlerter{}
+	d := &fakeDNS{}
+	m, st := newMonitor(t, a, d)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// 人手动关掉解析。
+	if err := st.SetNodeDNS(ctx, "node-a", false, store.DNSManual, "abiu"); err != nil {
+		t.Fatal(err)
+	}
+
+	go m.Run(ctx)
+	waitFor(t, 3*time.Second, func() bool { return len(a.all()) > 0 }) // 判离线
+	m.Observe(hb(10))                                                  // 心跳回来
+	time.Sleep(200 * time.Millisecond)
+
+	var enabled bool
+	var reason, actor *string
+	if err := st.Pool.QueryRow(ctx,
+		`SELECT dns_enabled, dns_reason::text, dns_actor FROM edge_nodes WHERE id='node-a'`).
+		Scan(&enabled, &reason, &actor); err != nil {
+		t.Fatal(err)
+	}
+	if enabled {
+		t.Fatal("人手动关的解析，系统不该替他开 —— " +
+			"一次心跳抖动不能撤销人的决定")
+	}
+	if reason == nil || *reason != store.DNSManual {
+		t.Errorf("reason 该保持 manual，实际 %v —— 自动摘除覆盖了人的决定", deref(reason))
+	}
+	if actor == nil || *actor != "abiu" {
+		t.Errorf("操作人该保持住，实际 %v", deref(actor))
+	}
+}
+
+func deref(p *string) string {
+	if p == nil {
+		return "<nil>"
+	}
+	return *p
 }
