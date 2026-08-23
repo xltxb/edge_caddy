@@ -10,11 +10,12 @@ import (
 
 // Node 是边缘节点在主控这边的记录。
 type Node struct {
-	ID         string     `json:"id"`
-	City       string     `json:"city"`
-	Vendor     string     `json:"vendor"`
-	Line       string     `json:"line"`
-	PublicIP   string     `json:"public_ip"`
+	ID       string `json:"id"`
+	City     string `json:"city"`
+	Vendor   string `json:"vendor"`
+	Line     string `json:"line"`
+	PublicIP string `json:"public_ip"`
+	// Status 取 StatusOK / StatusWarn / StatusDown 之一。
 	Status     string     `json:"status"`
 	CfgVersion string     `json:"cfg_version"`
 	DNSEnabled bool       `json:"dns_enabled"`
@@ -37,6 +38,17 @@ type Node struct {
 	// **灰度时人最先问的就是「我推上去的那一版到底上没上」。**
 	AgentVersion string `json:"agent_version"`
 }
+
+// 节点的三档健康状态。**它是观察，不是意图**——「被人下线」是另一件事，
+// 记在 DrainedAt 上（ADR-0014）。
+//
+// 这三个值此前散落成裸字符串（health 里一处、dnssched 里一处、SQL 里几处）。
+// 两处用同一个字面量而没有共同来源，是「改一处漏一处」的标准形状。
+const (
+	StatusOK   = "ok"
+	StatusWarn = "warn"
+	StatusDown = "down"
+)
 
 // UpsertNode 在接入时写入或更新节点。同一台机器重新接入时更新元信息，
 // 不清掉 cfg_version —— 它记的是节点上生效的版本，重新接入并不改变那个事实。

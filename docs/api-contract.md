@@ -401,6 +401,7 @@ Upgrade: websocket
   "city": "香港", "vendor": "DMIT PPro", "line": "CN2 GIA",
   "public_ip": "203.0.113.7",
   "status": "ok",
+  "online": true,
   "cpu": 15.2, "mem": 32.8, "conns": 12400,
   "cpu_series": [12,14,13,18,15,15,16,14,13,15,15,15],
   "last_hb_at": "2026-08-21T10:42:05+08:00",
@@ -459,6 +460,31 @@ Upgrade: websocket
   前端按 `null` 处理（画一条平线或留白，别报错）。补齐之后前端用 WS `heartbeat` 帧
   自行往后追加。
 - `drift` = `cfg_version != 当前基线`，与 `GET /overview` 的 `drift_nodes` 同源。
+
+#### `status` 与 `online` 是两个不同的问题
+
+| 字段 | 回答的问题 | 谁写的 |
+|---|---|---|
+| `status` | 这台机器**健康吗**（`ok` / `warn` / `down`） | 主控的心跳判定：连续错过 N 个周期判 `down` |
+| `online` | 这条**隧道此刻连着吗** | 隧道自己的会话表，实时 |
+
+**界面上的在线徽标认 `status`。** `online` 是给排查用的辅助信号，
+不参与「在线 / 离线」的展示。
+
+两者短暂不一致是**正常的**：一台机器刚断，`online` 立刻转 false，
+而 `status` 要等 `heartbeat_interval_s × offline_threshold_count` 之后才转 `down`。
+那个窗口就是判定的去抖，不是 bug。
+
+> **持续不一致就是 bug，而且此前真的发生过。**
+>
+> 灰度上一台机器 31 分钟没心跳，`online: false`，而 `status` 还是 `ok`。
+> 根因是主控重启后内存里那张观测表清空了，而一台已经失联的机器
+> 再也不会发心跳，就永远进不了那张表——判定遍历不到它。
+>
+> 连带的两件事更贵：那一步同时负责**摘解析**和**发离线告警**。
+>
+> 现在主控启动时会把库里已知的节点装进去，判定从第一秒起就覆盖它们。
+> 前端不需要为此改任何东西——**`status` 重新是可信的**。
 
 ### `GET /nodes/:id/logs`
 

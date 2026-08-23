@@ -308,3 +308,91 @@ func TestDrainedNodeDoesNotRaiseOfflineAlert(t *testing.T) {
 		t.Errorf("已下线的节点解析早就摘了，不该再摘一次：%v", detached)
 	}
 }
+
+// **主控重启之后，一台此时已经失联的节点必须仍然被判离线。**
+//
+// 灰度上撞到的：`node-hk-01` 31 分钟没心跳，控制台显示「在线」。
+//
+// 根因是 m.nodes 只在**收到心跳时**才建条目。主控重启后 map 清空，
+// 而一台已经死了的机器再也不会发心跳，就永远进不了这张 map——
+// tick 遍历不到它，SetNodeDown 一次也不会被调用，库里的 status
+// 永久停在 ok。
+//
+// 连带的两件事更贵：SetNodeDown 同时负责**摘解析**和**发离线告警**。
+// 它没跑，那台死机器就还挂在解析里，而且没有人被通知。
+// （灰度上没造成实害，只是因为 DNS 服务商还没配上。）
+//
+// **而制造这个洞的，正是上面那条测试注释里的那个理由。**
+// 「数连续错过的次数，而不是看距上次心跳多久」——顾虑是对的，
+// 但「数次数」只对已经在 map 里的节点数。
+// **一道防误报的措施，造出了一个永久的漏报。**
+//
+// 这条测试模拟的正是那个场景：库里有节点、Monitor 是全新的（没收过任何心跳）。
+func TestNodeUnseenSinceRestartStillGoesDown(t *testing.T) {
+	a := &recordingAlerter{}
+	d := &fakeDNS{}
+	m, st := newMonitor(t, a, d)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// **一次 Observe 都不调**——这就是「主控重启后，那台机器再也没来过」。
+	go m.Run(ctx)
+
+	waitFor(t, 3*time.Second, func() bool { return len(a.all()) > 0 })
+
+	var status string
+	var dnsEnabled bool
+	if err := st.Pool.QueryRow(ctx,
+		`SELECT status::text, dns_enabled FROM edge_nodes WHERE id='node-a'`).
+		Scan(&status, &dnsEnabled); err != nil {
+		t.Fatal(err)
+	}
+	if status != "down" {
+		t.Errorf("status=%s，想要 down —— 一台主控从没见过心跳的节点"+
+			"不能永远停在上一次的状态", status)
+	}
+	if dnsEnabled {
+		t.Error("还挂在解析里 —— 流量会往一台死机器上打")
+	}
+	if got := a.all(); len(got) != 1 || got[0] != "crit|节点离线 node-a" {
+		t.Errorf("告警 = %v，想要恰好一条 crit", got)
+	}
+}
+
+// **库里已经是 down 的，重启之后不该再报一次警。**
+//
+// 不挡的话，每一次主控重启都会为同一台死机器重新走一遍 markDown：
+// 再发一次告警、再摘一次解析。**一个重启就重复报警的系统，
+// 会教会运维忽略那一类告警**——跟「被人下线的节点不报离线」是同一条理由。
+func TestAlreadyDownNodeDoesNotReAlertAfterRestart(t *testing.T) {
+	a := &recordingAlerter{}
+	d := &fakeDNS{}
+	m, st := newMonitor(t, a, d)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := st.SetNodeDown(ctx, "node-a"); err != nil {
+		t.Fatal(err)
+	}
+
+	go m.Run(ctx)
+	time.Sleep(150 * time.Millisecond) // 足够跑好几轮 tick
+
+	if got := a.all(); len(got) != 0 {
+		t.Errorf("库里已经是 down 了，重启不该再报警，实际 %v", got)
+	}
+	// **但它仍然要在内存里被看着**：下一次心跳来了要能走恢复那条路。
+	//
+	// 验的是恢复告警，不是库里的 status——`recover` 不写库，
+	// 状态是隧道的心跳回调经 TouchHeartbeat 落的。
+	// （我第一版断言了库里变成 ok，红了；红的是我的断言，不是代码。）
+	m.Observe(hb(10))
+	waitFor(t, time.Second, func() bool {
+		for _, x := range a.all() {
+			if x == "warn|节点恢复 node-a" {
+				return true
+			}
+		}
+		return false
+	})
+}

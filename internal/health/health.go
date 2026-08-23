@@ -205,6 +205,12 @@ func (m *Monitor) Forget(nodeID string) {
 
 // Run 跑离线判定循环，直到 ctx 结束。
 func (m *Monitor) Run(ctx context.Context) {
+	// **先把库里已知的节点装进内存，再开始数。**
+	//
+	// 放在 Run 里而不是让 main.go 调：装配漏了的话，症状是
+	// 「一台死了很久的机器永远显示在线」——那是最不该靠人记得的一步。
+	m.warm(ctx)
+
 	t := time.NewTicker(m.Interval)
 	defer t.Stop()
 	for {
@@ -214,6 +220,71 @@ func (m *Monitor) Run(ctx context.Context) {
 		case <-t.C:
 			m.tick(ctx)
 		}
+	}
+}
+
+// warm 把库里已知的节点装进内存，让 sweep 从主控启动那一刻就覆盖它们。
+//
+// **这一步此前不存在，而它的缺席造出了一个永久的漏报。**
+//
+// m.nodes 只在**收到心跳时**才建条目（见 Observe）。所以主控重启之后，
+// 一台此时已经失联的机器再也不会发心跳，就永远进不了这张 map——
+// tick 遍历不到它，SetNodeDown 一次也不会被调用，库里的 status 就此
+// 永久停在 ok。灰度上撞到了：一台 31 分钟没心跳的机器，控制台显示「在线」。
+//
+// 连带的两件事更贵：SetNodeDown 同时负责**摘解析**和**发离线告警**，
+// 它没跑，那台死机器就还挂在解析里，而且没有人被通知。
+//
+// **而制造这个洞的，正是 tick 上面那段防误报的注释。**
+// 「数连续错过的次数，而不是看距上次心跳多久」——那个顾虑是对的
+// （主控刚启动时不该把所有节点判成离线），但「数次数」只对已经在 map 里的
+// 节点数。**一道防误报的措施，造出了一个永久的漏报。**
+//
+// 装进来之后那个顾虑仍然被照顾着：新装进来的条目 misses 从 0 开始，
+// 一台真死的机器要连续错过 Threshold 个周期才被标记——
+// 与一台在主控运行期间死掉的机器走的是同一条路径、同样的延迟。
+func (m *Monitor) warm(ctx context.Context) {
+	if m.Store == nil {
+		return
+	}
+	nodes, err := m.Store.ListNodes(ctx)
+	if err != nil {
+		// 装不进来就退回原来的行为（只覆盖发过心跳的节点）。
+		// **说出来**：这不是「没有节点」，是「不知道有没有节点」。
+		m.Log.Error("装载已知节点失败，离线判定这一轮只覆盖发过心跳的节点",
+			"err", err)
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int
+	for _, node := range nodes {
+		if _, ok := m.nodes[node.ID]; ok {
+			continue // 已经有心跳进来了，那份状态更新
+		}
+		// **被人下线的不装。** 它必然停止心跳，而那是我们主动做的事
+		// （ADR-0014）；markDown 也会挡住它，不装只是省掉一轮无谓的计数。
+		if node.DrainedAt != nil {
+			continue
+		}
+		st := &nodeState{seen: true, status: node.Status}
+		if node.LastHBAt != nil {
+			st.last.At = *node.LastHBAt
+		}
+		// **库里已经是 down 的，标成「已报过」。**
+		//
+		// 不标的话，每一次主控重启都会为同一台死机器重新走一遍 markDown：
+		// 再发一次告警、再摘一次解析。而一个重启就重复报警的系统，
+		// 会教会运维忽略那一类告警——跟「下线的节点不报离线」是同一条理由。
+		if node.Status == store.StatusDown {
+			st.downSent = true
+		}
+		m.nodes[node.ID] = st
+		n++
+	}
+	if n > 0 {
+		m.Log.Info("已装载已知节点，离线判定从现在起覆盖它们", "count", n)
 	}
 }
 

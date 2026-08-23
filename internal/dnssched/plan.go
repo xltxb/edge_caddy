@@ -4,7 +4,11 @@
 // 落地是各家服务商的能力差异，要的是不撒谎。
 package dnssched
 
-import "sort"
+import (
+	"sort"
+
+	"github.com/xltxb/edge_caddy/internal/store"
+)
 
 // Lines 是固定的五条线路码（api-contract §8）。
 var Lines = []Line{
@@ -123,7 +127,7 @@ func Build(domain string, weights Weights, nodes []NodeState) Plan {
 		for _, id := range ids {
 			n, known := byID[id]
 			w := weights[line.Code][id]
-			in := known && n.DNSEnabled && n.Status != "down" && w > 0
+			in := known && n.DNSEnabled && n.Status != store.StatusDown && w > 0
 			if in {
 				total += w
 			}
