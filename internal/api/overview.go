@@ -112,7 +112,19 @@ func (s *Server) handleOverview(c *gin.Context) {
 		})
 	}
 
-	OK(c, gin.H{"baseline": baseline, "kpi": kpi, "events": items})
+	// **master_version 说的是「此刻在跑的是哪一版」。**
+	//
+	// 它此前只出现在启动日志里，而看得到日志的人和验行为的人常常不是同一个。
+	// 前端 agent 在灰度上复验一个修复时卡住的正是这一点：他看到旧行为，
+	// 而**「修得不对」和「根本没部署」产生的观测一模一样**——
+	// 两者的处置完全不同，而他手上没有任何东西能把它们分开。
+	//
+	// 节点那一侧早就有 agent_version（#26 补的），主控这一侧没有对应的东西。
+	// 这是同一个缺口的两半，补上一半而漏掉另一半是典型的「同形状的另一个」。
+	OK(c, gin.H{
+		"baseline": baseline, "kpi": kpi, "events": items,
+		"master_version": s.version,
+	})
 }
 
 // originRate 是**到达 upstream 的请求 ÷ 边缘收到的总请求**，越低越好。

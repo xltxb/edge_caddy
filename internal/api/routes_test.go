@@ -3,12 +3,14 @@ package api_test
 import (
 	"encoding/json"
 	"github.com/xltxb/edge_caddy/internal/store"
+	"net/http"
 	"os"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/xltxb/edge_caddy/internal/api"
 )
 
 // contractEndpoints 是 docs/api-contract.md 列出的全部端点。
@@ -265,5 +267,34 @@ func TestNoUndocumentedEndpoints(t *testing.T) {
 	if len(extra) > 0 {
 		t.Fatalf("路由表里有但契约里没有（忘了写进契约，还是不该存在？）：\n  %s",
 			strings.Join(extra, "\n  "))
+	}
+}
+
+// **`GET /overview` 必须说得出此刻在跑的是哪一版。**
+//
+// 它此前只出现在启动日志里，而看得到日志的人和验行为的人常常不是同一个。
+// 前端 agent 在灰度上复验一个修复时卡住的正是这一点：他看到旧行为，
+// 而**「修得不对」和「根本没部署」产生的观测一模一样**。
+//
+// 这条测试也钉住「没注入时是 dev，不是空串」：空串会在界面上显示成一片空白，
+// 而空白读起来是「这个字段还没做」，不是「这是个未打标的构建」。
+func TestOverviewReportsMasterVersion(t *testing.T) {
+	r, _ := newServer(t)
+	ck := login(t, r)
+
+	_, e := do(t, r, "GET", "/api/v1/overview", nil,
+		func(req *http.Request) { req.AddCookie(ck) })
+	if e.Code != api.CodeOK {
+		t.Fatalf("code=%d msg=%s", e.Code, e.Msg)
+	}
+	var d struct {
+		MasterVersion *string `json:"master_version"`
+	}
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.MasterVersion == nil {
+		t.Fatal("总览里没有 master_version —— " +
+			"没有它，「修得不对」和「根本没部署」在界面上是同一个样子")
 	}
 }

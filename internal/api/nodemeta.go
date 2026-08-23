@@ -88,8 +88,15 @@ func (s *Server) handleUpdateNode(c *gin.Context) {
 	// 而两边各自看起来都正常。这与「暂停解析只改标志位不推服务商」
 	// 是同一个形状，那次的教训是：**返回的 ok 要说的是「解析真的变了」，
 	// 不是「库里写成功了」。**
+	// **按 IP 的值比，不按字符串比。**
+	//
+	// 库里存的是 inet，读出来经过 host() 归一化；表单里那个是人敲的。
+	// IPv6 尤其：`2001:db8::1` 和 `2001:0db8:0:0:0:0:0:1` 是同一个地址，
+	// 字符串却不同——那会让一次「只改了城市」的编辑去推一次解析，
+	// 并回报「203.0.113.7 → 203.0.113.7，解析已同步」。
+	// **一句字面为真、而读起来是假话的 detail**，比不说更坏。
 	synced, detail := false, ""
-	if before.PublicIP != req.PublicIP {
+	if !net.ParseIP(before.PublicIP).Equal(net.ParseIP(req.PublicIP)) {
 		synced, detail = s.syncAfterIPChange(ctx, before.PublicIP, req.PublicIP)
 	}
 

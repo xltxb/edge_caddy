@@ -55,6 +55,7 @@ type Server struct {
 	caPin            string
 	opsBotConfigured bool
 	webRoot          string
+	version          string
 }
 
 type Options struct {
@@ -71,8 +72,12 @@ type Options struct {
 
 	// MasterAddr 与 CAPin 只用来拼安装命令。CAPin 让 Agent 首连时能确认
 	// 对面就是主控，堵住 TOFU 那个洞（ADR-0009）。
-	MasterAddr  string
-	CAPin       string
+	MasterAddr string
+	CAPin      string
+	// Version 是这个主控二进制的构建标记（scripts/build.sh 用 -ldflags 注进去）。
+	// 经 GET /overview 回给控制台 —— 见那里的注释：
+	// **「修得不对」和「根本没部署」产生的观测一模一样。**
+	Version     string
 	SessionTTL  time.Duration
 	OpsBotToken string
 	// WebRoot 是控制台静态文件所在的目录（EC_WEB_ROOT）。
@@ -145,6 +150,7 @@ func New(o Options) *gin.Engine {
 		caPin:            o.CAPin,
 		opsBotConfigured: o.OpsBotToken != "",
 		webRoot:          o.WebRoot,
+		version:          o.Version,
 	}
 
 	v1 := r.Group("/api/v1")
