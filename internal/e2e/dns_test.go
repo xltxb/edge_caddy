@@ -926,3 +926,64 @@ func TestSettingsWithoutProviderStillSaysSomething(t *testing.T) {
 			"而那份想象没有任何东西去校对")
 	}
 }
+
+// TestDNSSyncTargetsKeyAlwaysPresent 钉的是**那个键永远在，没数据时是 null**。
+//
+// 带 omitempty 的话这个键会整个消失，于是下游要分辨三种写法
+// （不存在 / null / 空数组）而它们只表达两个意思 —— 而 JS 里 `?.` 和 `??`
+// 会把「不存在」和「null」悄悄合并，那正好抹掉契约里那句区别
+// （null = 旧数据，不是「一个目标都没有」）。
+//
+// 前端拿真主控比形状时撞到的就是这个：契约写着 null，而真主控整个不发这个键。
+// **契约那句没错，是 omitempty 让它没法成立。**
+//
+// 判据必须是「键在」，不是「值对」：`json.Unmarshal` 到结构体的话，
+// 键不存在和值为 null 都给出 nil 切片 —— **那正是这条要区分的两件事**。
+func TestDNSSyncTargetsKeyAlwaysPresent(t *testing.T) {
+	r := newRig(t)
+
+	check := func(label string) {
+		t.Helper()
+		e := r.mustDo("GET", "/dns/weights", nil)
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(e.Data, &raw); err != nil {
+			t.Fatal(err)
+		}
+		var sync map[string]json.RawMessage
+		if err := json.Unmarshal(raw["dns_sync"], &sync); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := sync["targets"]; !ok {
+			t.Errorf("%s：dns_sync 里没有 targets 这个键 —— "+
+				"下游要分辨三种写法而它们只表达两个意思，"+
+				"而 JS 的 ?. 会把「不存在」和「null」合并", label)
+		}
+	}
+
+	// 一、从没同步过：键要在，值是 null。
+	check("从没同步过")
+
+	// 二、同步过一次之后：键在，值是数组。
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+	r.configureDNSProvider()
+	check("同步过之后")
+
+	// 而这一次它该真的有内容 —— 没有这一条，一个「永远回 null」的实现
+	// 也能让上面两条全绿。
+	e := r.mustDo("GET", "/dns/weights", nil)
+	var d struct {
+		Sync struct {
+			Targets []struct {
+				Hostname string `json:"hostname"`
+			} `json:"targets"`
+		} `json:"dns_sync"`
+	}
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Sync.Targets) == 0 {
+		t.Error("同步过之后 targets 该有内容，而不是恒为 null")
+	}
+}
