@@ -962,3 +962,58 @@ func fmtBlocked(b *uint64) string {
 	}
 	return fmt.Sprint(*b)
 }
+
+// TestIPv4OnlyWhitelistBlocksIPv6Clients 钉的是**跨地址族的那个坑**。
+//
+// 有人把白名单写成 `0.0.0.0/0`，想的是「放行所有人」——
+// 而 `0.0.0.0/0` 只覆盖 IPv4。一个 IPv6 访客不在这个范围里，
+// `not` 于是成立，请求被拦。
+//
+// **语义上这是对的**（白名单里没有 v6 段，就该拦 v6），所以不该在代码里
+// 拿掉它。要钉的是它**真的会发生**：这条断言此前只写在我给用户的回答里，
+// 而那句话是读配置读出来的，没有量过 —— 同一个位置上我此前断言过
+// 「Caddy 会追加 X-Forwarded-For」，实测是**替换**。
+//
+// 走 v4 回环的测试碰不到它：EdgeTCP 拨 127.0.0.1，永远落在 0.0.0.0/0 里。
+func TestIPv4OnlyWhitelistBlocksIPv6Clients(t *testing.T) {
+	r := newRig(t, caddytest.EdgeTCP6())
+	setupSite(t, r, "v6.example.com")
+
+	// 没规则时先通一次 —— 否则下面的 404 可能是 IPv6 监听本身没起来。
+	if code, _ := r.curlVia("v6.example.com"); code != 200 {
+		t.Fatalf("装置坏了：还没加规则，IPv6 上就通不过（%d）", code)
+	}
+
+	r.mustDo("PUT", "/rules/wl6", map[string]any{
+		"name": "以为是放行所有人", "type": "ip_whitelist", "enabled": true,
+		"apply_to": []string{"v6.example.com"},
+		"spec":     map[string]any{"ips": []string{"0.0.0.0/0"}},
+	})
+	r.deployNow("rule:wl6")
+
+	if code, _ := r.curlVia("v6.example.com"); code != 404 {
+		t.Errorf("白名单只写了 IPv4 段时，IPv6 访客应当被拦，实际 %d —— "+
+			"如果这里是 200，说明 remote_ip 跨地址族的行为跟我说给用户的相反", code)
+	}
+}
+
+// TestWhitelistWithBothFamiliesLetsIPv6Through 是上一条的**修法**。
+//
+// 少了它，上一条的绿可以由「白名单无条件拦 v6」达成 —— 那样 `::/0`
+// 就成了一句填得进去、看着对、而不起作用的配置。**而界面此刻正建议人加它。**
+func TestWhitelistWithBothFamiliesLetsIPv6Through(t *testing.T) {
+	r := newRig(t, caddytest.EdgeTCP6())
+	setupSite(t, r, "v6ok.example.com")
+
+	r.mustDo("PUT", "/rules/wl6ok", map[string]any{
+		"name": "真的放行所有人", "type": "ip_whitelist", "enabled": true,
+		"apply_to": []string{"v6ok.example.com"},
+		"spec":     map[string]any{"ips": []string{"0.0.0.0/0", "::/0"}},
+	})
+	r.deployNow("rule:wl6ok")
+
+	if code, _ := r.curlVia("v6ok.example.com"); code != 200 {
+		t.Errorf("白名单同时写了两个族时，IPv6 访客应当通过，实际 %d —— "+
+			"界面正建议人加 ::/0，它不起作用的话那句建议是空的", code)
+	}
+}

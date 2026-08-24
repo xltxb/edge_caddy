@@ -87,6 +87,22 @@ func (c *Caddy) VerifySocketPath() string { return c.verifySock }
 // 而并行测试会抢；所以它是逐个测试选的，不是全局默认。
 func EdgeTCP() Option { return func(c *Caddy) { c.edgeTCP = freePort(c.t) } }
 
+// EdgeTCP6 同 EdgeTCP，但走 IPv6 回环 —— 客户端地址是 `::1`。
+//
+// **有它才验得了「白名单只写了 IPv4 段时 v6 访客会被拦」。** 那条断言
+// 说的是 Caddy 的 remote_ip 匹配器跨地址族的行为，而在 v4 上跑一万次
+// 也碰不到它 —— EdgeTCP 拨的是 127.0.0.1，永远落在 0.0.0.0/0 里。
+func EdgeTCP6() Option {
+	return func(c *Caddy) {
+		l, err := net.Listen("tcp6", "[::1]:0")
+		if err != nil {
+			c.t.Skipf("这台机器没有 IPv6 回环：%v", err)
+		}
+		c.edgeTCP = l.Addr().String()
+		_ = l.Close()
+	}
+}
+
 // Option 是 New 的可选项。
 type Option func(*Caddy)
 
