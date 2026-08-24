@@ -56,7 +56,7 @@ type rig struct {
 	dnsCalls *int32
 }
 
-func newRig(t *testing.T) *rig {
+func newRig(t *testing.T, opts ...caddytest.Option) *rig {
 	t.Helper()
 	ctx := context.Background()
 
@@ -78,7 +78,7 @@ func newRig(t *testing.T) *rig {
 		t.Fatal(err)
 	}
 
-	cad := caddytest.New(t)
+	cad := caddytest.New(t, opts...)
 
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "UPSTREAM OK")

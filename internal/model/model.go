@@ -60,12 +60,45 @@ type RuleSpec struct {
 	Audience    string `json:"aud,omitempty"`
 	JWKSURL     string `json:"jwks_url,omitempty"`
 	SkewSeconds int    `json:"skew_s,omitempty"`
+
+	// request_filter：按请求特征拦。每一条都是「命中就拦」。
+	//
+	// **它们之间是或的关系**，一条规则里的多个条件命中任意一个就拦下。
+	// 想要「且」就配成两条规则——那让每一条在界面上都能单独开关，
+	// 而一个复合条件是拆不开的，出问题时也说不清是哪一半命中的。
+	Filters []Filter `json:"filters,omitempty"`
+}
+
+// Filter 是一条请求特征。
+//
+// **它是「拦」不是「放」**：命中即按路由的处置方式断掉。
+// 白名单那一类走 ip_whitelist，两者的默认方向相反，混在一起说不清。
+type Filter struct {
+	// Field 是看请求的哪一部分：path | user_agent | referer | header | query
+	Field string `json:"field"`
+	// Name 只在 Field 为 header / query 时有意义（要看哪个头 / 哪个参数）。
+	Name string `json:"name,omitempty"`
+	// Op 是怎么比：contains | prefix | suffix | equals | regex
+	Op string `json:"op"`
+	// Value 是比什么。regex 用 Go 的语法（Caddy 的匹配器也是 RE2）。
+	Value string `json:"value"`
 }
 
 const (
 	RuleIPWhitelist   = "ip_whitelist"
 	RuleServiceSecret = "service_secret"
 	RuleJWTBearer     = "jwt_bearer"
+
+	// RuleIPBlacklist 是白名单的反面。
+	//
+	// **两者不能合成一个「IP 规则」**：默认方向相反——白名单是「只放这些」，
+	// 黑名单是「只拦这些」。合成一个之后，一条清空了 IP 的规则
+	// 在两种语义下的后果是「谁都进不来」和「谁都能进」，
+	// 而界面上它们长得一模一样。
+	RuleIPBlacklist = "ip_blacklist"
+
+	// RuleRequestFilter 按请求特征拦（UA / 路径 / 请求头 / 查询参数）。
+	RuleRequestFilter = "request_filter"
 )
 
 // Policy 是全局策略。spec 的字段清单以高保真设计稿为准，

@@ -275,18 +275,140 @@ func rulesByDomain(rules []model.Rule) map[string][]model.Rule {
 // 它**不走校验端点**：Caddy 的 remote_ip 匹配器原生就能做，绕一趟回环
 // 只会给每个请求加一次 HTTP 调用，换不到任何东西。
 func ruleDenyRoute(r model.Route, rule model.Rule) map[string]any {
-	if rule.Type != model.RuleIPWhitelist || len(rule.Spec.IPs) == 0 {
-		return nil
-	}
-	return map[string]any{
-		"match": []any{map[string]any{
+	var match map[string]any
+
+	switch rule.Type {
+	case model.RuleIPWhitelist:
+		if len(rule.Spec.IPs) == 0 {
+			return nil
+		}
+		// **白名单：不在名单里的拦。** 那个 not 是这条与黑名单唯一的区别，
+		// 也是为什么两者不能合成一个「IP 规则」——少写一个 not，
+		// 「只放这些」就变成了「只拦这些」，而配置看起来完全正常。
+		match = map[string]any{
 			"host": []string{r.Domain},
 			"not": []any{map[string]any{
 				"remote_ip": map[string]any{"ranges": normalizeRanges(rule.Spec.IPs)},
 			}},
-		}},
+		}
+
+	case model.RuleIPBlacklist:
+		// **黑名单：在名单里的拦。**
+		//
+		// 空名单返回 nil（不渲染任何路由），而不是渲染一条匹配不到东西的路由：
+		// 后者在 Caddy 里是合法的，也确实谁都拦不到——但它会出现在下发的
+		// 配置 diff 里，让人以为「这条规则生效了」。
+		if len(rule.Spec.IPs) == 0 {
+			return nil
+		}
+		match = map[string]any{
+			"host":      []string{r.Domain},
+			"remote_ip": map[string]any{"ranges": normalizeRanges(rule.Spec.IPs)},
+		}
+
+	case model.RuleRequestFilter:
+		if len(rule.Spec.Filters) == 0 {
+			return nil
+		}
+		// **多个条件是「或」**：命中任意一个就拦。
+		// Caddy 的 match 数组里，元素之间正是或的关系（每个元素内部才是且）。
+		//
+		// **这是一条关于 Caddy 行为的断言，守着它的是测试不是文档**：
+		// TestRequestFilterBlocksByUserAgent（internal/e2e）配两条特征，
+		// 各发一个只命中其中一条的请求，两个都要被拦。
+		// 把它们并进同一个匹配器（变成「且」），那条当场红——撞过。
+		//
+		// 所以这里给出的是 N 个匹配器，而不是一个带 N 个字段的匹配器
+		// ——后者会变成「全部命中才拦」，那是相反的语义。
+		return map[string]any{
+			"match":    filterMatchers(r.Domain, rule.Spec.Filters),
+			"handle":   []any{blockHandler(r.BlockMode)},
+			"terminal": true,
+		}
+
+	default:
+		return nil
+	}
+
+	return map[string]any{
+		"match":    []any{match},
 		"handle":   []any{blockHandler(r.BlockMode)},
 		"terminal": true,
+	}
+}
+
+// filterMatchers 把每条特征翻成一个 Caddy 匹配器。
+//
+// **每条一个匹配器**，因为 match 数组里元素之间是或；
+// 塞进同一个匹配器的话它们会变成且，那是相反的语义。
+func filterMatchers(domain string, filters []model.Filter) []any {
+	out := make([]any, 0, len(filters))
+	for _, f := range filters {
+		m := map[string]any{"host": []string{domain}}
+		switch f.Field {
+		case "path":
+			if f.Op == "regex" {
+				m["path_regexp"] = map[string]any{"pattern": f.Value}
+			} else {
+				m["path"] = []string{pathPattern(f.Op, f.Value)}
+			}
+		case "user_agent":
+			m["header_regexp"] = map[string]any{
+				"User-Agent": map[string]any{"pattern": headerPattern(f.Op, f.Value)},
+			}
+		case "referer":
+			m["header_regexp"] = map[string]any{
+				"Referer": map[string]any{"pattern": headerPattern(f.Op, f.Value)},
+			}
+		case "header":
+			m["header_regexp"] = map[string]any{
+				f.Name: map[string]any{"pattern": headerPattern(f.Op, f.Value)},
+			}
+		case "query":
+			// query 匹配器只做精确值；别的比法用 expression（CEL）。
+			m["query"] = map[string]any{f.Name: []string{f.Value}}
+		default:
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// pathPattern 把比法翻成 Caddy path 匹配器的通配写法。
+//
+// **path 匹配器只认 `*` 通配**，没有 contains / prefix 这些概念——
+// 翻译在这里做一次，而不是让每个调用方各翻一遍。
+func pathPattern(op, v string) string {
+	switch op {
+	case "prefix":
+		return v + "*"
+	case "suffix":
+		return "*" + v
+	case "contains":
+		return "*" + v + "*"
+	default: // equals
+		return v
+	}
+}
+
+// headerPattern 把比法翻成正则。
+//
+// **一律走 header_regexp**：Caddy 的 header 匹配器只做精确与前后缀通配，
+// 而 contains 表达不了。统一成正则少一处分支，代价是要转义。
+func headerPattern(op, v string) string {
+	q := regexp.QuoteMeta(v)
+	switch op {
+	case "prefix":
+		return "^" + q
+	case "suffix":
+		return q + "$"
+	case "regex":
+		return v // 用户自己写的正则，不转义
+	case "equals":
+		return "^" + q + "$"
+	default: // contains
+		return q
 	}
 }
 
@@ -523,14 +645,70 @@ func validateRules(rules []model.Rule, domains map[string]bool) []Issue {
 		}
 
 		switch rule.Type {
-		case model.RuleIPWhitelist:
+		case model.RuleIPWhitelist, model.RuleIPBlacklist:
+			// **空名单要拒，而两种类型的理由不同。**
+			//
+			// 白名单空了会拦下所有人；黑名单空了谁也拦不到。
+			// 前者是一次事故，后者是一条静默失效的规则——
+			// 而**界面上它们长得一模一样：一条启用着的规则**。
 			if len(rule.Spec.IPs) == 0 {
-				issues = append(issues, Issue{key, "spec.ips", "IP 白名单不能为空"})
+				why := "IP 白名单不能为空 —— 空名单会拦下所有访问"
+				if rule.Type == model.RuleIPBlacklist {
+					why = "IP 黑名单不能为空 —— 空名单谁也拦不到，" +
+						"而这条规则在界面上仍然显示为启用"
+				}
+				issues = append(issues, Issue{key, "spec.ips", why})
 			}
 			for i, e := range rule.Spec.IPs {
 				if !validCIDROrIP(e) {
 					issues = append(issues, Issue{key,
 						fmt.Sprintf("spec.ips[%d]", i), fmt.Sprintf("%q 不是合法的 IP 或 CIDR", e)})
+				}
+			}
+
+		case model.RuleRequestFilter:
+			if len(rule.Spec.Filters) == 0 {
+				issues = append(issues, Issue{key, "spec.filters",
+					"至少要有一条特征 —— 一条没有特征的拦截规则谁也拦不到，" +
+						"而它在界面上仍然显示为启用"})
+			}
+			for i, f := range rule.Spec.Filters {
+				fk := fmt.Sprintf("spec.filters[%d]", i)
+				switch f.Field {
+				case "path", "user_agent", "referer":
+				case "header", "query":
+					if f.Name == "" {
+						issues = append(issues, Issue{key, fk + ".name",
+							"要说清看哪个请求头 / 哪个参数"})
+					}
+				default:
+					issues = append(issues, Issue{key, fk + ".field",
+						fmt.Sprintf("%q 不是可以匹配的部分（path / user_agent / referer / header / query）", f.Field)})
+				}
+				switch f.Op {
+				case "contains", "prefix", "suffix", "equals":
+				case "regex":
+					// **正则要当场编译。**
+					//
+					// 不编译的话，一条写错的正则会被原样下发到节点上，
+					// 而 Caddy 会**拒绝整份配置** —— 症状是「所有站点一起
+					// 下发失败」，而根因是某一条规则里的一个括号。
+					if _, err := regexp.Compile(f.Value); err != nil {
+						issues = append(issues, Issue{key, fk + ".value",
+							fmt.Sprintf("正则编译不过：%v —— 它会让整份配置被节点拒绝", err)})
+					}
+				default:
+					issues = append(issues, Issue{key, fk + ".op",
+						fmt.Sprintf("%q 不是可用的比法（contains / prefix / suffix / equals / regex）", f.Op)})
+				}
+				if f.Value == "" {
+					issues = append(issues, Issue{key, fk + ".value", "要比什么不能为空"})
+				}
+				if f.Field == "query" && f.Op != "equals" {
+					// query 匹配器只做精确值。悄悄当成 equals 的话，
+					// 一条 contains 规则会变成精确匹配 —— 拦不到它该拦的东西。
+					issues = append(issues, Issue{key, fk + ".op",
+						"查询参数只支持 equals（Caddy 的 query 匹配器只比精确值）"})
 				}
 			}
 

@@ -43,6 +43,7 @@ type Caddy struct {
 	dir        string
 	adminSock  string
 	edgeSock   string
+	edgeTCP    string // 非空时边缘走 TCP，remote_ip 才有东西可匹配
 	tlsSock    string
 	verifySock string
 	t          *testing.T
@@ -50,7 +51,19 @@ type Caddy struct {
 }
 
 // EdgeListen 是渲染时传给 render.Options.HTTPListen 的值。
-func (c *Caddy) EdgeListen() string { return "unix/" + c.edgeSock }
+// EdgeListen 是边缘 HTTP 的监听地址。
+//
+// 默认是 unix socket：并行测试之间不抢端口。**代价是 remote_ip 匹配不到任何东西**
+// ——unix 连接没有来源 IP，于是 IP 白名单会拦下一切、黑名单谁也拦不到。
+//
+// 要验 IP 类规则就得用 TCP（EdgeTCP），那时来源是 127.0.0.1。
+// 这个区别是实测出来的：白名单放行回环，走 unix socket 时回 404。
+func (c *Caddy) EdgeListen() string {
+	if c.edgeTCP != "" {
+		return c.edgeTCP
+	}
+	return "unix/" + c.edgeSock
+}
 
 // AdminURL 是传给 agent.NewCaddyClient 的地址。
 func (c *Caddy) AdminURL() string { return "unix/" + c.adminSock }
@@ -68,7 +81,31 @@ func (c *Caddy) VerifyDial() string { return "unix/" + c.verifySock }
 // VerifySocketPath 是校验端点应当监听的 socket 路径。
 func (c *Caddy) VerifySocketPath() string { return c.verifySock }
 
-func New(t *testing.T) *Caddy {
+// EdgeTCP 让边缘 HTTP 监听在回环 TCP 上，而不是 unix socket。
+//
+// **只有这样 remote_ip 才有东西可匹配。** 默认不这么做是因为 TCP 要占端口，
+// 而并行测试会抢；所以它是逐个测试选的，不是全局默认。
+func EdgeTCP() Option { return func(c *Caddy) { c.edgeTCP = freePort(c.t) } }
+
+// Option 是 New 的可选项。
+type Option func(*Caddy)
+
+// freePort 拿一个当前空闲的回环端口。
+//
+// **绑了再放**：中间有一个极小的窗口别人可能抢走它。测试里可以接受
+// （症状是 Caddy 起不来，当场报错，不是静默的错），而要真正消除它
+// 得把 fd 传给 Caddy —— 那要改它的启动方式，不成比例。
+func freePort(t *testing.T) string {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+	return addr
+}
+
+func New(t *testing.T, opts ...Option) *Caddy {
 	t.Helper()
 
 	bin, err := exec.LookPath("caddy")
@@ -92,6 +129,10 @@ func New(t *testing.T) *Caddy {
 		tlsSock:    filepath.Join(dir, "s.sock"),
 		verifySock: filepath.Join(dir, "v.sock"),
 		t:          t,
+	}
+	// 选项在这里应用：freePort 要用 c.t。
+	for _, o := range opts {
+		o(c)
 	}
 
 	home := filepath.Join(dir, "h")
@@ -176,7 +217,30 @@ func New(t *testing.T) *Caddy {
 
 // Client 返回一个打边缘 server 的 HTTP 客户端。
 // 用它发请求时 URL 里的主机名只用于 Host 匹配，实际连的是 socket。
-func (c *Caddy) Client() *http.Client { return unixClient(c.edgeSock) }
+func (c *Caddy) Client() *http.Client {
+	if c.edgeTCP != "" {
+		// **把任何 host 都拨到那个端口。**
+		//
+		// 不这么做的话客户端会真的去解析 `wl.example.com`，请求根本发不出去
+		// ——而那表现成 code=0，看起来像「Caddy 没起来」。
+		// Host 头仍然是原来的域名，Caddy 的 host 匹配器要的正是它。
+		//
+		// 守着这一整条（TCP 上 remote_ip 真的匹配得到回环）的是
+		// TestIPBlacklistActuallyBlocks / TestIPBlacklistLetsOthersThrough
+		// （internal/e2e）：它们用真 Caddy 发真请求，一条验拦、一条验放。
+		addr := c.edgeTCP
+		return &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				DisableKeepAlives: true,
+				DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+					return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+				},
+			},
+		}
+	}
+	return unixClient(c.edgeSock)
+}
 
 // Get 经边缘 server 发一个请求，host 决定命中哪条路由。
 func (c *Caddy) Get(host, path string, headers map[string]string) (int, string) {
