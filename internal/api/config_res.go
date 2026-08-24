@@ -219,6 +219,47 @@ func (s *Server) handleListRules(c *gin.Context) {
 	if rules == nil {
 		rules = []model.Rule{}
 	}
+
+	// **每条规则完不完整，在列表这一层就说出来。**
+	//
+	// 灰度上撞到的：一条 window_s 为 0 的限流规则存进了库，
+	// 而它是在**下发那一刻**才被拒的 —— 那条规则可能是几天前建的。
+	// **校验拦住的地方，离出错的地方隔了很远。**
+	//
+	// 它进得来是因为校验只跑在「启用且已绑定」的规则上（那是刻意的：
+	// 半成品不该挡住全站下发）。而「这条规则完不完整」是另一个问题，
+	// 它对停用的规则**同样成立**——所以这里照实算，不跳过任何一条。
+	//
+	// 界面把两件事分开显示：「已停用」是**意图**，「还不完整」是**事实**。
+	// 合成一句「不生效」会让人以为启用它就能用了。
+	incomplete := make(map[string][]FieldError, len(rules))
+	for _, r := range rules {
+		// **已配置的密钥不算缺。** 列表不解密（凭证不回显），
+		// 而 SecretConfigured 说得出「库里有没有」——不这么做的话，
+		// 每条配好密钥的规则都会被标成不完整。
+		toCheck := r
+		if r.Spec.SecretConfigured {
+			toCheck.Secret = "（已配置）"
+		}
+		for _, i := range render.RuleSpecIssues(toCheck, "rule:"+r.ID) {
+			incomplete[r.ID] = append(incomplete[r.ID], FieldError{
+				ResKey: i.ResKey, Field: i.Field, Reason: i.Reason,
+			})
+		}
+		// **没绑定域名也是一种不完整**，而它不是 spec 的问题，所以单列。
+		// 一条规则配得再全，不绑域名也不会对任何请求生效。
+		if len(r.ApplyTo) == 0 {
+			incomplete[r.ID] = append(incomplete[r.ID], FieldError{
+				ResKey: "rule:" + r.ID, Field: "apply_to",
+				Reason: "还没绑定任何域名 —— 它不会对任何请求生效",
+			})
+		}
+		// **算过了、没问题的要给空数组，不是 nil。**
+		// nil 序列化成 null，而 null 的意思是「这次算不出来」（§0.4）。
+		if incomplete[r.ID] == nil {
+			incomplete[r.ID] = []FieldError{}
+		}
+	}
 	// filter_fields 是 request_filter 里**每个 field 允许哪些 op**。
 	//
 	// **报出去是为了让界面的下拉由数据驱动，而不是抄一份。**
@@ -229,6 +270,7 @@ func (s *Server) handleListRules(c *gin.Context) {
 	// 与校验共用同一张表（model.FilterFieldOps），不是它的抄本。
 	OK(c, gin.H{
 		"items":         rules,
+		"incomplete":    incomplete,
 		"filter_fields": model.FilterFieldOps,
 		// 哪些 field 还要指明「看哪一个」（请求头名 / 参数名）。
 		"filter_fields_need_name": model.FilterFieldsNeedingName,

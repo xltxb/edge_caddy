@@ -634,3 +634,135 @@ func TestLegacyRulesStillDeployToOldAgents(t *testing.T) {
 			"不该被拦：code=%d msg=%q", e.Code, e.Msg)
 	}
 }
+
+// TestIncompleteRulesAreVisibleInTheList 钉的是**列表上就看得见，不必等到下发**。
+//
+// 灰度上撞到的：一条 `window_s` 为 0 的限流规则存进了库，
+// 而它是在**下发那一刻**才被拒的 —— 那条规则可能是几天前建的。
+// **校验拦住的地方，离出错的地方隔了很远。**
+//
+// 它进得来是因为校验只跑在「启用且已绑定」的规则上（那是刻意的：
+// 半成品不该挡住全站下发）。而「这条规则完不完整」是另一个问题 ——
+// 它对停用的规则**同样成立**。
+//
+// 判据是**「下发会被拒的，列表上已经标出来了」**，
+// 不是「列表上有个字段」——后者一个恒为空的实现也能满足。
+func TestIncompleteRulesAreVisibleInTheList(t *testing.T) {
+	r := newRig(t)
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "inc.example.com", "upstream": r.upstream, "block_mode": "abort",
+	})
+
+	// 一条停用的半成品：window_s 缺了。**停用所以校验跳过，存得进去。**
+	r.mustDo("PUT", "/rules/half", map[string]any{
+		"name": "半成品限流", "type": "rate_limit", "enabled": false,
+		"apply_to": []string{"inc.example.com"},
+		"spec":     map[string]any{"requests": 100, "rate_key": "ip"},
+	})
+	// 一条完整的，用来验反面。
+	r.mustDo("PUT", "/rules/whole", map[string]any{
+		"name": "完整的", "type": "ip_blacklist", "enabled": true,
+		"apply_to": []string{"inc.example.com"},
+		"spec":     map[string]any{"ips": []string{"198.51.100.0/24"}},
+	})
+
+	e := r.mustDo("GET", "/rules", nil)
+	var d struct {
+		Incomplete map[string][]struct {
+			Field  string `json:"field"`
+			Reason string `json:"reason"`
+		} `json:"incomplete"`
+	}
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+
+	// 半成品要被标出来，**并且点名是哪个字段**。
+	if len(d.Incomplete["half"]) == 0 {
+		t.Fatalf("那条 window_s 缺了的规则没被标出来 —— "+
+			"人要等到几天后下发时才知道：%s", e.Data)
+	}
+	var sawWindow bool
+	for _, i := range d.Incomplete["half"] {
+		if i.Field == "spec.window_s" {
+			sawWindow = true
+		}
+	}
+	if !sawWindow {
+		t.Errorf("要点名是哪个字段，否则人不知道去填哪儿：%+v", d.Incomplete["half"])
+	}
+
+	// **完整的那条要是空数组，不是 null。**
+	// null 的意思是「这次算不出来」（§0.4），而它算过了。
+	whole, ok := d.Incomplete["whole"]
+	if !ok {
+		t.Fatal("完整的规则也该有这一项（空数组），而不是整个不出现")
+	}
+	if len(whole) != 0 {
+		t.Errorf("完整的规则被标成不完整了：%+v", whole)
+	}
+}
+
+// TestUnboundRuleIsIncompleteToo：配得再全，不绑域名也不会生效。
+//
+// 它不是 spec 的问题，所以单列一条 —— 而合成「spec 有问题」的话，
+// 人会去检查那些填得好好的字段。
+func TestUnboundRuleIsIncompleteToo(t *testing.T) {
+	r := newRig(t)
+	r.mustDo("PUT", "/rules/free", map[string]any{
+		"name": "没绑域名", "type": "ip_blacklist", "enabled": true,
+		"apply_to": []string{},
+		"spec":     map[string]any{"ips": []string{"198.51.100.0/24"}},
+	})
+	e := r.mustDo("GET", "/rules", nil)
+	var d struct {
+		Incomplete map[string][]struct {
+			Field string `json:"field"`
+		} `json:"incomplete"`
+	}
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	var sawApplyTo bool
+	for _, i := range d.Incomplete["free"] {
+		if i.Field == "apply_to" {
+			sawApplyTo = true
+		}
+	}
+	if !sawApplyTo {
+		t.Errorf("没绑域名的规则该被标出来（它不会对任何请求生效）：%+v",
+			d.Incomplete["free"])
+	}
+}
+
+// TestConfiguredSecretIsNotReportedAsIncomplete：已配好密钥的不算缺。
+//
+// 列表不解密（凭证不回显），而判据是 SecretConfigured 说的「库里有没有」——
+// 不这么做的话，**每条配好密钥的服务密钥规则都会被标成不完整**，
+// 而那种恒为红的标记，人两天就学会忽略了。
+func TestConfiguredSecretIsNotReportedAsIncomplete(t *testing.T) {
+	r := newRig(t)
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "sec.example.com", "upstream": r.upstream, "block_mode": "abort",
+	})
+	r.mustDo("PUT", "/rules/svc", map[string]any{
+		"name": "服务密钥", "type": "service_secret", "enabled": true,
+		"apply_to": []string{"sec.example.com"},
+		"spec":     map[string]any{"header": "X-Service-Key", "algo": "hmac-sha256", "ttl_s": 300},
+		"secret":   "s3cr3t",
+	})
+	e := r.mustDo("GET", "/rules", nil)
+	var d struct {
+		Incomplete map[string][]struct {
+			Field  string `json:"field"`
+			Reason string `json:"reason"`
+		} `json:"incomplete"`
+	}
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Incomplete["svc"]) != 0 {
+		t.Errorf("配好密钥的规则被标成不完整了 —— 恒为红的标记人两天就学会忽略：%+v",
+			d.Incomplete["svc"])
+	}
+}

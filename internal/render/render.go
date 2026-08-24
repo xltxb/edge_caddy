@@ -676,159 +676,172 @@ func validateRules(rules []model.Rule, domains map[string]bool) []Issue {
 			}
 		}
 
-		switch rule.Type {
-		case model.RuleIPWhitelist, model.RuleIPBlacklist:
-			// **空名单要拒，而两种类型的理由不同。**
-			//
-			// 白名单空了会拦下所有人；黑名单空了谁也拦不到。
-			// 前者是一次事故，后者是一条静默失效的规则——
-			// 而**界面上它们长得一模一样：一条启用着的规则**。
-			if len(rule.Spec.IPs) == 0 {
-				why := "IP 白名单不能为空 —— 空名单会拦下所有访问"
-				if rule.Type == model.RuleIPBlacklist {
-					why = "IP 黑名单不能为空 —— 空名单谁也拦不到，" +
-						"而这条规则在界面上仍然显示为启用"
-				}
-				issues = append(issues, Issue{key, "spec.ips", why})
-			}
-			for i, e := range rule.Spec.IPs {
-				if !validCIDROrIP(e) {
-					issues = append(issues, Issue{key,
-						fmt.Sprintf("spec.ips[%d]", i), fmt.Sprintf("%q 不是合法的 IP 或 CIDR", e)})
-				}
-			}
+		issues = append(issues, RuleSpecIssues(rule, key)...)
+	}
+	return issues
+}
 
-		case model.RuleRequestFilter:
-			if len(rule.Spec.Filters) == 0 {
-				issues = append(issues, Issue{key, "spec.filters",
-					"至少要有一条特征 —— 一条没有特征的拦截规则谁也拦不到，" +
-						"而它在界面上仍然显示为启用"})
-			}
-			for i, f := range rule.Spec.Filters {
-				fk := fmt.Sprintf("spec.filters[%d]", i)
-
-				// **判据是那张表，不是一串 case。**
-				//
-				// 第一版是「全局 op 集合 + 一个 query 的特例 if」，
-				// 而特例不会提醒下一个人：加第八种 field 时，没有任何东西
-				// 会让他想起要不要也收窄。表还报得出去（filter_fields），
-				// 于是界面的下拉是数据驱动的，而不是抄一份。
-				ops, known := model.FilterFieldOps[f.Field]
-				if !known {
-					issues = append(issues, Issue{key, fk + ".field",
-						fmt.Sprintf("%q 不是可以匹配的部分（%s）",
-							f.Field, strings.Join(filterFieldNames(), " / "))})
-				} else {
-					if model.FilterFieldsNeedingName[f.Field] && f.Name == "" {
-						issues = append(issues, Issue{key, fk + ".name",
-							"要说清看哪个请求头 / 哪个参数"})
-					}
-					if !model.FilterOpAllowed(f.Field, f.Op) {
-						issues = append(issues, Issue{key, fk + ".op",
-							fmt.Sprintf("%s 只支持 %s（当前是 %q）",
-								f.Field, strings.Join(ops, " / "), f.Op)})
-					}
-				}
-
-				if f.Op == "regex" {
-					// **正则要当场编译。**
-					//
-					// 不编译的话，一条写错的正则会被原样下发到节点上，
-					// 而 Caddy 会**拒绝整份配置** —— 症状是「所有站点一起
-					// 下发失败」，而根因是某一条规则里的一个括号。
-					if _, err := regexp.Compile(f.Value); err != nil {
-						issues = append(issues, Issue{key, fk + ".value",
-							fmt.Sprintf("正则编译不过：%v —— 它会让整份配置被节点拒绝", err)})
-					}
-				}
-				if f.Value == "" {
-					issues = append(issues, Issue{key, fk + ".value", "要比什么不能为空"})
-				}
-			}
-
-		case model.RuleServiceSecret:
-			if rule.Spec.Header == "" {
-				issues = append(issues, Issue{key, "spec.header", "请求头名称不能为空"})
-			}
-			if rule.Spec.Algo != "" && rule.Spec.Algo != "hmac-sha256" {
-				issues = append(issues, Issue{key, "spec.algo", "目前只支持 hmac-sha256"})
-			}
-			if rule.Spec.TTLSeconds <= 0 {
-				issues = append(issues, Issue{key, "spec.ttl_s", "时间窗口必须为正"})
-			}
-			if rule.Secret == "" {
-				// 没有密钥的服务密钥规则会让校验端点无条件拒绝，
-				// 表现为「这个域名整体 403」——而配置看起来完全正常。
-				// 字段路径是 **secret**（顶层）而不是 spec.secret：密钥不在 spec 里
-				// ——放进去就等于被 GET /rules 回显了。
-				//
-				// 契约 §0.3 说前端按这个点号路径去索引表单字段。指向一个请求体里
-				// 不存在的路径，这条错误就会掉在地上，只剩一个笼统的「未通过校验」
-				// ——**一条指不到地方的错误信息，等于没有这条错误信息。**
-				issues = append(issues, Issue{key, "secret", "尚未设置共享密钥"})
-			}
-
-		case model.RuleRateLimit:
-			if rule.Spec.Requests <= 0 {
-				issues = append(issues, Issue{key, "spec.requests",
-					"每窗口允许的请求数要大于 0 —— 0 等于把这个域名整个封掉"})
-			}
-			if rule.Spec.WindowSeconds <= 0 {
-				issues = append(issues, Issue{key, "spec.window_s",
-					"时间窗口要大于 0 秒"})
-			}
-			switch rule.Spec.RateKey {
-			case "", "ip", "ip_path":
-			default:
-				issues = append(issues, Issue{key, "spec.rate_key",
-					fmt.Sprintf("%q 不是可用的计数维度（ip / ip_path）", rule.Spec.RateKey)})
-			}
-			// **这一条不是校验，是提醒，所以不做成 Issue。**
-			//
-			// 每节点各算各的：三台节点每台限 100，全局实际是 300。
-			// 拦下它没有道理（那是这个设计的固有形态），
-			// 而不说出来的话，一个人按「我要限 100」去配，拿到的是 300。
-			// 说这件事的地方是契约与界面，不是这里。
-
-		case model.RuleGeoBlock:
-			switch rule.Spec.GeoMode {
-			case "block", "allow":
-			default:
-				issues = append(issues, Issue{key, "spec.geo_mode",
-					"要说清是封禁还是只放行（block / allow）—— " +
-						"两者的默认方向相反，猜错一个就是把站点封了或者敞开了"})
-			}
-			if len(rule.Spec.GeoCountries) == 0 {
-				why := "国家清单不能为空 —— 空清单谁也拦不到，" +
+// RuleSpecIssues 只看**这条规则自己填全了没有**，不看它有没有启用、绑没绑域名。
+//
+// **与 validateRules 共用同一段判断**，不是它的抄本：分开写的话，
+// 加第八种规则类型时改了一处忘了另一处，而两处的分叉症状相反 ——
+// 列表说它完整而下发被拒，或者列表标红而它其实能下发。
+//
+// key 由调用方给（`rule:<id>`），因为这个函数不知道调用方要怎么归类。
+func RuleSpecIssues(rule model.Rule, key string) []Issue {
+	var issues []Issue
+	switch rule.Type {
+	case model.RuleIPWhitelist, model.RuleIPBlacklist:
+		// **空名单要拒，而两种类型的理由不同。**
+		//
+		// 白名单空了会拦下所有人；黑名单空了谁也拦不到。
+		// 前者是一次事故，后者是一条静默失效的规则——
+		// 而**界面上它们长得一模一样：一条启用着的规则**。
+		if len(rule.Spec.IPs) == 0 {
+			why := "IP 白名单不能为空 —— 空名单会拦下所有访问"
+			if rule.Type == model.RuleIPBlacklist {
+				why = "IP 黑名单不能为空 —— 空名单谁也拦不到，" +
 					"而这条规则在界面上仍然显示为启用"
-				if rule.Spec.GeoMode == "allow" {
-					why = "国家清单不能为空 —— 只放行模式下，空清单会拦下所有访问"
-				}
-				issues = append(issues, Issue{key, "spec.geo_countries", why})
 			}
-			for i, c := range rule.Spec.GeoCountries {
-				// ISO 3166-1 alpha-2：两个大写字母。**大小写要较真**：
-				// mmdb 里存的是大写，配 "cn" 会静默匹配不到任何东西。
-				if len(c) != 2 || c[0] < 'A' || c[0] > 'Z' || c[1] < 'A' || c[1] > 'Z' {
-					issues = append(issues, Issue{key,
-						fmt.Sprintf("spec.geo_countries[%d]", i),
-						fmt.Sprintf("%q 不是两位大写的国家代码（如 CN / US / HK）—— "+
-							"小写或写全称会静默匹配不到任何东西", c)})
-				}
-			}
-
-		case model.RuleJWTBearer:
-			if rule.Spec.JWKSURL == "" {
-				issues = append(issues, Issue{key, "spec.jwks_url", "JWKS 地址不能为空"})
-			}
-			if rule.Spec.SkewSeconds < 0 {
-				issues = append(issues, Issue{key, "spec.skew_s", "时钟偏移不能为负"})
-			}
-
-		default:
-			issues = append(issues, Issue{key, "type",
-				fmt.Sprintf("未知的规则类型 %q", rule.Type)})
+			issues = append(issues, Issue{key, "spec.ips", why})
 		}
+		for i, e := range rule.Spec.IPs {
+			if !validCIDROrIP(e) {
+				issues = append(issues, Issue{key,
+					fmt.Sprintf("spec.ips[%d]", i), fmt.Sprintf("%q 不是合法的 IP 或 CIDR", e)})
+			}
+		}
+
+	case model.RuleRequestFilter:
+		if len(rule.Spec.Filters) == 0 {
+			issues = append(issues, Issue{key, "spec.filters",
+				"至少要有一条特征 —— 一条没有特征的拦截规则谁也拦不到，" +
+					"而它在界面上仍然显示为启用"})
+		}
+		for i, f := range rule.Spec.Filters {
+			fk := fmt.Sprintf("spec.filters[%d]", i)
+
+			// **判据是那张表，不是一串 case。**
+			//
+			// 第一版是「全局 op 集合 + 一个 query 的特例 if」，
+			// 而特例不会提醒下一个人：加第八种 field 时，没有任何东西
+			// 会让他想起要不要也收窄。表还报得出去（filter_fields），
+			// 于是界面的下拉是数据驱动的，而不是抄一份。
+			ops, known := model.FilterFieldOps[f.Field]
+			if !known {
+				issues = append(issues, Issue{key, fk + ".field",
+					fmt.Sprintf("%q 不是可以匹配的部分（%s）",
+						f.Field, strings.Join(filterFieldNames(), " / "))})
+			} else {
+				if model.FilterFieldsNeedingName[f.Field] && f.Name == "" {
+					issues = append(issues, Issue{key, fk + ".name",
+						"要说清看哪个请求头 / 哪个参数"})
+				}
+				if !model.FilterOpAllowed(f.Field, f.Op) {
+					issues = append(issues, Issue{key, fk + ".op",
+						fmt.Sprintf("%s 只支持 %s（当前是 %q）",
+							f.Field, strings.Join(ops, " / "), f.Op)})
+				}
+			}
+
+			if f.Op == "regex" {
+				// **正则要当场编译。**
+				//
+				// 不编译的话，一条写错的正则会被原样下发到节点上，
+				// 而 Caddy 会**拒绝整份配置** —— 症状是「所有站点一起
+				// 下发失败」，而根因是某一条规则里的一个括号。
+				if _, err := regexp.Compile(f.Value); err != nil {
+					issues = append(issues, Issue{key, fk + ".value",
+						fmt.Sprintf("正则编译不过：%v —— 它会让整份配置被节点拒绝", err)})
+				}
+			}
+			if f.Value == "" {
+				issues = append(issues, Issue{key, fk + ".value", "要比什么不能为空"})
+			}
+		}
+
+	case model.RuleServiceSecret:
+		if rule.Spec.Header == "" {
+			issues = append(issues, Issue{key, "spec.header", "请求头名称不能为空"})
+		}
+		if rule.Spec.Algo != "" && rule.Spec.Algo != "hmac-sha256" {
+			issues = append(issues, Issue{key, "spec.algo", "目前只支持 hmac-sha256"})
+		}
+		if rule.Spec.TTLSeconds <= 0 {
+			issues = append(issues, Issue{key, "spec.ttl_s", "时间窗口必须为正"})
+		}
+		if rule.Secret == "" {
+			// 没有密钥的服务密钥规则会让校验端点无条件拒绝，
+			// 表现为「这个域名整体 403」——而配置看起来完全正常。
+			// 字段路径是 **secret**（顶层）而不是 spec.secret：密钥不在 spec 里
+			// ——放进去就等于被 GET /rules 回显了。
+			//
+			// 契约 §0.3 说前端按这个点号路径去索引表单字段。指向一个请求体里
+			// 不存在的路径，这条错误就会掉在地上，只剩一个笼统的「未通过校验」
+			// ——**一条指不到地方的错误信息，等于没有这条错误信息。**
+			issues = append(issues, Issue{key, "secret", "尚未设置共享密钥"})
+		}
+
+	case model.RuleRateLimit:
+		if rule.Spec.Requests <= 0 {
+			issues = append(issues, Issue{key, "spec.requests",
+				"每窗口允许的请求数要大于 0 —— 0 等于把这个域名整个封掉"})
+		}
+		if rule.Spec.WindowSeconds <= 0 {
+			issues = append(issues, Issue{key, "spec.window_s",
+				"时间窗口要大于 0 秒"})
+		}
+		switch rule.Spec.RateKey {
+		case "", "ip", "ip_path":
+		default:
+			issues = append(issues, Issue{key, "spec.rate_key",
+				fmt.Sprintf("%q 不是可用的计数维度（ip / ip_path）", rule.Spec.RateKey)})
+		}
+		// **这一条不是校验，是提醒，所以不做成 Issue。**
+		//
+		// 每节点各算各的：三台节点每台限 100，全局实际是 300。
+		// 拦下它没有道理（那是这个设计的固有形态），
+		// 而不说出来的话，一个人按「我要限 100」去配，拿到的是 300。
+		// 说这件事的地方是契约与界面，不是这里。
+
+	case model.RuleGeoBlock:
+		switch rule.Spec.GeoMode {
+		case "block", "allow":
+		default:
+			issues = append(issues, Issue{key, "spec.geo_mode",
+				"要说清是封禁还是只放行（block / allow）—— " +
+					"两者的默认方向相反，猜错一个就是把站点封了或者敞开了"})
+		}
+		if len(rule.Spec.GeoCountries) == 0 {
+			why := "国家清单不能为空 —— 空清单谁也拦不到，" +
+				"而这条规则在界面上仍然显示为启用"
+			if rule.Spec.GeoMode == "allow" {
+				why = "国家清单不能为空 —— 只放行模式下，空清单会拦下所有访问"
+			}
+			issues = append(issues, Issue{key, "spec.geo_countries", why})
+		}
+		for i, c := range rule.Spec.GeoCountries {
+			// ISO 3166-1 alpha-2：两个大写字母。**大小写要较真**：
+			// mmdb 里存的是大写，配 "cn" 会静默匹配不到任何东西。
+			if len(c) != 2 || c[0] < 'A' || c[0] > 'Z' || c[1] < 'A' || c[1] > 'Z' {
+				issues = append(issues, Issue{key,
+					fmt.Sprintf("spec.geo_countries[%d]", i),
+					fmt.Sprintf("%q 不是两位大写的国家代码（如 CN / US / HK）—— "+
+						"小写或写全称会静默匹配不到任何东西", c)})
+			}
+		}
+
+	case model.RuleJWTBearer:
+		if rule.Spec.JWKSURL == "" {
+			issues = append(issues, Issue{key, "spec.jwks_url", "JWKS 地址不能为空"})
+		}
+		if rule.Spec.SkewSeconds < 0 {
+			issues = append(issues, Issue{key, "spec.skew_s", "时钟偏移不能为负"})
+		}
+
+	default:
+		issues = append(issues, Issue{key, "type",
+			fmt.Sprintf("未知的规则类型 %q", rule.Type)})
 	}
 	return issues
 }
