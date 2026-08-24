@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -36,6 +37,7 @@ type VerifyServer struct {
 
 	seen  *replayCache
 	limit *limiter
+	geo   *geoDB
 }
 
 // verifyRule 是校验端点需要的那部分规则。
@@ -56,6 +58,9 @@ type verifyRule struct {
 	Requests  int
 	WindowSec int
 	RateKey   string
+
+	GeoMode      string
+	GeoCountries []string
 }
 
 func NewVerifyServer(log *slog.Logger) *VerifyServer {
@@ -67,6 +72,7 @@ func NewVerifyServer(log *slog.Logger) *VerifyServer {
 		rules: map[string]*verifyRule{},
 		seen:  newReplayCache(),
 		limit: newLimiter(),
+		geo:   newGeoDB(),
 	}
 }
 
@@ -88,6 +94,7 @@ func (v *VerifyServer) SetRules(rules []model.VerifyRule) {
 			Issuer: r.Issuer, Audience: r.Audience, JWKSURL: r.JWKSURL,
 			Skew:     time.Duration(r.SkewSec) * time.Second,
 			Requests: r.Requests, WindowSec: r.WindowSec, RateKey: r.RateKey,
+			GeoMode: r.GeoMode, GeoCountries: r.GeoCountries,
 		}
 	}
 	v.mu.Lock()
@@ -157,8 +164,7 @@ func (v *VerifyServer) handleVerify(w http.ResponseWriter, r *http.Request) {
 	// 而客户端（尤其是自动重试的那些）会按这个区别决定要不要重试。
 	// 混成一个的话，一次限流会被当成鉴权失败，重试逻辑直接放弃。
 	if rule.Type == "rate_limit" {
-		key := rateKeyOf(r.Header.Get("X-Edge-Client-IP"),
-			r.Header.Get("X-Forwarded-Uri"), rule.RateKey)
+		key := rateKeyOf(clientIPOf(r), r.Header.Get("X-Forwarded-Uri"), rule.RateKey)
 		burst := rule.Requests
 		rate := 0.0
 		if rule.WindowSec > 0 {
@@ -167,6 +173,34 @@ func (v *VerifyServer) handleVerify(w http.ResponseWriter, r *http.Request) {
 		if ok, wait := v.limit.allow(rule.ID+"|"+key, burst, rate); !ok {
 			w.Header().Set("Retry-After", itoaSec(wait))
 			http.Error(w, "too many requests", http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("X-Verified-Rule", ruleID)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if rule.Type == "geo_block" {
+		ip := clientIPOf(r)
+		country, err := v.geo.Country(ip)
+		if errors.Is(err, ErrNoGeoDB) {
+			// **放行，并且说出来。**
+			//
+			// 拒绝的话，库还没下发到的那段时间里每个受地域规则保护的域名
+			// 对所有人都是 403，而配置看起来完全正常。
+			// 把「我们没准备好」变成所有访问者的 403，
+			// 是把一次运维疏忽放大成一次全站故障。
+			//
+			// 代价是**库没到之前这条规则形同虚设** —— 所以它必须被看见：
+			// 这条日志会进 Agent 的日志缓冲，节点页上看得到。
+			v.log.Warn("地域规则暂时不生效：本机还没有 GeoIP 库",
+				"rule", ruleID)
+			w.Header().Set("X-Verified-Rule", ruleID)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if !geoAllows(country, rule.GeoMode, rule.GeoCountries) {
+			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
 		w.Header().Set("X-Verified-Rule", ruleID)
@@ -374,3 +408,15 @@ func itoaSec(d time.Duration) string {
 	}
 	return strconv.Itoa(n)
 }
+
+// clientIPOf 是**这一侧唯一一处**决定「客户端 IP 从哪个头读」的地方。
+//
+// 限流与地域都要它，而两处各读一遍的话，哪天换了头名字会只改一处 ——
+// 症状是其中一种规则按另一个来源计数，而两者平时给出同一个值，
+// 于是它在测试里和平时都看不出来。
+func clientIPOf(r *http.Request) string {
+	return r.Header.Get("X-Edge-Client-IP")
+}
+
+// LoadGeoDB 换上一份 GeoIP 库。空路径卸载。
+func (v *VerifyServer) LoadGeoDB(path string) error { return v.geo.Load(path) }

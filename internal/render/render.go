@@ -190,6 +190,11 @@ func VerifyRules(rules []model.Rule) []model.VerifyRule {
 				Requests: r.Spec.Requests, WindowSec: r.Spec.WindowSeconds,
 				RateKey: r.Spec.RateKey,
 			})
+		case model.RuleGeoBlock:
+			out = append(out, model.VerifyRule{
+				ID: r.ID, Type: r.Type,
+				GeoMode: r.Spec.GeoMode, GeoCountries: r.Spec.GeoCountries,
+			})
 		}
 	}
 	return out
@@ -503,7 +508,7 @@ func proxyRoute(r model.Route, rules []model.Rule, pol Policies, opt Options) ma
 	// 里处理掉了，不重复。
 	for _, rule := range rules {
 		switch rule.Type {
-		case model.RuleServiceSecret, model.RuleJWTBearer, model.RuleRateLimit:
+		case model.RuleServiceSecret, model.RuleJWTBearer, model.RuleRateLimit, model.RuleGeoBlock:
 			handlers = append(handlers, forwardAuthHandler(rule, opt))
 		}
 	}
@@ -782,6 +787,33 @@ func validateRules(rules []model.Rule, domains map[string]bool) []Issue {
 			// 拦下它没有道理（那是这个设计的固有形态），
 			// 而不说出来的话，一个人按「我要限 100」去配，拿到的是 300。
 			// 说这件事的地方是契约与界面，不是这里。
+
+		case model.RuleGeoBlock:
+			switch rule.Spec.GeoMode {
+			case "block", "allow":
+			default:
+				issues = append(issues, Issue{key, "spec.geo_mode",
+					"要说清是封禁还是只放行（block / allow）—— " +
+						"两者的默认方向相反，猜错一个就是把站点封了或者敞开了"})
+			}
+			if len(rule.Spec.GeoCountries) == 0 {
+				why := "国家清单不能为空 —— 空清单谁也拦不到，" +
+					"而这条规则在界面上仍然显示为启用"
+				if rule.Spec.GeoMode == "allow" {
+					why = "国家清单不能为空 —— 只放行模式下，空清单会拦下所有访问"
+				}
+				issues = append(issues, Issue{key, "spec.geo_countries", why})
+			}
+			for i, c := range rule.Spec.GeoCountries {
+				// ISO 3166-1 alpha-2：两个大写字母。**大小写要较真**：
+				// mmdb 里存的是大写，配 "cn" 会静默匹配不到任何东西。
+				if len(c) != 2 || c[0] < 'A' || c[0] > 'Z' || c[1] < 'A' || c[1] > 'Z' {
+					issues = append(issues, Issue{key,
+						fmt.Sprintf("spec.geo_countries[%d]", i),
+						fmt.Sprintf("%q 不是两位大写的国家代码（如 CN / US / HK）—— "+
+							"小写或写全称会静默匹配不到任何东西", c)})
+				}
+			}
 
 		case model.RuleJWTBearer:
 			if rule.Spec.JWKSURL == "" {

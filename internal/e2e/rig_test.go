@@ -533,3 +533,20 @@ func startVerifyServer(t *testing.T, a *agent.Agent, sock string) {
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })
 }
+
+// waitForNodeLog 等某条 Agent 日志经心跳上报到主控。
+//
+// **日志不是同步到达的**：Agent 写进本地缓冲，心跳时带上来。
+// 写完立刻读的话读到的是空列表——而那看起来像「它没写这条日志」。
+func (r *rig) waitForNodeLog(nodeID, substr string) bool {
+	r.t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		e := r.mustDo("GET", "/nodes/"+nodeID+"/logs", nil)
+		if strings.Contains(string(e.Data), substr) {
+			return true
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return false
+}

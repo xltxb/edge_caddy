@@ -220,3 +220,38 @@ func TestRateLimitIgnoresForgedForwardedFor(t *testing.T) {
 		}
 	}
 }
+
+// TestGeoRuleWithoutDBLetsTrafficThrough 钉的是**库缺失时放行，不是全封**。
+//
+// 这是地域这一层最要紧的决定。拒绝的话，库还没下发到的那段时间里
+// （新装的节点、下发失败、文件被删），每个受地域规则保护的域名
+// **对所有人都是 403** —— 而配置看起来完全正常。
+//
+// 这与校验端点整体的 fail-closed 不同，而区别是有理由的：
+// 服务密钥验不过说明**这个请求**没有凭据；没有库说明**我们**没准备好。
+// 把我们的问题变成所有访问者的 403，是把一次运维疏忽放大成一次全站故障。
+//
+// 代价是**库没到之前这条规则形同虚设** —— 所以它必须被看见：
+// Agent 会把这件事记进日志，节点页上看得到。这条测试连那条日志一起钉。
+func TestGeoRuleWithoutDBLetsTrafficThrough(t *testing.T) {
+	r := newRig(t, caddytest.EdgeTCP())
+	setupSite(t, r, "geo.example.com")
+
+	r.mustDo("PUT", "/rules/geo", map[string]any{
+		"name": "封禁", "type": "geo_block", "enabled": true,
+		"apply_to": []string{"geo.example.com"},
+		"spec":     map[string]any{"geo_mode": "block", "geo_countries": []string{"CN"}},
+	})
+	r.deployNow("rule:geo")
+
+	if code, _ := r.curlVia("geo.example.com"); code != 200 {
+		t.Fatalf("本机还没有 GeoIP 库时应当放行，实际 %d —— "+
+			"拒绝的话，库没下发到的那段时间里这个域名对所有人都是 403", code)
+	}
+
+	// **它必须被看见。** 悄悄放行等于一条不存在的规则，
+	// 而界面上它显示为启用。
+	if !r.waitForNodeLog("node-hk-01", "GeoIP") {
+		t.Error("放行了却没说 —— 一条悄悄失效的安全规则比没有规则更坏")
+	}
+}

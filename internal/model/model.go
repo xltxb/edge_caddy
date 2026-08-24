@@ -86,6 +86,16 @@ type RuleSpec struct {
 	// 所以 ip_path 只在配了 request_filter 限定路径时才有意义，
 	// 默认是 ip。
 	RateKey string `json:"rate_key,omitempty"`
+
+	// geo_block
+	//
+	// **两个方向二选一，不是一个开关。** 理由与 IP 黑白名单相同：
+	// 默认方向相反，合成一个之后「清空清单」的后果是
+	// 「谁都进不来」和「谁都能进」，而界面上它们长得一样。
+	//
+	// 国家用 ISO 3166-1 alpha-2（CN / US / HK…）。
+	GeoMode      string   `json:"geo_mode,omitempty"` // block | allow
+	GeoCountries []string `json:"geo_countries,omitempty"`
 }
 
 // Filter 是一条请求特征。
@@ -128,6 +138,15 @@ const (
 	// 这一点必须在界面上说出来：一个人按「我要限 100」去配，
 	// 拿到的是 300，而没有任何地方会告诉他。
 	RuleRateLimit = "rate_limit"
+
+	// RuleGeoBlock 是地域封禁 / 放行。
+	//
+	// **也走校验端点**：官方 Caddy 没有 GeoIP 模块，而查库要一份
+	// MaxMind 的 mmdb —— 那是这套系统的第一个外部数据依赖。
+	//
+	// 库由主控持有并下发（与证书同一条路），**节点不自己去 MaxMind 下载**：
+	// 那要把 license key 散到每台边缘机器上，而边缘机器是最可能被拿下的那些。
+	RuleGeoBlock = "geo_block"
 )
 
 // Policy 是全局策略。spec 的字段清单以高保真设计稿为准，
@@ -167,4 +186,8 @@ type VerifyRule struct {
 	Requests  int    `json:"requests,omitempty"`
 	WindowSec int    `json:"window_s,omitempty"`
 	RateKey   string `json:"rate_key,omitempty"`
+
+	// 地域。**下发到节点，由 Agent 查本机的 mmdb**。
+	GeoMode      string   `json:"geo_mode,omitempty"`
+	GeoCountries []string `json:"geo_countries,omitempty"`
 }
