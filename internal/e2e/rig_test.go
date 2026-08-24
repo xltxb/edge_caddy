@@ -82,6 +82,15 @@ func newRig(t *testing.T, opts ...caddytest.Option) *rig {
 	cad := caddytest.New(t, opts...)
 
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// **上游自己也会回 404** —— `/missing` 这条路径专门用来造那种。
+		//
+		// 一个正常网站有大量 404，而它们**不是被我们拦下的**。
+		// 「被拦了多少」那个数要是把它们算进去，就会被噪音淹没 ——
+		// 而它要回答的是「此刻在不在被打」，一个平时就很大的数回答不了。
+		if strings.HasPrefix(r.URL.Path, "/missing") {
+			http.NotFound(w, r)
+			return
+		}
 		_, _ = io.WriteString(w, "UPSTREAM OK")
 	}))
 	t.Cleanup(up.Close)

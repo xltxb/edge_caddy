@@ -111,28 +111,32 @@ func (m *metricsCollector) scrapeCaddy(ctx context.Context) (req, origin, blocke
 	for sc.Scan() {
 		line := sc.Text()
 
-		// **被拦下的请求数，按状态码算。**
+		// **被访问规则拦下的请求数。**
 		//
-		// Caddy 自己就在按 code 计数（caddy_http_request_duration_seconds_count），
-		// 所以不必在 Agent 里另加一个计数器 —— 另加的那个只数得到走校验端点的
-		// 那几种，而 IP 黑名单和请求特征是 Caddy 原生匹配器拦的，它看不见。
+		// 判据是 `handler="static_response"` —— 那个 handler **只有 blockHandler
+		// 在用**（render.go 里三处，全是拦截）。所以它出现一次就是我们拦了一次，
+		// 与状态码无关。
 		//
-		// **指标名与标签是实测出来的，不是查文档来的**：真 Caddy 打了 6 个请求
-		// （桶容量 2），拿到的正是
-		// `caddy_http_request_duration_seconds_count{code="429",handler="headers",…} 4`。
-		// 第一版我写成了 `caddy_http_response_…`（response 而不是 request），
-		// **前缀匹配不上，函数照常返回 0，没有任何东西报错**。
+		// # 为什么不按状态码算
 		//
-		// 守着这一条的是 TestBlockedCountReflectsRealBlocks（internal/e2e）：
-		// 它用真 Caddy 打出真的 429，再看这个数涨没涨。指标名改错、
-		// 或者 Caddy 哪天换了名字，那条会红。
+		// 第一版是「code 是 403/404/429 就算被拦」，那有两个洞：
 		//
-		// **只取 handler="headers" 那一行。** 同一个请求会在链上每个 handler
-		// 各记一次（headers、static_response、reverse_proxy…），求和会重复计数。
-		// 而响应头处理挂在最前面，每个请求必经 —— 拿它当口径，一个请求一次。
+		//  一、**上游自己返回的 403/404 也被算进来** —— 一个正常网站有大量 404，
+		//      这个数会被噪音淹没。而它要回答的是「此刻在不在被打」，
+		//      一个平时就很大的数回答不了那个问题。
+		//
+		//  二、口径取的是 `handler="headers"`（为了不重复计数），而**那个 handler
+		//      在关掉响应头处理时整个不存在** —— 计数会恒为 0，无声。
+		//
+		// 限流的 429 不在这里数：它是校验端点回的，经 reverse_proxy 透传，
+		// 而 reverse_proxy 也处理正常回源 —— 分不出「我们限的」和「上游限的」。
+		// 那一半由 Agent 自己的计数器数（VerifyServer.RateLimited），精确。
+		//
+		// **`abort` 那一档两边都数不到**：它静默断连，不产生响应，
+		// Caddy 的按状态码计数里一条都没有。实测确认过。
 		if strings.HasPrefix(line, "caddy_http_request_duration_seconds_count{") &&
-			strings.Contains(line, `handler="headers"`) {
-			if v, ok := metricValue(line); ok && isBlockedCode(line) {
+			strings.Contains(line, `handler="static_response"`) {
+			if v, ok := metricValue(line); ok {
 				blocked += uint64(v)
 			}
 			continue
@@ -155,25 +159,6 @@ func (m *metricsCollector) scrapeCaddy(ctx context.Context) (req, origin, blocke
 		}
 	}
 	return req, origin, blocked, true
-}
-
-// isBlockedCode 说这一行的状态码算不算「被我们拦下」。
-//
-//	429  限流
-//	403  访问规则拒绝（block_mode 是 403 时），或校验端点验不过
-//	404  访问规则拒绝（block_mode 是 404 时）
-//
-// **`abort` 那一档数不到。** 它静默断连，不产生任何响应 —— 实测过：
-// abort 模式下这些指标里一条带 code 的记录都没有。
-// 那不是这段代码的缺陷，是那个模式本身的形态：**它对外不可区分于网络故障**，
-// 对内也一样。要看得见拦了多少，路由的处置方式得是 403 或 404。
-func isBlockedCode(line string) bool {
-	for _, c := range []string{`code="429"`, `code="403"`, `code="404"`} {
-		if strings.Contains(line, c) {
-			return true
-		}
-	}
-	return false
 }
 
 func metricValue(line string) (float64, bool) {

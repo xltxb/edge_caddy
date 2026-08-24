@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/xltxb/edge_caddy/internal/model"
@@ -38,6 +39,14 @@ type VerifyServer struct {
 	seen  *replayCache
 	limit *limiter
 	geo   *geoDB
+
+	// rateLimited 是被限流拦下的请求数，累计。
+	//
+	// **限流这一半不能从 Caddy 的指标里读**：429 是校验端点回的，
+	// 经 reverse_proxy 透传，而 reverse_proxy 也处理正常回源 ——
+	// 分不出「我们限的」和「上游自己回的 429」。
+	// 这里数得精确：只有真的拒过才加。
+	rateLimited atomic.Uint64
 }
 
 // verifyRule 是校验端点需要的那部分规则。
@@ -171,6 +180,7 @@ func (v *VerifyServer) handleVerify(w http.ResponseWriter, r *http.Request) {
 			rate = float64(rule.Requests) / float64(rule.WindowSec)
 		}
 		if ok, wait := v.limit.allow(rule.ID+"|"+key, burst, rate); !ok {
+			v.rateLimited.Add(1)
 			w.Header().Set("Retry-After", itoaSec(wait))
 			http.Error(w, "too many requests", http.StatusTooManyRequests)
 			return
@@ -431,3 +441,6 @@ func VerifyKinds() []string {
 
 // LoadGeoDB 换上一份 GeoIP 库。空路径卸载。
 func (v *VerifyServer) LoadGeoDB(path string) error { return v.geo.Load(path) }
+
+// RateLimited 是被限流拦下的请求数，累计（进程重启归零）。
+func (v *VerifyServer) RateLimited() uint64 { return v.rateLimited.Load() }

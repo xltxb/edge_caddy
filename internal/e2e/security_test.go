@@ -871,3 +871,94 @@ func blockedOf(t *testing.T, r *rig) *uint64 {
 	}
 	return d.Items[0].Blocked
 }
+
+// TestBlockedCountCountsRuleDeniesToo：访问规则拦下的也要数到。
+//
+// 限流走校验端点，Agent 自己数；而 IP 黑名单 / 请求特征是 Caddy 原生匹配器拦的
+// —— 那一半从 Caddy 的指标里读（`handler="static_response"`，
+// 那个 handler **只有拦截在用**）。
+//
+// 两个来源缺一个的话，这个数会漏掉一整类拦截，而**它看起来只是「小一点」**。
+func TestBlockedCountCountsRuleDeniesToo(t *testing.T) {
+	r := newRig(t, caddytest.EdgeTCP())
+	setupSite(t, r, "bd.example.com") // block_mode 是 404
+
+	r.mustDo("PUT", "/rules/bd", map[string]any{
+		"name": "拉黑回环", "type": "ip_blacklist", "enabled": true,
+		"apply_to": []string{"bd.example.com"},
+		"spec":     map[string]any{"ips": []string{"127.0.0.0/8", "::1/128"}},
+	})
+	r.deployNow("rule:bd")
+
+	waitBaseline(t, r)
+
+	for i := 0; i < 3; i++ {
+		if code, _ := r.curlVia("bd.example.com"); code != 404 {
+			t.Fatalf("装置坏了：第 %d 个没被拦（%d）", i+1, code)
+		}
+	}
+
+	if !waitBlockedAtLeast(t, r, 3) {
+		got := blockedOf(t, r)
+		t.Fatalf("黑名单拦了 3 个，而 blocked_1h 是 %s —— "+
+			"限流那一半数得到、这一半数不到的话，这个数会漏掉一整类拦截，"+
+			"而它看起来只是「小一点」", fmtBlocked(got))
+	}
+}
+
+// TestUpstreamErrorsAreNotCountedAsBlocked 是承重的反面。
+//
+// **一个正常网站有大量 404**，而它们不是被我们拦下的。
+// 按状态码算的话（第一版就是），这个数会被噪音淹没 ——
+// 而它要回答的是「此刻在不在被打」，**一个平时就很大的数回答不了那个问题**。
+func TestUpstreamErrorsAreNotCountedAsBlocked(t *testing.T) {
+	r := newRig(t, caddytest.EdgeTCP())
+	setupSite(t, r, "ue.example.com")
+	waitBaseline(t, r)
+
+	// 上游自己回 404，没有任何规则参与。
+	for i := 0; i < 5; i++ {
+		if code, _ := r.caddy.Get("ue.example.com", "/missing", nil); code != 404 {
+			t.Fatalf("装置坏了：上游该回 404，实际 %d", code)
+		}
+	}
+
+	// 给两次心跳的时间，确认它**没有**涨。
+	time.Sleep(2 * time.Second)
+	got := blockedOf(t, r)
+	if got != nil && *got > 0 {
+		t.Errorf("上游自己的 404 被算成「被拦」了（%d）—— "+
+			"一个正常网站有大量 404，这个数会被噪音淹没", *got)
+	}
+}
+
+// waitBaseline 等第一次心跳建立基线。差值要两次心跳才算得出。
+func waitBaseline(t *testing.T, r *rig) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) && blockedOf(t, r) == nil {
+		time.Sleep(200 * time.Millisecond)
+	}
+	if blockedOf(t, r) == nil {
+		t.Fatal("等不到第一次心跳，基线建不起来")
+	}
+}
+
+func waitBlockedAtLeast(t *testing.T, r *rig, n uint64) bool {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := blockedOf(t, r); got != nil && *got >= n {
+			return true
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	return false
+}
+
+func fmtBlocked(b *uint64) string {
+	if b == nil {
+		return "null"
+	}
+	return fmt.Sprint(*b)
+}
