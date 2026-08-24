@@ -83,6 +83,7 @@ func (s *session) readLoop(ctx context.Context, srv *Server) error {
 				Conns: hb.GetConns(), CfgVersion: hb.GetCfgVersion(),
 				Routes: hb.GetRoutes(), Rules: hb.GetRules(),
 				ReqTotal: hb.GetReqTotal(), OriginTotal: hb.GetOriginTotal(),
+				BlockedTotal: hb.GetBlockedTotal(),
 			}
 			// 健康分档由 OnHeartbeat 那一侧给出——判断标准（阈值）在那里，
 			// 隧道只负责把心跳原样送过去。

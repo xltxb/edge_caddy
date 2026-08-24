@@ -345,3 +345,15 @@ func (c *Caddy) GetFull(t *testing.T, host, path string) *http.Response {
 	t.Cleanup(func() { _ = resp.Body.Close() })
 	return resp
 }
+
+// Metrics 取 Caddy admin 上的 /metrics。
+func (c *Caddy) Metrics(t *testing.T) (int, string) {
+	t.Helper()
+	resp, err := c.admin.Get("http://unix/metrics")
+	if err != nil {
+		t.Fatalf("取 metrics: %v", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	return resp.StatusCode, string(b)
+}

@@ -36,6 +36,11 @@ type Healther interface {
 	// Forget 丢掉一个节点的内存观测状态。删除节点时要调 ——
 	// 不调的话那份 CPU 序列会一直占着，而节点已经不存在了。
 	Forget(nodeID string)
+
+	// BlockedLastHour 是过去一小时被访问规则拦下的请求数。
+	// 第二个返回值说这个数有没有意义 —— 没有可比的两次心跳时它是 false，
+	// 而那时回 0 会被读成「一个都没拦」。
+	BlockedLastHour(nodeID string) (uint64, bool)
 }
 
 type Server struct {

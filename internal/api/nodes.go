@@ -85,6 +85,19 @@ type nodeResp struct {
 	// **null 不是 false**（§0.4）：一个没在用地域功能的系统，
 	// 每台节点都标红是在报告一个不存在的问题，而人两天就学会忽略它。
 	GeoDBOK *bool `json:"geo_db_ok"`
+
+	// BlockedLastHour 是过去一小时被访问规则拦下的请求数。
+	//
+	// **`null` 是「还不知道」，不是 0。** 节点刚接入、或者 Agent 刚重启时
+	// 还没有可比的两次心跳 —— 那时回 0 会被读成「一个都没拦」，
+	// 而它要回答的问题恰恰是「此刻在不在被打」，**0 正是「没被打」的样子**。
+	// 与 reconnects_1h 是同一条理由。
+	//
+	// **它数不到 `abort` 那一档**：静默断连不产生响应，Caddy 的按状态码计数
+	// 里没有它。要看得见拦了多少，路由的处置方式得是 403 或 404。
+	//
+	// 窗口在主控内存里，**主控重启后从 0 重新攒** —— 与 cpu_series 同一条路。
+	BlockedLastHour *uint64 `json:"blocked_1h"`
 }
 
 func (s *Server) handleListNodes(c *gin.Context) {
@@ -129,6 +142,9 @@ func (s *Server) handleListNodes(c *gin.Context) {
 		}
 		if s.health != nil {
 			item.CPUSeries = s.health.CPUSeries(n.ID)
+			if v, ok := s.health.BlockedLastHour(n.ID); ok {
+				item.BlockedLastHour = &v
+			}
 			if m, ok := s.health.Latest(n.ID); ok {
 				item.CPU, item.Mem, item.Conns = m.CPU, m.Mem, m.Conns
 				item.Routes, item.Rules = m.Routes, m.Rules

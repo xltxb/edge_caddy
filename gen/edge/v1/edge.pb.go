@@ -471,6 +471,15 @@ type Heartbeat struct {
 	// 是被访问规则拦下或由静态响应处理掉的。
 	ReqTotal    uint64 `protobuf:"varint,8,opt,name=req_total,json=reqTotal,proto3" json:"req_total,omitempty"`
 	OriginTotal uint64 `protobuf:"varint,9,opt,name=origin_total,json=originTotal,proto3" json:"origin_total,omitempty"`
+	// blocked_total 是被访问规则拦下的请求数（429 / 403 / 404），累计值。
+	//
+	// **它是从 Caddy 自己的按状态码计数里读的**，不是 Agent 另加的计数器 ——
+	// 另加的那个只数得到走校验端点的那几种，而 IP 黑名单与请求特征是
+	// Caddy 原生匹配器拦的，它看不见。
+	//
+	// **`abort` 处置方式数不到**：它静默断连，不产生任何响应。实测确认过。
+	// 要看得见拦了多少，路由的处置方式得是 403 或 404。
+	BlockedTotal uint64 `protobuf:"varint,12,opt,name=blocked_total,json=blockedTotal,proto3" json:"blocked_total,omitempty"`
 	// verify_kinds 是本机的校验端点**认得哪些规则类型**。
 	//
 	// **这是升级期的护栏，实测出来的**：旧 Agent 收到一条它不认识的规则类型
@@ -585,6 +594,13 @@ func (x *Heartbeat) GetReqTotal() uint64 {
 func (x *Heartbeat) GetOriginTotal() uint64 {
 	if x != nil {
 		return x.OriginTotal
+	}
+	return 0
+}
+
+func (x *Heartbeat) GetBlockedTotal() uint64 {
+	if x != nil {
+		return x.BlockedTotal
 	}
 	return 0
 }
@@ -1337,7 +1353,7 @@ const file_edge_v1_edge_proto_rawDesc = "" +
 	"\x0etunnel_key_pem\x18\x02 \x01(\fR\ftunnelKeyPem\x12\"\n" +
 	"\rtunnel_ca_pem\x18\x03 \x01(\fR\vtunnelCaPem\x12\x1f\n" +
 	"\vcfg_version\x18\x04 \x01(\tR\n" +
-	"cfgVersion\"\xae\x02\n" +
+	"cfgVersion\"\xd3\x02\n" +
 	"\tHeartbeat\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x10\n" +
 	"\x03cpu\x18\x02 \x01(\x01R\x03cpu\x12\x10\n" +
@@ -1348,7 +1364,8 @@ const file_edge_v1_edge_proto_rawDesc = "" +
 	"\x06routes\x18\x06 \x01(\rR\x06routes\x12\x14\n" +
 	"\x05rules\x18\a \x01(\rR\x05rules\x12\x1b\n" +
 	"\treq_total\x18\b \x01(\x04R\breqTotal\x12!\n" +
-	"\forigin_total\x18\t \x01(\x04R\voriginTotal\x12!\n" +
+	"\forigin_total\x18\t \x01(\x04R\voriginTotal\x12#\n" +
+	"\rblocked_total\x18\f \x01(\x04R\fblockedTotal\x12!\n" +
 	"\fverify_kinds\x18\v \x03(\tR\vverifyKinds\x12\x1c\n" +
 	"\n" +
 	"geo_db_sha\x18\n" +

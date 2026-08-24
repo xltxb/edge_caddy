@@ -37,6 +37,8 @@ type Heartbeat struct {
 	Rules       uint32
 	ReqTotal    uint64
 	OriginTotal uint64
+	// BlockedTotal 是被访问规则拦下的请求数，累计值（abort 那一档数不到）。
+	BlockedTotal uint64
 }
 
 // ErrUnreachable 表示节点在隧道上没有回应。

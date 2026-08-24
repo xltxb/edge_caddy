@@ -24,13 +24,14 @@ const cpuSeriesLen = 12
 
 // Sample 是一次心跳带来的观测量。
 type Sample struct {
-	CPU, Mem    float64
-	Conns       uint32
-	Routes      uint32
-	Rules       uint32
-	ReqTotal    uint64
-	OriginTotal uint64
-	At          time.Time
+	CPU, Mem     float64
+	Conns        uint32
+	Routes       uint32
+	Rules        uint32
+	ReqTotal     uint64
+	OriginTotal  uint64
+	BlockedTotal uint64
+	At           time.Time
 }
 
 // nodeState 是单个节点在主控内存里的观测状态。
@@ -49,6 +50,25 @@ type nodeState struct {
 	// 上一轮的累计计数，用来算窗口内的回源率。
 	prevReq, prevOrigin uint64
 	hasPrev             bool
+
+	// blocked 是最近一小时被拦下的请求，按心跳逐段累加。
+	//
+	// **累计值不够用。** 一个「自 Agent 启动以来拦了 12 万」的数字，
+	// 说不出「此刻正在被打」还是「上个月挡过一次」——而这两件事的处置
+	// 完全不同。CC 防护要的是后者那个问题的答案。
+	//
+	// 不落库，与 cpu_series 同一条路（那条注释里的理由这里一样成立：
+	// 为一个只用来看趋势的东西建一张高频写入的表不划算）。
+	// 代价是主控重启后这个数会从 0 重新攒 —— 界面上要说清它是「重启以来」。
+	blocked     []blockSample
+	prevBlocked uint64
+	hasBlocked  bool
+}
+
+// blockSample 是一段时间里拦下的请求数。
+type blockSample struct {
+	at time.Time
+	n  uint64
 }
 
 // Alerter 是告警的出口。装配在 #20 的 alert 包里。
@@ -130,6 +150,18 @@ func (m *Monitor) Observe(hb tunnel.Heartbeat) string {
 		ReqTotal: hb.ReqTotal, OriginTotal: hb.OriginTotal,
 		At: time.Now(),
 	}
+
+	// **累计值转成「这一段拦了多少」。**
+	//
+	// Agent 重启会让累计值归零 —— 那时差值是负的，而无符号相减会绕成一个
+	// 天文数字。判据是「新值比旧值小」：那只可能是重启，把这一段记 0。
+	if st.hasBlocked && hb.BlockedTotal >= st.prevBlocked {
+		if d := hb.BlockedTotal - st.prevBlocked; d > 0 {
+			st.blocked = append(st.blocked, blockSample{at: time.Now(), n: d})
+		}
+	}
+	st.prevBlocked, st.hasBlocked = hb.BlockedTotal, true
+	st.blocked = trimOlderThan(st.blocked, time.Hour)
 	st.seen = true
 	st.misses = 0
 
@@ -463,4 +495,39 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(b)
+}
+
+// trimOlderThan 丢掉窗口外的样本。
+//
+// **每次心跳都修剪，而不是查询时**：不修剪的话，一台跑了一个月的节点会
+// 攒下几十万个样本，而它们里面只有最近一小时那几百个会被读到。
+func trimOlderThan(xs []blockSample, window time.Duration) []blockSample {
+	cut := time.Now().Add(-window)
+	i := 0
+	for i < len(xs) && xs[i].at.Before(cut) {
+		i++
+	}
+	return xs[i:]
+}
+
+// BlockedLastHour 是这台节点过去一小时被拦下的请求数。
+//
+// **第二个返回值说「这个数有没有意义」。** 没有过任何一次可比的心跳时
+// （节点刚接入、Agent 刚重启）它是 false —— 那时回 0 会被读成
+// 「一个都没拦」，而真相是「还不知道」。
+func (m *Monitor) BlockedLastHour(nodeID string) (uint64, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st := m.nodes[nodeID]
+	if st == nil || !st.hasBlocked {
+		return 0, false
+	}
+	var n uint64
+	cut := time.Now().Add(-time.Hour)
+	for _, s := range st.blocked {
+		if s.at.After(cut) {
+			n += s.n
+		}
+	}
+	return n, true
 }

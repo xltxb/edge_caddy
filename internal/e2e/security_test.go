@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -765,4 +766,108 @@ func TestConfiguredSecretIsNotReportedAsIncomplete(t *testing.T) {
 		t.Errorf("配好密钥的规则被标成不完整了 —— 恒为红的标记人两天就学会忽略：%+v",
 			d.Incomplete["svc"])
 	}
+}
+
+// TestBlockedCountReflectsRealBlocks 钉的是**拦了多少，界面上看得见**。
+//
+// 没有它的话，**一个正在挡住 CC 的系统和一个规则根本没生效的系统，
+// 在界面上长得一模一样** —— 请求数会涨，而人分不出「来了很多正常流量」
+// 和「正在被打而我们挡住了」。
+//
+// 判据是「真的拦了之后那个数真的涨」，不是「有这么个字段」——
+// 后者一个恒为 0 的实现也能满足。
+func TestBlockedCountReflectsRealBlocks(t *testing.T) {
+	r := newRig(t, caddytest.EdgeTCP())
+	setupSite(t, r, "bc.example.com")
+
+	// 桶容量 2、窗口很长 —— 打 6 个，后面 4 个必被拦。
+	r.mustDo("PUT", "/rules/bc", map[string]any{
+		"name": "限流", "type": "rate_limit", "enabled": true,
+		"apply_to": []string{"bc.example.com"},
+		"spec":     map[string]any{"requests": 2, "window_s": 600},
+	})
+	r.deployNow("rule:bc")
+
+	// **先等基线建立，再制造拦截。**
+	//
+	// 这个数是从累计值算差值来的，而差值要两次心跳才算得出。
+	// 第一次心跳之前发生的拦截会被算进基线里 —— 那是个真实性质
+	// （Agent 刚起来那几秒里的拦截数不到），而不是缺陷：
+	// 累计值本身在 Agent 重启时也会归零。
+	//
+	// 第一版没等，于是 6 个请求全在第一次心跳之前打完了，
+	// 基线直接建在 4 上，差值恒为 0 —— **测试红了，而红的是测试不是代码**。
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) && blockedOf(t, r) == nil {
+		time.Sleep(200 * time.Millisecond)
+	}
+	if blockedOf(t, r) == nil {
+		t.Fatal("等不到第一次心跳，基线建不起来")
+	}
+
+	blocked := 0
+	for i := 0; i < 6; i++ {
+		if code, _ := r.curlVia("bc.example.com"); code == 429 {
+			blocked++
+		}
+	}
+	if blocked == 0 {
+		t.Fatalf("装置坏了：打了 6 个，一个都没被拦（桶容量是 2）")
+	}
+
+	// 等下一次心跳把这一段的差值报上来。
+	deadline = time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := blockedOf(t, r); got != nil && *got >= uint64(blocked) {
+			return
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	got := blockedOf(t, r)
+	shown := "null"
+	if got != nil {
+		shown = fmt.Sprint(*got)
+	}
+	t.Fatalf("真的拦了 %d 个，而 blocked_1h 是 %s —— "+
+		"这个数是「此刻在不在被打」唯一的答案，它不动等于那个问题没人回答",
+		blocked, shown)
+}
+
+// TestBlockedCountIsNullBeforeAnyBaseline：还算不出来时是 null，不是 0。
+//
+// 节点刚接入时还没有可比的两次心跳。**回 0 会被读成「一个都没拦」，
+// 而这个字段要回答的恰恰是「此刻在不在被打」—— `0` 正是「没被打」的样子。**
+// 与 reconnects_1h 同一条理由。
+func TestBlockedCountIsNullBeforeAnyBaseline(t *testing.T) {
+	r := newRig(t)
+	// **直接建一行节点记录，不接 Agent。**
+	//
+	// 签发 Token 不建记录（记录在接入那一刻才建），而接了 Agent 就会有心跳
+	// —— 那就造不出「有这个节点、而它从没报过」这一档了。
+	if _, err := r.store.Pool.Exec(context.Background(),
+		`INSERT INTO edge_nodes (id, city, vendor, line, public_ip, status)
+		 VALUES ('node-hk-01','香港','DMIT','CN2','203.0.113.7','down')`); err != nil {
+		t.Fatal(err)
+	}
+	if got := blockedOf(t, r); got != nil {
+		t.Errorf("还没有任何心跳时该是 null，实际 %d —— "+
+			"0 会被读成「一个都没拦」，而真相是「还不知道」", *got)
+	}
+}
+
+func blockedOf(t *testing.T, r *rig) *uint64 {
+	t.Helper()
+	e := r.mustDo("GET", "/nodes", nil)
+	var d struct {
+		Items []struct {
+			Blocked *uint64 `json:"blocked_1h"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Items) != 1 {
+		t.Fatalf("装置坏了：该有 1 个节点，实际 %d", len(d.Items))
+	}
+	return d.Items[0].Blocked
 }

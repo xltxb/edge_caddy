@@ -382,6 +382,7 @@ func (a *Agent) heartbeatLoop(ctx context.Context, stream edgev1.EdgeTunnel_Chan
 			Cpu: m.CPU, Mem: m.Mem, Conns: m.Conns,
 			Routes: a.routes, Rules: a.rules,
 			ReqTotal: m.ReqTotal, OriginTotal: m.OriginTotal,
+			BlockedTotal: m.BlockedTotal,
 			// **报「本机那份」的哈希，不是「主控推过什么」。**
 			// 主控记账的话，一次推送失败之后它会一直以为节点有库，
 			// 而那个域名的地域规则一直不生效 —— 与 cfg_version 同一条理由。
