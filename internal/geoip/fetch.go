@@ -16,6 +16,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -61,15 +62,24 @@ func (f *Fetcher) Fetch(ctx context.Context) (bool, error) {
 	if base == "" {
 		base = "https://download.maxmind.com/app/geoip_download"
 	}
-	url := fmt.Sprintf("%s?edition_id=GeoLite2-Country&license_key=%s&suffix=tar.gz",
+	dlURL := fmt.Sprintf("%s?edition_id=GeoLite2-Country&license_key=%s&suffix=tar.gz",
 		base, f.LicenseKey)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, dlURL, nil)
 	if err != nil {
 		return false, err
 	}
 	resp, err := f.client().Do(req)
 	if err != nil {
+		// **剥掉 URL 再包装。** Do 失败回的 *url.Error 带完整 URL，
+		// 而 URL 里拼着 license key —— 这个错误每天由 once() 打进日志，
+		// 一次网络抖动 key 就进了日志，而日志是运维会复制出去排障的
+		// 东西（issue #28）。只留 base（它不含 key）与底层错误：
+		// 「打的是哪儿、错在哪类」都在，丢掉的只有查询串。
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			return false, fmt.Errorf("下载 GeoLite2（%s %s）: %w", ue.Op, base, ue.Err)
+		}
 		return false, fmt.Errorf("下载 GeoLite2: %w", err)
 	}
 	defer resp.Body.Close()
