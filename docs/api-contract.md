@@ -1086,16 +1086,51 @@ Agent 断了就重连，只断开是个假动作：三秒后隧道又开了，�
   "spec": { "ips": ["203.0.113.7", "10.8.0.0/24"] } }
 ```
 
-`type` 决定 `spec` 的形状，三选一：
+`type` 决定 `spec` 的形状，五选一：
 
 ```json
 "ip_whitelist"   → { "ips": ["203.0.113.7", "10.8.0.0/24"] }
+"ip_blacklist"   → { "ips": ["198.51.100.0/24"] }
+"request_filter" → { "filters": [
+                       {"field": "user_agent", "op": "contains", "value": "sqlmap"},
+                       {"field": "path",       "op": "prefix",   "value": "/.git"}
+                   ] }
 "service_secret" → { "header": "X-Service-Key", "algo": "hmac-sha256",
                      "ttl_s": 300, "replay_protection": true,
                      "secret_configured": true }
 "jwt_bearer"     → { "iss": "https://idp.internal/", "aud": "edge",
                      "jwks_url": "https://idp.internal/.well-known/jwks.json", "skew_s": 60 }
 ```
+
+#### 黑名单与白名单是两种类型，不是一个开关
+
+它们在渲染出来的 Caddy 配置里**只差一个 `not`**。合成一个「IP 规则 + 方向开关」的话，
+少写那个 `not` 就把「只拦这些」变成「只放这些」——**而配置完全合法，Caddy 照收，
+站点看起来也正常**（只要访问者恰好在名单里）。
+
+**两者的空名单都拒绝，而理由相反**：空白名单会拦下所有人（一次事故），
+空黑名单谁也拦不到（一条静默失效的规则）——**而界面上它们长得一模一样：
+一条启用着的规则**。所以两句提示词不同。
+
+#### `request_filter` 的多条特征之间是「或」
+
+命中任意一条就拦。想要「且」就配成两条规则——那让每一条在界面上都能单独开关，
+而一个复合条件是拆不开的，出问题时也说不清是哪一半命中的。
+
+| `field` | `op` 可选 |
+|---|---|
+| `path` | `contains` / `prefix` / `suffix` / `equals` / `regex` |
+| `user_agent` / `referer` | 同上 |
+| `header`（要 `name`） | 同上 |
+| `query`（要 `name`） | **只有 `equals`** —— Caddy 的 query 匹配器只比精确值 |
+
+**`regex` 在保存时就编译。** 一条写错的正则原样下发到节点上，
+Caddy 会**拒绝整份配置**——症状是「所有站点一起下发失败」，
+而根因是某一条规则里的一个括号。
+
+> **这两类都不走校验端点。** Caddy 的 `remote_ip` / `header_regexp` 原生就能做，
+> 绕一趟回环只会给每个请求加一次 HTTP 调用，换不到任何东西。
+> 走校验端点的是 `service_secret` 与 `jwt_bearer`——官方 Caddy 没有那两个模块。
 
 > **共享密钥不在 `spec` 里。** `PUT /rules/:id` 的请求体上有一个**顶层** `secret`
 > 字段，只写入不回显——`spec` 会被 `GET /rules` 原样返回，密钥放进去就等于回显了
