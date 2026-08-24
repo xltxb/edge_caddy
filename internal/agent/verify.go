@@ -307,28 +307,41 @@ func (v *VerifyServer) verifyServiceSecret(rule *verifyRule, r *http.Request) (s
 // 只在内存里：重放窗口本来就短（默认几分钟），而 Agent 重启后那些签名
 // 也快到期了。落盘换不到对应的好处，还会在每个请求上加一次磁盘写。
 type replayCache struct {
-	mu   sync.Mutex
+	mu sync.Mutex
+	// seen 记的是**过期时刻**，不是写入时刻。
+	//
+	// 记写入时刻的话，清理就得知道「这条是哪个规则的、窗口多长」——
+	// 而缓存是所有规则共享的，此前拿当前调用的 ttl 一刀切：短窗口规则的
+	// 每次请求都会把长窗口规则还在窗口内的签名清掉，重放保护的实际强度
+	// 变成取决于同一台节点上邻居规则怎么配（issue #27）。反方向同样错：
+	// 邻居窗口长时，过期的条目也清不掉。每条记自己的死期，
+	// 清理就不需要知道任何规则的存在。
 	seen map[string]time.Time
+
+	// now 可注入，测试里不必真的等。与 limiter 同一个惯例。
+	now func() time.Time
 }
 
-func newReplayCache() *replayCache { return &replayCache{seen: map[string]time.Time{}} }
+func newReplayCache() *replayCache {
+	return &replayCache{seen: map[string]time.Time{}, now: time.Now}
+}
 
 // admit 返回 true 表示这个签名此前没出现过。
 func (c *replayCache) admit(key string, ttl time.Duration) bool {
-	now := time.Now()
+	now := c.now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	// 顺手清掉过期的。规模是「窗口内的请求数」，不需要 LRU。
-	for k, t := range c.seen {
-		if now.Sub(t) > ttl {
+	for k, dies := range c.seen {
+		if now.After(dies) {
 			delete(c.seen, k)
 		}
 	}
 	if _, dup := c.seen[key]; dup {
 		return false
 	}
-	c.seen[key] = now
+	c.seen[key] = now.Add(ttl)
 	return true
 }
 
