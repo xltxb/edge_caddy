@@ -9,6 +9,7 @@ import type {
   ResKind,
   RouteWire,
   RuleWire,
+  RulesWire,
 } from '@/api/types'
 import { applyEdit, changeCount as countPatch, merge, type Patch } from '@/workbench/draft'
 
@@ -37,6 +38,15 @@ export interface ResourceItem {
 export const useConfigStore = defineStore('config', () => {
   const routes = ref<RouteWire[]>([])
   const rules = ref<RuleWire[]>([])
+  /**
+   * `request_filter` 的 field → 允许的 op（契约 §6.2）。**后端报的，不是抄的。**
+   *
+   * `null` = 主控还没报（太旧）。那一档界面要说出来，
+   * **不能退回一份本地默认表** —— 那正是这张表存在的理由要消灭的东西。
+   */
+  const filterFields = ref<Record<string, string[]> | null>(null)
+  /** 哪些 field 还要指明「看哪一个」。同样从表里读，不再判一次 field 名。 */
+  const filterNeedsName = ref<Record<string, boolean> | null>(null)
   const policies = ref<PolicyWire[]>([])
   const patches = ref<Record<string, Patch>>({})
   /**
@@ -180,7 +190,7 @@ export const useConfigStore = defineStore('config', () => {
 
     const [rt, rl, tls, log, dr] = await Promise.allSettled([
       http.get<Paged<RouteWire>>('/routes'),
-      http.get<Paged<RuleWire>>('/rules'),
+      http.get<RulesWire>('/rules'),
       http.get<PolicyWire>('/policies/tls'),
       http.get<PolicyWire>('/policies/log'),
       http.get<DraftsWire>('/drafts'),
@@ -189,8 +199,18 @@ export const useConfigStore = defineStore('config', () => {
     if (rt.status === 'fulfilled') routes.value = rt.value.items
     else failed.push('反代路由')
 
-    if (rl.status === 'fulfilled') rules.value = rl.value.items
-    else failed.push('访问规则')
+    if (rl.status === 'fulfilled') {
+      rules.value = rl.value.items
+      /*
+       * **后端报出来的那张表，原样收着**（契约 §6.2）。
+       *
+       * 主控太旧时它是 undefined —— 那一档下拉没有东西可渲染，
+       * 界面要说「这个主控还不支持」，而不是退回一份抄来的默认表：
+       * 抄的那份正是这两张表存在的理由要消灭的东西。
+       */
+      filterFields.value = rl.value.filter_fields ?? null
+      filterNeedsName.value = rl.value.filter_fields_need_name ?? null
+    } else failed.push('访问规则')
 
     const pols: PolicyWire[] = []
     if (tls.status === 'fulfilled') pols.push(tls.value)
@@ -378,6 +398,8 @@ export const useConfigStore = defineStore('config', () => {
     deleteRule,
     routes,
     rules,
+    filterFields,
+    filterNeedsName,
     policies,
     patches,
     updated,

@@ -46,7 +46,23 @@ export type NodeStatus = 'ok' | 'warn' | 'down'
 /** 四档。`ok` = 成功完成的动作（绿），与 `info` 的流水账区分开。 */
 export type EventKind = 'ok' | 'info' | 'warn' | 'crit'
 export type BlockMode = 'abort' | '403' | '404'
-export type RuleType = 'ip_whitelist' | 'service_secret' | 'jwt_bearer'
+/**
+ * 七种。**黑名单与白名单是两种类型，不是一个「方向」开关**（契约 §6.2）。
+ *
+ * 它们在渲染出的 Caddy 配置里只差一个 `not` —— 合成一个开关的话，
+ * 少写那个 `not` 就把「只拦这些」变成「只放这些」，**而配置完全合法、
+ * Caddy 照收、站点看起来也正常**（只要访问者恰好在名单里）。
+ *
+ * `geo_block` 的 `geo_mode` 同理：那一个是后端要求两个方向都显式给、没有默认。
+ */
+export type RuleType =
+  | 'ip_whitelist'
+  | 'ip_blacklist'
+  | 'request_filter'
+  | 'rate_limit'
+  | 'geo_block'
+  | 'service_secret'
+  | 'jwt_bearer'
 /** 线上过程态。数据库里的 deploy_state 只有 ok / fail 两个终态。 */
 export type DeployProgressState = 'wait' | 'run' | 'ok' | 'fail'
 export type AuditResult = 'ok' | 'fail' | 'partial'
@@ -368,7 +384,81 @@ export interface JwtBearerSpec {
   jwks_url: string
   skew_s: number
 }
-export type RuleSpec = IpWhitelistSpec | ServiceSecretSpec | JwtBearerSpec
+/**
+ * 黑名单。**跟白名单是两个类型，字段却一模一样** —— 区别全在 `type` 上。
+ *
+ * 空名单两者都被后端拒（契约 §6.2），而**理由相反**：空白名单拦下所有人
+ * （一次事故），空黑名单谁也拦不到（一条静默失效的规则）。
+ * 界面上它们长得一模一样：一条启用着的规则。所以两句提示词不同。
+ */
+export interface IpBlacklistSpec {
+  ips: string[]
+}
+
+/** 一条请求特征。`field` 决定 `op` 能取哪些 —— 那张表由后端报，不在这里写死。 */
+export interface RequestFilter {
+  field: string
+  op: string
+  value: string
+  /** `header` / `query` 要指明看哪一个。哪些 field 需要它由后端的表说了算。 */
+  name?: string
+}
+
+/**
+ * 请求特征过滤。**多条之间是「或」**（契约 §6.2）——
+ * 界面上要说清，否则人会按「且」去配。想要「且」是配成两条规则。
+ */
+export interface RequestFilterSpec {
+  filters: RequestFilter[]
+}
+
+/**
+ * 限流。**令牌桶，不是滑动窗口**：`requests` 同时是持续速率的分子
+ * （`requests / window_s`）和**允许的突发**。
+ *
+ * 说「每 60 秒 100 次，允许一次性来 100 个」比说「限速」准确 ——
+ * 纯速率会误伤正常用户（一个人打开页面会并发十几个请求），
+ * **而被误伤过一次的限流，人会直接把它关掉**。
+ *
+ * **计数是每节点各算各的**：三台节点、每台限 100，全局实际是 300。
+ * 这一点界面必须说出来，而且要在**编辑那一刻**说 —— 一个人配「100」时
+ * 就该看见「300」，不是配完了再被告知。
+ */
+export interface RateLimitSpec {
+  requests: number
+  window_s: number
+  /**
+   * `ip` | `ip_path`。
+   *
+   * `ip_path` 让「猛刷登录接口」和「正常浏览别的页面」互不影响，代价是桶数量
+   * 乘以路径基数 —— **而路径是攻击者能控制的**，所以它只在配了 `request_filter`
+   * 限定路径时才有意义。界面上要提醒这一点。
+   */
+  rate_key: string
+}
+
+/**
+ * 地域封禁 / 放行。
+ *
+ * `geo_mode` **两个方向都要显式给，没有默认**（契约 §6.2）——
+ * 猜错一个就是把站点封了或者敞开了。
+ *
+ * `geo_countries` 是 **ISO 3166-1 alpha-2 两位大写**。小写会被校验拒 ——
+ * mmdb 里存的是大写，`cn` 会**静默匹配不到任何东西**。
+ */
+export interface GeoBlockSpec {
+  geo_mode: string
+  geo_countries: string[]
+}
+
+export type RuleSpec =
+  | IpWhitelistSpec
+  | IpBlacklistSpec
+  | RequestFilterSpec
+  | RateLimitSpec
+  | GeoBlockSpec
+  | ServiceSecretSpec
+  | JwtBearerSpec
 
 export interface RuleWire {
   id: string
@@ -379,6 +469,40 @@ export interface RuleWire {
   apply_to: string[]
   version: number
   spec: Record<string, unknown>
+}
+
+/**
+ * `GET /rules` 的响应 —— 规则列表**外加两张后端报出来的表**（契约 §6.2）。
+ *
+ * ## 照它渲染，不要抄
+ *
+ * `filter_fields` 说的是每个 `field` 允许哪些 `op`。它与后端的校验
+ * **共用同一张表**（`model.FilterFieldOps`），不是抄本。
+ *
+ * 界面自己抄一份的代价是两边在某次改动时分叉，而**那个分叉两个方向不对称**：
+ *
+ * - 给出一个后端会拒的选项 —— 人配完被拒，**还算看得见**。
+ * - 藏起一个后端接受的 —— **从界面上完全看不出来**。
+ *
+ * 后者更贵，而它恰恰是「抄一份然后忘了跟」最常见的结果。
+ *
+ * 与 `dns_provider_requirements` 同一条路子：**哪家要什么、哪个字段能用哪些
+ * 算子，只有一个来源**，界面拿它当渲染的钥匙。
+ *
+ * ## 这个形状还没在真主控上验过
+ *
+ * 探针拿到的 `data` 顶层只有 `items` —— 查下来是主控进程比后端那次提交旧
+ * （这已经是第三次了）。所以这两个字段的位置是**照契约写的，不是观测到的**。
+ * 可选，正是为了兜住「主控太旧」那一档：那时下拉退回到只有 items 能给的东西。
+ */
+export interface RulesWire extends Paged<RuleWire> {
+  /** field → 允许的 op 列表。缺失 = 主控太旧，见上。 */
+  filter_fields?: Record<string, string[]>
+  /**
+   * 哪些 field 还要再指明「看哪一个」（`header` 看哪个头、`query` 看哪个参数）。
+   * **从表里读，不要再判一次 field 名** —— 那就是又一份会分叉的知识。
+   */
+  filter_fields_need_name?: Record<string, boolean>
 }
 
 export interface PolicyWire {

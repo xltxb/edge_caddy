@@ -109,7 +109,44 @@ export async function handleConfig(req: IncomingMessage, res: ServerResponse): P
     state.routes.push({ ...b, domain, version: 0 })
     return ok(res, { domain }), true
   }
-  if (m === 'GET' && path === '/api/v1/rules') return paged(res, state.rules), true
+  if (m === 'GET' && path === '/api/v1/rules') {
+    /*
+     * **这两张表是替身，真值以主控为准**（契约 §6.2）。
+     *
+     * 后端那份与它的校验共用同一张表（`model.FilterFieldOps`），
+     * 界面照报出来的渲染、不抄 —— 而 mock 这一份**就是抄的**，
+     * 因为替身除了抄没有别的办法。
+     *
+     * 两件事让这份抄本比一般的抄本更危险，都写出来：
+     *
+     * 1. **`check:shapes` 比不到它。** 那个脚本装的是进程内 MSW，
+     *    而 `/rules` 只由这个 Node 侧插件提供 —— MSW 里根本没有这个端点。
+     *    所以这份抄本跟真主控分叉时，没有任何一处会红。
+     * 2. **探针也没验到。** 试过一次，主控进程比后端那次提交旧，
+     *    `data` 顶层只有 `items`。所以下面这几行是照契约的示例
+     *    加推断写的，**不是观测到的**。
+     *
+     * 分叉的两个方向不对称：给出一个后端会拒的 op，人配完被拒、还看得见；
+     * **藏起一个后端接受的，从界面上完全看不出来**。后者更贵。
+     * 这份抄本要是少了某个 op，dev 里就是后一种。
+     */
+    return (
+      ok(res, {
+        items: state.rules,
+        next_before_id: null,
+        filter_fields: {
+          path: ['contains', 'prefix', 'suffix', 'equals', 'regex'],
+          user_agent: ['contains', 'equals', 'regex'],
+          header: ['contains', 'equals', 'regex'],
+          // Caddy 的 query 匹配器只比精确值 —— 这一档只有 equals（契约 §6.2）
+          query: ['equals'],
+          method: ['equals'],
+        },
+        filter_fields_need_name: { header: true, query: true },
+      }),
+      true
+    )
+  }
 
   const rule = /^\/api\/v1\/rules\/([^/]+)$/.exec(path)
   if (m === 'DELETE' && rule) {

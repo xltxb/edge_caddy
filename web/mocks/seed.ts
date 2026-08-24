@@ -207,6 +207,19 @@ export const rules: RuleWire[] = [
   // 而一个夹具表达不了的状态，等于在开发期不存在 —— 界面上那条「未绑定域名」
   // 分支、以及删除弹层里「本来就不生效」那一支，都靠它才走得到。
   { id: 'staging-wl', name: '预发环境白名单', type: 'ip_whitelist', enabled: true, version: 1, spec: { ips: ['198.51.100.200'] }, apply_to: [] },
+  /*
+   * 四种新规则（契约 §6.2）。每条都挑了**界面上最容易看错的那一面**：
+   *
+   * - `scanner-block` 是黑名单，跟上面 office-wl 的 spec 一模一样（都只有 ips）——
+   *   区别全在 type 上。列表那一列必须能把两者分开，这两条并排就是它的考题。
+   * - `probe-filter` 有两条特征，用来验「命中任一即拦」那句话说了没有。
+   * - `login-rl` 用 ip_path —— 那一档要提醒「路径是攻击者能控的」。
+   * - `cn-only` 是 allow 方向，跟 block 相反：摘要不带方向的话这两个字看不出来。
+   */
+  { id: 'scanner-block', name: '扫描器来源黑名单', type: 'ip_blacklist', enabled: true, version: 3, spec: { ips: ['198.51.100.0/24', '203.0.113.66'] }, apply_to: ['api.example.com', 'cdn.example.com'] },
+  { id: 'probe-filter', name: '探测路径与工具', type: 'request_filter', enabled: true, version: 2, spec: { filters: [{ field: 'user_agent', op: 'contains', value: 'sqlmap' }, { field: 'path', op: 'prefix', value: '/.git' }] }, apply_to: ['api.example.com'] },
+  { id: 'login-rl', name: '登录接口限流', type: 'rate_limit', enabled: true, version: 1, spec: { requests: 100, window_s: 60, rate_key: 'ip_path' }, apply_to: ['api.example.com'] },
+  { id: 'cn-only', name: '仅中国大陆与港澳', type: 'geo_block', enabled: true, version: 1, spec: { geo_mode: 'allow', geo_countries: ['CN', 'HK', 'MO'] }, apply_to: ['admin.example.com'] },
   { id: 'app-jwt', name: 'App 客户端 JWT', type: 'jwt_bearer', enabled: true, version: 6, spec: { iss: 'https://auth.example.com/', aud: 'edge-api', jwks_url: 'https://auth.example.com/.well-known/jwks.json', skew_s: 60 }, apply_to: ['api.example.com', 'push.example.com'] },
 ]
 

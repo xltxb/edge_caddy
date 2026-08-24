@@ -2,8 +2,9 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useConfigStore } from '@/stores/config'
+import { useNodesStore } from '@/stores/nodes'
+import { TYPE_LABEL, ruleStatus, ruleSummary } from '@/rules/summary'
 import { errorText } from '@/api/http'
-import type { RuleWire } from '@/api/types'
 
 /**
  * 访问控制 —— 目录页。启停、编辑、域名绑定都在工作台完成。
@@ -18,45 +19,32 @@ import type { RuleWire } from '@/api/types'
  * 否则人会以为自己已经保护了全站。
  */
 const config = useConfigStore()
+const nodes = useNodesStore()
 const router = useRouter()
 
 onMounted(() => {
   if (!config.rules.length) void config.fetchAll().catch(() => {})
+  /*
+   * **这一页也要节点列表** —— 一条地域规则在缺 GeoIP 库的节点上形同虚设
+   * （契约 §6.2），而那件事只有节点那份数据说得出来。
+   *
+   * 不拉的话 `nodes.items` 是空的，下面那个计数算出 0，于是界面显示
+   * 「生效中」—— **「还不知道」被显示成了「没问题」**，
+   * 而这正是这一整轮反复撞到的那个形状。
+   */
+  if (!nodes.items.length) void nodes.fetchAll().catch(() => {})
 })
 
-const TYPE_LABEL: Record<string, string> = {
-  ip_whitelist: 'IP 白名单',
-  service_secret: '服务密钥',
-  jwt_bearer: 'JWT Bearer',
-}
-
-function summary(r: RuleWire): string {
-  const s = r.spec as Record<string, unknown>
-  if (r.type === 'ip_whitelist') return `${(s.ips as string[] | undefined)?.length ?? 0} 条来源`
-  if (r.type === 'service_secret') return `${String(s.header ?? '')} · ${String(s.algo ?? '')}`
-  return String(s.iss ?? '')
-}
+/* ── 删除规则 ── */
 
 /**
- * 状态列说的是**这条规则此刻做不做事**，不是那个开关的位置。
+ * 缺 / 旧 GeoIP 库的节点数 —— 传给 `ruleStatus` 的那个参数。
  *
- * 只看 enabled 的话，一条启用了但没绑任何域名的规则会显示「生效中」，而右边的
- * 「应用到」同时说它不生效 —— 两列各说各话，人只会信左边那个绿的。
- *
- * 「不做事」的三种原因都收在这里，而不是各开一列：多一列就多一次自相矛盾的机会。
- * 密钥那一条在真主控上进不来（`PUT /rules/:id` 不给密钥就被 1002 拒），
- * 但这个布尔是后端真发的字段 —— 它要是 false，说「生效中」就是撒谎。
+ * **`nodes.items` 为空时这里是 0，而 0 的意思是「你确认没有缺库的节点」**
+ * （见 `ruleStatus` 的注释）。所以上面 onMounted 主动拉一次：
+ * 不拉的话这一页会用「还不知道」去回答那个问题，而答案长得像「没问题」。
  */
-function statusOf(r: RuleWire): { text: string; tone: 'ok' | 'warn' } {
-  if (!r.enabled) return { text: '已停用', tone: 'warn' }
-  if (!r.apply_to.length) return { text: '已启用，未生效', tone: 'warn' }
-  if (r.type === 'service_secret' && r.spec.secret_configured === false) {
-    return { text: '未设置密钥', tone: 'warn' }
-  }
-  return { text: '生效中', tone: 'ok' }
-}
-
-/* ── 删除规则 ── */
+const staleGeoNodes = computed(() => nodes.items.filter((n) => n.geoDbOk === false).length)
 
 const removing = ref<string | null>(null)
 const removeBusy = ref(false)
@@ -163,9 +151,9 @@ function edit(id: string): void {
             <div class="mono muted small">{{ r.id }}</div>
           </td>
           <td class="mono">{{ TYPE_LABEL[r.type] }}</td>
-          <td class="mono muted">{{ summary(r) }}</td>
+          <td class="mono muted">{{ ruleSummary(r) }}</td>
           <td>
-            <span class="tag" :class="statusOf(r).tone">{{ statusOf(r).text }}</span>
+            <span class="tag" :class="ruleStatus(r, staleGeoNodes).tone">{{ ruleStatus(r, staleGeoNodes).text }}</span>
           </td>
           <td>
             <!-- 空绑定必须显示成「未绑定」，不能留白让人以为是全局生效 -->
