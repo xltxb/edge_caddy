@@ -477,3 +477,67 @@ func TestFilterFieldsAreServedFromTheSameTableAsValidation(t *testing.T) {
 		t.Errorf("query 只报了 equals，contains 该被拒，实际 code=%d", res.Code)
 	}
 }
+
+// TestDisabledRuleCanHoldAnEmptySpec 钉的是**一条契约里写着、而没人守着的行为**。
+//
+// 校验只跑在**启用且已绑定**的规则上——那是刻意的：人本来就是
+// 「先建规则、再慢慢配」的顺序，一条还没填完的规则不该挡住全站的下发。
+//
+// 代价是 `spec` 可以是 `{}`：**连那个类型本该有的键都没有**。
+// 照着「这个类型一定有这个键」写的 `spec.ips.map(...)` 会崩在它上面。
+//
+// 我是用一个一次性探针发现这一档的，跑完就删了 —— 而那正是
+// 「用完就丢的检查，等于只在写它的那一刻生效过一次」。
+// 契约里写了这件事，而**写在契约里的东西不会自己保持为真**：
+// 哪天有人把校验改成「停用的也查」，那段契约会在没有任何东西变红的情况下过期。
+func TestDisabledRuleCanHoldAnEmptySpec(t *testing.T) {
+	r := newRig(t)
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "draft.example.com", "upstream": r.upstream, "block_mode": "abort",
+	})
+
+	// 一、停用 + 空 spec：存得进去。
+	_, e := r.do("PUT", "/rules/draft", map[string]any{
+		"name": "还没填完", "type": "ip_whitelist", "enabled": false,
+		"apply_to": []string{"draft.example.com"},
+		"spec":     map[string]any{"ips": []string{}},
+	})
+	if e.Code != api.CodeOK {
+		t.Fatalf("停用的规则该存得进去（人先建再慢慢配），实际 code=%d msg=%q",
+			e.Code, e.Msg)
+	}
+
+	// 二、读回来时 spec 里**连 ips 这个键都没有**。
+	//
+	// 判据是「键在不在」，不是「值是什么」：解到结构体的话，
+	// 键不存在和空数组都给出 nil —— 而下游要防的正是前者。
+	list := r.mustDo("GET", "/rules", nil)
+	var d struct {
+		Items []struct {
+			ID   string                     `json:"id"`
+			Spec map[string]json.RawMessage `json:"spec"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(list.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Items) != 1 {
+		t.Fatalf("装置坏了：该有 1 条规则，实际 %d", len(d.Items))
+	}
+	if _, ok := d.Items[0].Spec["ips"]; ok {
+		t.Errorf("契约说这一档的 spec 是 {} —— 而它现在有 ips 这个键。"+
+			"要么是行为变了（那契约那段要跟着改），"+
+			"要么是校验开始查停用的规则了：%v", d.Items[0].Spec)
+	}
+
+	// 三、**反面：启用它就要被拒。** 没有这一条，一个「从不校验」的实现
+	// 也能让上面全绿，而那意味着空白名单能被下发到节点上。
+	_, bad := r.do("PUT", "/rules/draft", map[string]any{
+		"name": "还没填完", "type": "ip_whitelist", "enabled": true,
+		"apply_to": []string{"draft.example.com"},
+		"spec":     map[string]any{"ips": []string{}},
+	})
+	if bad.Code != api.CodeValidation {
+		t.Errorf("启用一条空白名单该被拒（它会拦下所有访问），实际 code=%d", bad.Code)
+	}
+}
