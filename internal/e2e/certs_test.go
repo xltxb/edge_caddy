@@ -420,6 +420,17 @@ func TestRateLimitIsRejectedNotSilentlyIgnored(t *testing.T) {
 			if !contains(i.Reason, "插件") {
 				t.Errorf("原因应当说清是官方包没有这个模块: %q", i.Reason)
 			}
+			// **还要指路。**
+			//
+			// 限流现在做得到了 —— 走访问规则里的 rate_limit。
+			// 这个全局开关仍然做不到，两句都对，而人不会这么读：
+			// 他看到「做不到」就走了，而他要的东西在隔壁。
+			//
+			// **一句只说了一半的实话，读起来跟假话一样。**
+			if !contains(i.Reason, "访问控制") {
+				t.Errorf("只说了做不到，没说去哪儿做 —— "+
+					"限流走访问规则是做得到的，而人看到这句就走了: %q", i.Reason)
+			}
 		}
 	}
 	if !found {
