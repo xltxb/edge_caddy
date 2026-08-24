@@ -98,9 +98,14 @@ func serveVerify(addr string, a *agent.Agent) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
+	// 限流桶要定期清，否则那张表会随攻击一起长大。
+	// 生命周期跟着校验端点：端点关了，清理也停。
+	sweepCtx, stopSweep := context.WithCancel(context.Background())
+	go a.Verify().RunSweeper(sweepCtx, time.Minute)
+
 	srv := &http.Server{Handler: a.Verify().Handler()}
 	go func() { _ = srv.Serve(ln) }()
-	return func() { _ = srv.Close() }, nil
+	return func() { stopSweep(); _ = srv.Close() }, nil
 }
 
 func env(k, def string) string {

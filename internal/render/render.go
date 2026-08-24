@@ -184,6 +184,12 @@ func VerifyRules(rules []model.Rule) []model.VerifyRule {
 				ID: r.ID, Type: r.Type, Issuer: r.Spec.Issuer, Audience: r.Spec.Audience,
 				JWKSURL: r.Spec.JWKSURL, SkewSec: r.Spec.SkewSeconds,
 			})
+		case model.RuleRateLimit:
+			out = append(out, model.VerifyRule{
+				ID: r.ID, Type: r.Type,
+				Requests: r.Spec.Requests, WindowSec: r.Spec.WindowSeconds,
+				RateKey: r.Spec.RateKey,
+			})
 		}
 	}
 	return out
@@ -435,6 +441,27 @@ func forwardAuthHandler(rule model.Rule, opt Options) map[string]any {
 					// 计算，不带过去就无法校验，一条截获的签名也能换到别的路径上。
 					"X-Forwarded-Method": []string{"{http.request.method}"},
 					"X-Forwarded-Uri":    []string{"{http.request.uri}"},
+
+					// **限流按这个头计数，不按 X-Forwarded-For。**
+					//
+					// 先说一件实测出来的事，因为我一开始写反了：**默认配置下
+					// Caddy 会把客户端发来的 XFF 整个替换成真实来源**，不是追加
+					// （追加只在 trusted_proxies 覆盖了对端时发生）。
+					// 所以「读 XFF 会被伪造」在**当前**配置下并不成立。
+					//
+					// 选 remote.host 的理由因此不是「XFF 不安全」，而是：
+					// **XFF 的含义取决于 trusted_proxies 怎么配**，而那是一个
+					// 会被改的东西——哪天节点前面加了一层真的代理、把它配进
+					// trusted_proxies，XFF 的第一段就变成客户端可控的了，
+					// 而限流会在没有任何人改动它的情况下失效。
+					//
+					// remote.host 是 Caddy 从 TCP 连接上看到的对端地址，
+					// 它的含义不随任何配置变。
+					//
+					// TestRateLimitIgnoresForgedForwardedFor（internal/e2e）守的是
+					// 「伪造的头不会开出新桶」——**它区分不了这两个来源**
+					// （Caddy 两个都替换），这一点写在那条测试里。
+					"X-Edge-Client-IP": []string{"{http.request.remote.host}"},
 				},
 			},
 		},
@@ -476,7 +503,7 @@ func proxyRoute(r model.Route, rules []model.Rule, pol Policies, opt Options) ma
 	// 里处理掉了，不重复。
 	for _, rule := range rules {
 		switch rule.Type {
-		case model.RuleServiceSecret, model.RuleJWTBearer:
+		case model.RuleServiceSecret, model.RuleJWTBearer, model.RuleRateLimit:
 			handlers = append(handlers, forwardAuthHandler(rule, opt))
 		}
 	}
@@ -733,6 +760,28 @@ func validateRules(rules []model.Rule, domains map[string]bool) []Issue {
 				// ——**一条指不到地方的错误信息，等于没有这条错误信息。**
 				issues = append(issues, Issue{key, "secret", "尚未设置共享密钥"})
 			}
+
+		case model.RuleRateLimit:
+			if rule.Spec.Requests <= 0 {
+				issues = append(issues, Issue{key, "spec.requests",
+					"每窗口允许的请求数要大于 0 —— 0 等于把这个域名整个封掉"})
+			}
+			if rule.Spec.WindowSeconds <= 0 {
+				issues = append(issues, Issue{key, "spec.window_s",
+					"时间窗口要大于 0 秒"})
+			}
+			switch rule.Spec.RateKey {
+			case "", "ip", "ip_path":
+			default:
+				issues = append(issues, Issue{key, "spec.rate_key",
+					fmt.Sprintf("%q 不是可用的计数维度（ip / ip_path）", rule.Spec.RateKey)})
+			}
+			// **这一条不是校验，是提醒，所以不做成 Issue。**
+			//
+			// 每节点各算各的：三台节点每台限 100，全局实际是 300。
+			// 拦下它没有道理（那是这个设计的固有形态），
+			// 而不说出来的话，一个人按「我要限 100」去配，拿到的是 300。
+			// 说这件事的地方是契约与界面，不是这里。
 
 		case model.RuleJWTBearer:
 			if rule.Spec.JWKSURL == "" {

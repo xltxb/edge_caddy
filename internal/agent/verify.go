@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -33,7 +34,8 @@ type VerifyServer struct {
 	mu    sync.RWMutex
 	rules map[string]*verifyRule // key 是规则 id
 
-	seen *replayCache
+	seen  *replayCache
+	limit *limiter
 }
 
 // verifyRule 是校验端点需要的那部分规则。
@@ -50,6 +52,10 @@ type verifyRule struct {
 	Audience string
 	JWKSURL  string
 	Skew     time.Duration
+
+	Requests  int
+	WindowSec int
+	RateKey   string
 }
 
 func NewVerifyServer(log *slog.Logger) *VerifyServer {
@@ -60,6 +66,7 @@ func NewVerifyServer(log *slog.Logger) *VerifyServer {
 		log:   log,
 		rules: map[string]*verifyRule{},
 		seen:  newReplayCache(),
+		limit: newLimiter(),
 	}
 }
 
@@ -79,12 +86,45 @@ func (v *VerifyServer) SetRules(rules []model.VerifyRule) {
 			ID: r.ID, Type: r.Type, Header: r.Header, TTL: ttl,
 			Replay: r.Replay, Secret: r.Secret,
 			Issuer: r.Issuer, Audience: r.Audience, JWKSURL: r.JWKSURL,
-			Skew: time.Duration(r.SkewSec) * time.Second,
+			Skew:     time.Duration(r.SkewSec) * time.Second,
+			Requests: r.Requests, WindowSec: r.WindowSec, RateKey: r.RateKey,
 		}
 	}
 	v.mu.Lock()
 	v.rules = m
 	v.mu.Unlock()
+}
+
+// RunSweeper 定期清掉已经攒满的桶。
+//
+// **不跑它的话那张表会随攻击一起长大** —— 一个僵尸网络每个 IP 打一次，
+// 每个 IP 留下一个桶，而那正是限流要防的那种流量。
+// 一个能被它要防的攻击撑爆的防护，是放大器不是防线。
+//
+// 写完 sweep 之后我一度没有把它接到任何地方 —— 这个仓库里数到第七次的
+// 同一个形状：**机制建好了，没接到会跑它的那个循环上**。
+func (v *VerifyServer) RunSweeper(ctx context.Context, every time.Duration) {
+	if every <= 0 {
+		every = time.Minute
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			v.mu.RLock()
+			rules := make(map[string]*verifyRule, len(v.rules))
+			for k, r := range v.rules {
+				rules[k] = r
+			}
+			v.mu.RUnlock()
+			if n := v.limit.sweepAll(rules); n > 0 {
+				v.log.Debug("清理限流桶", "清掉", n, "剩余", v.limit.size())
+			}
+		}
+	}
 }
 
 func (v *VerifyServer) Handler() http.Handler {
@@ -108,6 +148,29 @@ func (v *VerifyServer) handleVerify(w http.ResponseWriter, r *http.Request) {
 		// 规则不存在时拒绝，不是放行。配置漂移或下发只到一半时，
 		// 放行会让一个本该受保护的域名悄悄敞开。
 		http.Error(w, "unknown rule", http.StatusForbidden)
+		return
+	}
+
+	// **限流走单独一条路，因为它的拒绝语义不同。**
+	//
+	// 403 说的是「你不该来」，429 说的是「你来得太快了，等等再来」——
+	// 而客户端（尤其是自动重试的那些）会按这个区别决定要不要重试。
+	// 混成一个的话，一次限流会被当成鉴权失败，重试逻辑直接放弃。
+	if rule.Type == "rate_limit" {
+		key := rateKeyOf(r.Header.Get("X-Edge-Client-IP"),
+			r.Header.Get("X-Forwarded-Uri"), rule.RateKey)
+		burst := rule.Requests
+		rate := 0.0
+		if rule.WindowSec > 0 {
+			rate = float64(rule.Requests) / float64(rule.WindowSec)
+		}
+		if ok, wait := v.limit.allow(rule.ID+"|"+key, burst, rate); !ok {
+			w.Header().Set("Retry-After", itoaSec(wait))
+			http.Error(w, "too many requests", http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("X-Verified-Rule", ruleID)
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 
@@ -302,3 +365,12 @@ func forwardAuthDials(caddyJSON []byte) []string {
 
 // normalizeAddr 让 unix/ 前缀与 host:port 两种写法可比。
 func normalizeAddr(a string) string { return strings.TrimSpace(a) }
+
+// itoaSec 把等待时长写成 Retry-After 要的整秒数。
+func itoaSec(d time.Duration) string {
+	n := int(d / time.Second)
+	if n < 1 {
+		n = 1
+	}
+	return strconv.Itoa(n)
+}

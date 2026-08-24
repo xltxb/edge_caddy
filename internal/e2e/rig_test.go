@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -278,11 +279,24 @@ func (r *rig) startAgentAt(master, nodeID, token, stateDir string) context.Cance
 	a := agent.New(agent.Config{
 		MasterAddr: master, NodeID: nodeID, Token: token, CAPin: r.caPin,
 		StateDir: stateDir, CaddyAdmin: r.caddy.AdminURL(),
-		TLSProbe:  "unix/" + r.caddy.TLSSocketPath(),
-		Heartbeat: 200 * time.Millisecond,
-		Log:       slog.New(logs.Handler(slog.NewTextHandler(io.Discard, nil))),
-		Logs:      logs,
+		TLSProbe: "unix/" + r.caddy.TLSSocketPath(),
+		// **校验端点必须配上，而它此前一直是空的。**
+		//
+		// 空着的话 CheckVerifyAddr 会拒绝任何引用校验端点的配置——于是
+		// service_secret / jwt_bearer / rate_limit 这三种规则在 e2e 里
+		// **一次也没有真正生效过**。而下发接口照样回成功，
+		// 现有测试只验了规则「存得进去」，全都是绿的。
+		//
+		// ADR-0003 那条委托是「官方 Caddy 没有 JWT/HMAC 模块」的整个解法，
+		// 而它从来没有被真验过。
+		VerifyListen: r.caddy.VerifyDial(),
+		Heartbeat:    200 * time.Millisecond,
+		Log:          slog.New(logs.Handler(slog.NewTextHandler(io.Discard, nil))),
+		Logs:         logs,
 	})
+	// 校验端点的 HTTP 服务由 cmd/agent 起，不在 agent.Run 里 ——
+	// 所以这里要自己起一个，否则 forward_auth 会打到一个没人监听的地址。
+	startVerifyServer(r.t, a, r.caddy.VerifySocketPath())
 	go func() { _ = a.Run(ctx) }()
 	r.t.Cleanup(cancel)
 	return cancel
@@ -502,3 +516,20 @@ func importableCert(t *testing.T, domain string) (certPEM, keyPEM []byte) {
 
 // dnsHits 是假服务商到目前为止收到的请求数。
 func (r *rig) dnsHits() int { return int(atomic.LoadInt32(r.dnsCalls)) }
+
+// startVerifyServer 在节点的回环 socket 上起校验端点。
+//
+// 与 cmd/agent/main.go 里那段等价。**抄一份过来是有代价的**：
+// 那边改了这边不会知道。而把它抽成公共函数要动 cmd 的结构，
+// 眼下不成比例 —— 记在这里，别让它悄悄成为惯例。
+func startVerifyServer(t *testing.T, a *agent.Agent, sock string) {
+	t.Helper()
+	_ = os.Remove(sock)
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("起校验端点: %v", err)
+	}
+	srv := &http.Server{Handler: a.Verify().Handler()}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+}

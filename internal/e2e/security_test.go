@@ -147,3 +147,76 @@ func TestEmptyBlacklistIsRejected(t *testing.T) {
 		t.Fatalf("空黑名单应当以 1002 拒绝，实际 code=%d msg=%q", e.Code, e.Msg)
 	}
 }
+
+// TestRateLimitActuallyThrottles 是限流的真验收：**真请求进真 Caddy**。
+//
+// 走的是 Agent 校验端点（ADR-0003 那条委托）——官方 Caddy 没有限流模块。
+//
+// 这条同时钉住 429：`handle_response` 只匹配 2xx，其余状态码原样回给客户端。
+// **那是一条关于 Caddy 行为的断言**，靠这条测试守着——
+// 它要是变了，症状是限流回 502 而不是 429，而客户端的重试逻辑会因此放弃。
+func TestRateLimitActuallyThrottles(t *testing.T) {
+	r := newRig(t, caddytest.EdgeTCP())
+	setupSite(t, r, "rl.example.com")
+
+	r.mustDo("PUT", "/rules/rl", map[string]any{
+		"name": "限流", "type": "rate_limit", "enabled": true,
+		"apply_to": []string{"rl.example.com"},
+		"spec":     map[string]any{"requests": 3, "window_s": 60, "rate_key": "ip"},
+	})
+	r.deployNow("rule:rl")
+
+	// 桶容量 3：头三个放行。
+	for i := 0; i < 3; i++ {
+		if code, _ := r.curlVia("rl.example.com"); code != 200 {
+			t.Fatalf("第 %d 个请求就被拦了（%d）—— 桶容量是 3", i+1, code)
+		}
+	}
+	// 第四个拦下，而且要是 429 不是 403/502。
+	code, _ := r.curlVia("rl.example.com")
+	if code != 429 {
+		t.Fatalf("超出额度应当回 429，实际 %d —— "+
+			"403 会被客户端当成鉴权失败而放弃重试，502 会被当成服务挂了", code)
+	}
+}
+
+// TestRateLimitIgnoresForgedForwardedFor 钉的是**计数的键攻击者拿不到**。
+//
+// 每次换一个伪造的来源头，如果按它计数就永远打不满 ——
+// 那时限流的键由攻击者控制，等于没有限流。
+//
+// # 它区分不了两个来源，这一点是实测出来的
+//
+// 把实现改成读 X-Forwarded-For，**这条照样绿**。原因：默认配置下
+// Caddy 把客户端发来的 XFF 整个替换成真实来源（实测 XFF=127.0.0.1，
+// 客户端发的 9.9.9.9 消失了），所以两个头在这里都是安全的。
+//
+// **所以它守的是「伪造的头不会开出新桶」，不是「我们读对了那个头」。**
+// 后者由 render.go 里那段注释解释理由（XFF 的含义取决于 trusted_proxies，
+// 而那是会被改的），而**没有任何测试守着它** —— 写出来是为了让下一个人
+// 知道这一层是空的，而不是以为这条绿着就都验过了。
+func TestRateLimitIgnoresForgedForwardedFor(t *testing.T) {
+	r := newRig(t, caddytest.EdgeTCP())
+	setupSite(t, r, "rlx.example.com")
+
+	r.mustDo("PUT", "/rules/rlx", map[string]any{
+		"name": "限流", "type": "rate_limit", "enabled": true,
+		"apply_to": []string{"rlx.example.com"},
+		"spec":     map[string]any{"requests": 2, "window_s": 60},
+	})
+	r.deployNow("rule:rlx")
+
+	// 每次换一个伪造的 XFF —— 如果按它计数，就永远打不满。
+	for i, fake := range []string{"1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4"} {
+		code, _ := r.caddy.Get("rlx.example.com", "/",
+			map[string]string{"X-Forwarded-For": fake,
+				"X-Edge-Client-IP": fake}) // 连这个头也一起伪造试试
+		if i < 2 && code != 200 {
+			t.Fatalf("第 %d 个就被拦（%d）", i+1, code)
+		}
+		if i >= 2 && code != 429 {
+			t.Errorf("第 %d 个换了假 IP 就绕过了限流（%d）—— "+
+				"计数的键被攻击者控制，等于没有限流", i+1, code)
+		}
+	}
+}

@@ -67,6 +67,25 @@ type RuleSpec struct {
 	// 想要「且」就配成两条规则——那让每一条在界面上都能单独开关，
 	// 而一个复合条件是拆不开的，出问题时也说不清是哪一半命中的。
 	Filters []Filter `json:"filters,omitempty"`
+
+	// rate_limit
+	//
+	// **令牌桶**：桶容量 Requests，每 WindowSeconds 补满一次。
+	// 于是它同时表达了两件事——持续速率 Requests/WindowSeconds，
+	// 以及**允许的突发** Requests。
+	//
+	// 滑动窗口计数器只表达前者，而真实流量总是成簇的：
+	// 一个正常用户打开页面会并发十几个请求，按纯速率算它一定会被误伤。
+	Requests      int `json:"requests,omitempty"`
+	WindowSeconds int `json:"window_s,omitempty"`
+
+	// RateKey 是按什么计数：ip | ip_path。
+	//
+	// ip_path 让「同一个 IP 猛刷登录接口」和「它正常浏览别的页面」互不影响，
+	// 代价是内存里的桶数量乘以路径基数——**而路径是攻击者能控制的**。
+	// 所以 ip_path 只在配了 request_filter 限定路径时才有意义，
+	// 默认是 ip。
+	RateKey string `json:"rate_key,omitempty"`
 }
 
 // Filter 是一条请求特征。
@@ -99,6 +118,16 @@ const (
 
 	// RuleRequestFilter 按请求特征拦（UA / 路径 / 请求头 / 查询参数）。
 	RuleRequestFilter = "request_filter"
+
+	// RuleRateLimit 是限流 / CC 防护。
+	//
+	// **它走 Agent 的校验端点**：官方 Caddy 没有限流模块，而这条委托
+	// （ADR-0003）本来就是为「Caddy 做不到的准入判断」建的。
+	//
+	// **计数是每节点各算各的。** 三台节点、每台限 100，全局实际是 300 ——
+	// 这一点必须在界面上说出来：一个人按「我要限 100」去配，
+	// 拿到的是 300，而没有任何地方会告诉他。
+	RuleRateLimit = "rate_limit"
 )
 
 // Policy 是全局策略。spec 的字段清单以高保真设计稿为准，
@@ -132,4 +161,10 @@ type VerifyRule struct {
 	Audience string `json:"aud,omitempty"`
 	JWKSURL  string `json:"jwks_url,omitempty"`
 	SkewSec  int    `json:"skew_s,omitempty"`
+
+	// 限流。**这些值下发到节点上，由 Agent 各自计数** ——
+	// 三台节点每台限 100，全局实际是 300。
+	Requests  int    `json:"requests,omitempty"`
+	WindowSec int    `json:"window_s,omitempty"`
+	RateKey   string `json:"rate_key,omitempty"`
 }
