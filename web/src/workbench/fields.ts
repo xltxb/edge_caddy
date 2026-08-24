@@ -27,7 +27,38 @@ export interface JwtBearerRule extends RuleWire {
   type: 'jwt_bearer'
   spec: { iss: string; aud: string; jwks_url: string; skew_s: number }
 }
-export type RuleDraft = IpWhitelistRule | ServiceSecretRule | JwtBearerRule
+/**
+ * 黑名单。**跟白名单是两个类型，而 spec 一模一样** —— 区别全在 `type` 上。
+ *
+ * 这一点在字段表这一层特别危险：`fieldsFor` 从前对未知 type 兜底成
+ * 白名单那张表，而黑名单的字段恰好也叫 `ips` —— **表单会正常工作，
+ * 每一句文案都在说「允许的来源」，而人正在编辑一条拦截规则。**
+ * 兜底已经改掉，见 `fieldsFor`。
+ */
+export interface IpBlacklistRule extends RuleWire {
+  type: 'ip_blacklist'
+  spec: { ips: string[] }
+}
+export interface RequestFilterRule extends RuleWire {
+  type: 'request_filter'
+  spec: { filters: { field: string; op: string; value: string; name?: string }[] }
+}
+export interface RateLimitRule extends RuleWire {
+  type: 'rate_limit'
+  spec: { requests: number; window_s: number; rate_key: string }
+}
+export interface GeoBlockRule extends RuleWire {
+  type: 'geo_block'
+  spec: { geo_mode: string; geo_countries: string[] }
+}
+export type RuleDraft =
+  | IpWhitelistRule
+  | IpBlacklistRule
+  | RequestFilterRule
+  | RateLimitRule
+  | GeoBlockRule
+  | ServiceSecretRule
+  | JwtBearerRule
 
 export interface TlsPolicy extends PolicyWire {
   spec: {
@@ -163,6 +194,205 @@ export const IP_WHITELIST_FIELDS = fieldsOf<RuleDraft>([
       const bad = invalidIps((v.spec as { ips?: string[] }).ips)
       if (bad.length === 0) return null
       return `${bad.length} 行不是合法 IP 或 CIDR：${bad.slice(0, 2).join('、')}`
+    },
+  },
+  APPLY_TO_FIELD,
+])
+
+/**
+ * 黑名单。**跟白名单只差一个 `not`**（契约 §6.2）—— 而这张表跟那张表
+ * 除了文案几乎一样，正是那件事在界面上的样子。
+ *
+ * 空名单两者都被后端拒，而**理由相反**，所以两句提示词不同：
+ * 空白名单拦下所有人（一次事故），空黑名单谁也拦不到（一条静默失效的规则）。
+ * 界面上它们长得一模一样：一条启用着的规则。
+ */
+export const IP_BLACKLIST_FIELDS = fieldsOf<RuleDraft>([
+  ENABLED_FIELD,
+  {
+    kind: 'area',
+    field: 'spec.ips',
+    label: '拦截的来源 IP',
+    rows: 7,
+    hint: (v) =>
+      `共 ${normalizeLines((v.spec as { ips?: string[] }).ips).length} 条。名单里的来源按各域名自己的处置方式（abort / 403）拦下，其余放行。`,
+    validate: (v) => {
+      const ips = normalizeLines((v.spec as { ips?: string[] }).ips)
+      /*
+       * **空黑名单的提示词跟空白名单相反。**
+       *
+       * 空白名单是「拦下所有人」——一次事故，人会立刻发现。
+       * 空黑名单是「谁也拦不到」——一条**静默失效**的规则，没有任何症状。
+       * 两者在列表上长得一模一样：一条启用着的规则。
+       */
+      if (ips.length === 0) return '名单是空的 —— 这条规则谁也拦不到，而它看起来是启用着的'
+      const bad = invalidIps((v.spec as { ips?: string[] }).ips)
+      if (bad.length === 0) return null
+      return `${bad.length} 行不是合法 IP 或 CIDR：${bad.slice(0, 2).join('、')}`
+    },
+  },
+  APPLY_TO_FIELD,
+])
+
+/**
+ * 请求特征过滤。**多条之间是「或」**（契约 §6.2）。
+ *
+ * 那一点写在字段的 hint 里而不是文档里：人配第二条时就该看见「命中任一即拦」，
+ * 而不是配完四条之后发现它们不是「且」。想要「且」是配成两条规则 ——
+ * 顺带那让每条都能单独开关。
+ */
+export const REQUEST_FILTER_FIELDS = fieldsOf<RuleDraft>([
+  ENABLED_FIELD,
+  {
+    kind: 'filters',
+    field: 'spec.filters',
+    label: '请求特征',
+    hint: (v) => {
+      const n = (v.spec as { filters?: unknown[] }).filters?.length ?? 0
+      if (n <= 1) return '命中这条特征的请求会被拦下。'
+      return `共 ${n} 条，命中任一即拦 —— 不是「全部满足」。要「且」的话配成两条规则，那也让每条能单独开关。`
+    },
+    validate: (v) => {
+      const fs = (v.spec as { filters?: { field?: string; op?: string; value?: string }[] }).filters ?? []
+      if (fs.length === 0) return '一条特征都没有 —— 这条规则谁也拦不到，而它看起来是启用着的'
+      const empty = fs.findIndex((f) => !f.value)
+      if (empty >= 0) return `第 ${empty + 1} 条没填要匹配的值`
+      return null
+    },
+  },
+  APPLY_TO_FIELD,
+])
+
+/**
+ * 限流。**令牌桶，不是滑动窗口**（契约 §6.2）。
+ *
+ * `requests` 同时是持续速率的分子和**允许的突发**。说「每 60 秒 100 次，
+ * 允许一次性来 100 个」比说「限速」准确 —— 纯速率会误伤正常用户
+ * （一个人打开页面会并发十几个请求），**而被误伤过一次的限流，人会直接关掉它，
+ * 那时它防的东西一样进得来**。
+ *
+ * 这张表要说的最要紧的一件事在 `spec.requests` 的 hint 里：**每节点各算各的**。
+ */
+export function rateLimitFields(nodeCount: number): FieldSpec<RuleDraft>[] {
+  return fieldsOf<RuleDraft>([
+    ENABLED_FIELD,
+    {
+      kind: 'text',
+      field: 'spec.requests',
+      label: '桶容量（次）',
+      width: '130px',
+      numeric: true,
+      /*
+       * **「三台节点、每台限 100，全局实际是 300」要在编辑那一刻说。**
+       *
+       * 一个人按「我要限 100」去配，拿到的是 300 —— 而没有任何地方会告诉他。
+       * 保存后再提示是最差的时机：那时他已经认定自己配好了。
+       *
+       * 这不是能修的：要全局就得有共享计数器，而那给每个请求加一次跨机往返，
+       * **在边缘节点上，那个往返比它要防的攻击更容易先把自己拖垮**。
+       * 修不了的事情就得说清楚。
+       *
+       * `nodeCount` 为 0 时不说那句话 —— 那多半是节点列表还没加载，
+       * 而「全局约 0」是一句假话。宁可少说一句。
+       */
+      hint: (v) => {
+        const n = Number((v.spec as { requests?: number }).requests ?? 0)
+        const base = '桶容量，同时是允许的突发量：一次性来这么多个也放行。'
+        if (!nodeCount || !n) return base
+        return `${base} 计数每节点各算各的 —— 当前 ${nodeCount} 个节点，全局约 ${n * nodeCount} 次。`
+      },
+      validate: (v) =>
+        isPositiveInt((v.spec as { requests?: number }).requests) ? null : '必须是正整数',
+    },
+    {
+      kind: 'text',
+      field: 'spec.window_s',
+      label: '补满周期（秒）',
+      width: '130px',
+      numeric: true,
+      hint: (v) => {
+        const s = v.spec as { requests?: number; window_s?: number }
+        const r = Number(s.requests ?? 0)
+        const w = Number(s.window_s ?? 0)
+        if (!r || !w) return '每隔这么久把桶补满一次。'
+        return `每隔这么久把桶补满一次 —— 持续速率约 ${(r / w).toFixed(1)} 次/秒。`
+      },
+      validate: (v) =>
+        isPositiveInt((v.spec as { window_s?: number }).window_s) ? null : '必须是正整数',
+    },
+    {
+      kind: 'seg',
+      field: 'spec.rate_key',
+      label: '按什么分桶',
+      options: [
+        ['ip', '来源 IP'],
+        ['ip_path', 'IP + 路径'],
+      ],
+      /*
+       * **`ip_path` 只在配了 request_filter 限定路径时才有意义**（契约 §6.2）。
+       *
+       * 路径是**攻击者能控制的** —— 不限定路径的话，他每次换一个路径就是一个
+       * 新桶，限流等于不存在。而这个开关本身看起来只是「更精细一点」。
+       */
+      hint: (v) =>
+        (v.spec as { rate_key?: string }).rate_key === 'ip_path'
+          ? '每个「IP + 路径」一个桶，让猛刷登录接口不影响正常浏览。但路径是攻击者能控的 —— 只在另配了一条请求特征规则限定路径时才有意义，否则他换个路径就是一个新桶。'
+          : '每个来源 IP 一个桶。超额回 429 + Retry-After，不是 403。',
+    },
+    APPLY_TO_FIELD,
+  ])
+}
+
+/**
+ * 地域封禁 / 放行。
+ *
+ * **两个方向都要显式给，没有默认**（契约 §6.2）—— 与 IP 黑白名单同一条理由：
+ * 默认方向相反，猜错一个就是把站点封了或者敞开了。
+ */
+export const GEO_BLOCK_FIELDS = fieldsOf<RuleDraft>([
+  ENABLED_FIELD,
+  {
+    kind: 'seg',
+    field: 'spec.geo_mode',
+    label: '方向',
+    options: [
+      ['block', '拦名单里的'],
+      ['allow', '只放名单里的'],
+    ],
+    /*
+     * **「查不到国家」两个方向的行为相反**（契约 §6.2）：
+     * block 模式放行，allow 模式拦。
+     *
+     * 内网地址、保留段在库里查不到国家。一个「只放行中国」的规则不能因为
+     * 查不到就把人放进来 —— 这一档是这个选择器真正的分量所在，
+     * 而它在两个选项的名字上完全看不出来。
+     */
+    hint: (v) =>
+      (v.spec as { geo_mode?: string }).geo_mode === 'allow'
+        ? '只放名单里的国家，其余一律拦。查不到国家的来源也拦 —— 内网地址、保留段查不到。'
+        : '拦名单里的国家，其余放行。查不到国家的来源也放行。',
+  },
+  {
+    kind: 'area',
+    field: 'spec.geo_countries',
+    label: '国家 / 地区',
+    rows: 5,
+    hint: (v) => {
+      const n = normalizeLines((v.spec as { geo_countries?: string[] }).geo_countries).length
+      return `每行一个 ISO 3166-1 alpha-2 两位大写代码（CN / US / HK），共 ${n} 个。`
+    },
+    validate: (v) => {
+      const list = normalizeLines((v.spec as { geo_countries?: string[] }).geo_countries)
+      if (list.length === 0) return '一个国家都没填 —— 这条规则不会做任何事'
+      /*
+       * **小写会被后端拒，而它的失败方式是静默的**：mmdb 里存的是大写，
+       * 配 `cn` 匹配不到任何东西。所以本地就拦，别等下发。
+       *
+       * 判据是「两位且全大写」——写全称（`China`）同样落进这一条。
+       */
+      const bad = list.filter((c) => !/^[A-Z]{2}$/.test(c))
+      if (bad.length === 0) return null
+      return `${bad.length} 个不是两位大写代码：${bad.slice(0, 3).join('、')} —— 小写在 mmdb 里匹配不到任何东西`
     },
   },
   APPLY_TO_FIELD,
@@ -341,15 +571,23 @@ export const LOG_FIELDS = fieldsOf<LogPolicy>([
     offText: '保留默认响应头。',
   },
   /*
-   * 限流三项：**官方 Caddy 没有限流模块**。
+   * 限流三项：**官方 Caddy 没有限流模块**，所以这个全局开关做不到。
    *
    * 2.11.4 的 132 个标准模块里一个都没有，caddy-ratelimit 是插件；要装它就得
    * 自建 Caddy 二进制，而「节点跑官方包」是 ADR-0001 与 ADR-0003 **共同的**前提。
-   * 设计稿画了这个开关，但画得出不等于做得到 —— 这已是第三次（前两次是
-   * 「回源率靠缓存」与「Cloudflare 分线路权重」）。
    *
    * 置灰而不是删掉：删掉的话，看过设计稿的人会以为这一版还没做，过两天再问一次；
    * 置灰 + 就地说清原因，问题当场被回答掉。
+   *
+   * ## 而现在限流做得到了 —— 走的是另一条路
+   *
+   * 后端把它做成了一种**访问规则**（`rate_limit`），由 Caddy 通过 forward_auth
+   * 委托给节点上的 Agent 判断（ADR-0003 那条委托本来就是为「Caddy 做不到的
+   * 准入判断」建的）。契约 §6.3 这个全局开关仍然是 1002，两件事不冲突。
+   *
+   * **但界面上会冲突**：人在这里看到「做不到」，转头在访问控制里建了一条
+   * 工作正常的限流规则。那句话没错，而**一句只说了一半的实话，
+   * 读起来跟假话一样**。所以这里要指路 —— 它是这一版唯一会看到这个开关的地方。
    */
   {
     kind: 'switch',
@@ -361,9 +599,11 @@ export const LOG_FIELDS = fieldsOf<LogPolicy>([
     unavailable: (v) =>
       v.spec.rate_limit === true
         ? null
-        : '官方 Caddy 没有限流模块（caddy-ratelimit 是插件），当前做不到。要用它就得自建 Caddy 二进制，而那会推翻「节点跑官方包」这个前提。',
+        : '官方 Caddy 没有限流模块，这个全局开关做不到。要限流请在访问控制里新建一条「限流」规则 —— 那条由节点上的 Agent 判断，还能按域名分别配。',
     validate: (v) =>
-      v.spec.rate_limit === true ? '这条会让下发被拒绝：官方 Caddy 没有限流模块。请关掉。' : null,
+      v.spec.rate_limit === true
+        ? '这条会让下发被拒绝：官方 Caddy 没有限流模块。请关掉，改用访问控制里的「限流」规则。'
+        : null,
   },
   // 条件字段：契约 §6.3 说 rate_limit=false 时这两个键可能根本不存在，
   // 关闭时不渲染，也不要偷偷填默认值——那会让 diff 里凭空多出两行。
@@ -375,7 +615,7 @@ export const LOG_FIELDS = fieldsOf<LogPolicy>([
     width: '130px',
     numeric: true,
     visible: (v) => v.spec.rate_limit === true,
-    unavailable: () => '限流做不到，这个值不会生效。',
+    unavailable: () => '这个全局开关做不到，这个值不会生效。限流请用访问控制里的规则。',
   },
   {
     kind: 'text',
@@ -384,19 +624,59 @@ export const LOG_FIELDS = fieldsOf<LogPolicy>([
     width: '130px',
     numeric: true,
     visible: (v) => v.spec.rate_limit === true,
-    unavailable: () => '限流做不到，这个值不会生效。',
+    unavailable: () => '这个全局开关做不到，这个值不会生效。限流请用访问控制里的规则。',
   },
 ])
 
-/** 按资源 key 与其有效值挑出该用哪张表。 */
-export function fieldsFor(resKey: string, value: unknown): FieldSpec<never>[] {
+/**
+ * 字段表需要的、**字段值以外**的上下文。
+ *
+ * 加这个参数是因为有两句话光看草稿说不出来：限流要说「当前 N 个节点，
+ * 全局约 N×100」，而 N 不在这条规则里；请求特征的 op 下拉要照后端报的表渲染，
+ * 那张表也不在这条规则里。
+ *
+ * 传成参数而不是让字段表去 import store：字段表是纯的，
+ * 而那正是它能被单测逐条证伪的原因。
+ */
+export interface FieldsContext {
+  /** 当前节点数。限流那句「全局约 N×100」用。0 = 还不知道，那句话就不说。 */
+  nodeCount?: number
+}
+
+/**
+ * 按资源 key 与其有效值挑出该用哪张表。
+ *
+ * ## 未知类型不再兜底成白名单
+ *
+ * 这里原先是 `return IP_WHITELIST_FIELDS`，对任何认不出的 type 都给白名单那张表。
+ * 加进四种新类型的那一刻，**这个兜底会变成一个安静的错**：
+ *
+ * `ip_blacklist` 的 spec 跟白名单一模一样（都只有一个 `ips`），
+ * 于是那张表**正常工作** —— 输入框在、校验在、保存也对，
+ * 而每一句文案都在说「允许的来源」，**人正在编辑的是一条拦截规则**。
+ *
+ * 另外三种更明显（字段对不上，表单是空的），但同样不报错。
+ *
+ * 现在返回空表：**一张空表在界面上是看得见的**（工作台会显示「这个类型
+ * 还没有编辑器」），而一张错的表看起来跟对的一样。
+ */
+export function fieldsFor(
+  resKey: string,
+  value: unknown,
+  ctx: FieldsContext = {},
+): FieldSpec<never>[] {
   const kind = resKey.slice(0, resKey.indexOf(':'))
   if (kind === 'route') return ROUTE_FIELDS as FieldSpec<never>[]
   if (kind === 'rule') {
     const t = (value as RuleWire).type
+    if (t === 'ip_whitelist') return IP_WHITELIST_FIELDS as FieldSpec<never>[]
+    if (t === 'ip_blacklist') return IP_BLACKLIST_FIELDS as FieldSpec<never>[]
+    if (t === 'request_filter') return REQUEST_FILTER_FIELDS as FieldSpec<never>[]
+    if (t === 'rate_limit') return rateLimitFields(ctx.nodeCount ?? 0) as FieldSpec<never>[]
+    if (t === 'geo_block') return GEO_BLOCK_FIELDS as FieldSpec<never>[]
     if (t === 'service_secret') return SERVICE_SECRET_FIELDS as FieldSpec<never>[]
     if (t === 'jwt_bearer') return JWT_BEARER_FIELDS as FieldSpec<never>[]
-    return IP_WHITELIST_FIELDS as FieldSpec<never>[]
+    return []
   }
   const id = resKey.slice(resKey.indexOf(':') + 1)
   return (id === 'tls' ? TLS_FIELDS : LOG_FIELDS) as FieldSpec<never>[]

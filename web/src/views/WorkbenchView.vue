@@ -10,11 +10,13 @@ import { useConfigStore } from '@/stores/config'
 import { useDeployStore } from '@/stores/deploy'
 import { useUiStore } from '@/stores/ui'
 import { fieldsFor } from '@/workbench/fields'
+import { useNodesStore } from '@/stores/nodes'
 import { readableFor } from '@/workbench/readable'
 
 const route = useRoute()
 const router = useRouter()
 const config = useConfigStore()
+const nodes = useNodesStore()
 const deploy = useDeployStore()
 const ui = useUiStore()
 
@@ -22,6 +24,12 @@ const modalOpen = ref(false)
 
 onMounted(async () => {
   if (!config.routes.length) void config.fetchAll().catch(() => {})
+  /*
+   * **限流那条要节点数**：编辑时就要说出「当前 N 个节点，全局约 N×100」
+   * （契约 §6.2）。不拉的话 N 是 0，那句话就不会出现 ——
+   * 而人配「100」时看不见「300」，正是这条提示存在的理由。
+   */
+  if (!nodes.items.length) void nodes.fetchAll().catch(() => {})
   // 刷新时如果有一次下发还在进行，把它接回来 —— 下发在主控侧照常跑，
   // 前端不接的话，人会以为它消失了。
   if (await deploy.resume()) modalOpen.value = true
@@ -57,8 +65,19 @@ const isServiceSecret = computed(
 const live = computed(() => config.live(selected.value))
 const effective = computed(() => config.effective(selected.value))
 const patch = computed(() => config.patches[selected.value])
+/**
+ * 字段表要的、字段值以外的东西。
+ *
+ * 现在只有一样：**节点数** —— 限流那条要在编辑时就说出
+ * 「当前 N 个节点，全局约 N×100」（契约 §6.2）。
+ *
+ * `nodes.items` 没加载时是 0，而字段表在 0 上**不说那句话** ——
+ * 「全局约 0 次」是一句假话，宁可少说一句。下面 onMounted 顺带拉一次。
+ */
+const fieldCtx = computed(() => ({ nodeCount: nodes.items.length }))
+
 const specs = computed(() =>
-  effective.value ? fieldsFor(selected.value, effective.value) : [],
+  effective.value ? fieldsFor(selected.value, effective.value, fieldCtx.value) : [],
 )
 const domains = computed(() => config.routes.map((r) => r.domain))
 
@@ -180,6 +199,8 @@ watch(selected, () => {
           :live="live!"
           :patch="patch"
           :domain-choices="domains"
+          :filter-fields="config.filterFields"
+          :filter-needs-name="config.filterNeedsName"
           :server-errors="serverErrors"
           @change="onChange"
         />

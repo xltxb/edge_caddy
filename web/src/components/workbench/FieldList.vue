@@ -2,9 +2,11 @@
 import { computed } from 'vue'
 import VAreaField from './VAreaField.vue'
 import VChipsField from './VChipsField.vue'
+import VFiltersField from './VFiltersField.vue'
 import VSegField from './VSegField.vue'
 import VSwitchField from './VSwitchField.vue'
 import VTextField from './VTextField.vue'
+import type { RequestFilter } from '@/api/types'
 import type { FieldSpec } from '@/workbench/field-spec'
 import { getPath, isVisible, resolveHint, resolveUnavailable } from '@/workbench/field-spec'
 import { isFieldDirty, type Patch } from '@/workbench/draft'
@@ -24,6 +26,14 @@ const props = defineProps<{
   patch: Patch | undefined
   /** chips 字段的候选项（当前全部域名） */
   domainChoices: string[]
+  /**
+   * 请求特征的 field → 允许的 op，由后端报（契约 §6.2）。`null` = 主控太旧。
+   *
+   * 一路传下来而不是让 VFiltersField 自己去 store 拿：这个组件保持纯的，
+   * 它渲染什么完全由传进来的东西决定 —— 那是它能被单独测的原因。
+   */
+  filterFields?: Record<string, string[]> | null
+  filterNeedsName?: Record<string, boolean> | null
   /** 后端回来的校验错误，按字段路径索引（契约 §0.3 的 field 是点号路径） */
   serverErrors?: Record<string, string>
 }>()
@@ -40,6 +50,17 @@ const fieldId = (path: string) => `f-${path.replace(/[^a-zA-Z0-9]/g, '-')}`
 
 interface Row {
   spec: FieldSpec<never>
+  /**
+   * `spec.kind` 的副本。
+   *
+   * 模板里那个兜底分支拿到的 `spec` 是 `never`（所有 kind 都分派掉了），
+   * 于是 `r.spec.kind` 通不过类型检查 —— 而**「所有 kind 都分派掉了」这件事
+   * 没有编译期保障**：Vue 模板给不了穷尽性检查，加一个新 kind 而忘了分派时，
+   * 那个 v-else 会安静地接住它。
+   *
+   * 所以兜底留着，而 kind 从这里取 —— 它在 script 里是普通字符串。
+   */
+  kind: string
   group: string
   dirty: boolean
   /** 本地校验 + 后端校验，本地优先（它更即时） */
@@ -57,6 +78,7 @@ const rows = computed<Row[]>(() =>
       const local = spec.validate ? spec.validate(props.value as never) : null
       return {
         spec,
+        kind: spec.kind,
         group: spec.group ?? '',
         dirty: isFieldDirty(props.live, props.patch, spec.field),
         error: local ?? props.serverErrors?.[spec.field] ?? null,
@@ -141,13 +163,35 @@ function switchWarn(r: Row): boolean {
             />
             <span class="switch-text" :class="{ warn: switchWarn(r) }">{{ switchText(r) }}</span>
           </div>
+          <VFiltersField
+            v-else-if="r.spec.kind === 'filters'"
+            :id="fieldId(r.spec.field)"
+            :model-value="(r.current as RequestFilter[] | undefined)"
+            :disabled="!!r.unavailable"
+            :fields="filterFields ?? null"
+            :needs-name="filterNeedsName ?? null"
+            @update:model-value="(v) => emit('change', r.spec.field, v)"
+          />
+
           <VChipsField
-            v-else
+            v-else-if="r.spec.kind === 'chips'"
             :model-value="r.current"
             :choices="domainChoices"
             :dirty="r.dirty"
             @update:model-value="(v) => emit('change', r.spec.field, v)"
           />
+
+          <!--
+            **认不出的 kind 要看得见，不能兜底成某个控件。**
+
+            这里原先是 `VChipsField v-else` —— 任何新加的 kind 都会被渲染成
+            域名标签框。加 `filters` 的那一刻它就会掉进去：一个域名选择器，
+            摆在「请求特征」的标签下面，**而它工作正常**（能选、能存），
+            只是存进去的东西完全不对。
+
+            跟 `fieldsFor` 那个兜底是同一个形状，在同一次改动里出现了两次。
+          -->
+          <p v-else class="err">这个字段的控件（{{ r.kind }}）还没有实现</p>
 
           <!--
             三条说明只出现一条，优先级是 错误 > 做不到 > 提示。

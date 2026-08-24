@@ -65,3 +65,30 @@ describe('限流关着时的表现', () => {
     expect(field('spec.rate_limit').validate!(logPolicy({}))).toBeNull()
   })
 })
+
+/**
+ * **这个全局开关做不到，而限流本身现在做得到了 —— 走的是另一条路。**
+ *
+ * 后端把限流做成了一种访问规则（`rate_limit`），由 Caddy 通过 forward_auth
+ * 委托给节点上的 Agent。契约 §6.3 这个全局开关仍然是 1002，两件事不冲突。
+ *
+ * 但界面上会冲突：人在工作台看到「做不到」，转头在访问控制里建了一条工作正常
+ * 的限流规则。那句话没错，而**一句只说了一半的实话，读起来跟假话一样**。
+ *
+ * 这条钉住那半句。它不验「限流规则能不能用」—— 那是别处的事；
+ * 它验的是**这里不会把人拦在一条其实走得通的路前面**。
+ */
+describe('这个开关做不到，但要指出哪条路走得通', () => {
+  it('置灰的理由里要指向访问控制的限流规则', () => {
+    const reason = resolveUnavailable(field('spec.rate_limit'), logPolicy({}))!
+    expect(reason, '只说了做不到，没说另一条路 —— 人会以为这个系统不能限流').toContain(
+      '访问控制',
+    )
+  })
+
+  it('已经打开时那条错误也要指路，而不只是「请关掉」', () => {
+    const f = field('spec.rate_limit')
+    const msg = f.validate!(logPolicy({ rate_limit: true }))!
+    expect(msg).toContain('访问控制')
+  })
+})

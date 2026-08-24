@@ -67,6 +67,22 @@ export interface SwitchField<T> extends FieldBase<T> {
   offWarn?: boolean
 }
 
+/**
+ * 请求特征的行编辑器。**专用，不是通用的「对象数组」控件。**
+ *
+ * 做成专用的是有意的：通用化要在这张描述表里再嵌一层「列的描述表」，
+ * 而 ADR-0012 提醒过 schema 驱动容易滑进类型迷宫 —— 这个 kind 只有一处用
+ * （`request_filter.filters`），换来的通用性没有买主。
+ *
+ * 下拉的选项**不在这里写死**：`field → 允许的 op` 由后端报在 `GET /rules` 里
+ * （契约 §6.2），与它的校验共用同一张表。界面抄一份的代价是分叉，而分叉两个
+ * 方向不对称：**给出一个后端会拒的选项**（人配完被拒，还看得见），
+ * 或者**藏起一个后端接受的**（从界面上完全看不出来）。后者更贵。
+ */
+export interface FiltersField<T> extends FieldBase<T> {
+  kind: 'filters'
+}
+
 /** 域名绑定。空数组 = 未绑定，规则不生效 —— 不是「对所有域名生效」。 */
 export interface ChipsField<T> extends FieldBase<T> {
   kind: 'chips'
@@ -78,6 +94,7 @@ export type FieldSpec<T> =
   | SegField<T>
   | SwitchField<T>
   | ChipsField<T>
+  | FiltersField<T>
 
 /** 声明一张字段表。存在的意义是把 T 绑上去，让回调里的 v 有类型。 */
 export function fieldsOf<T>(specs: FieldSpec<T>[]): FieldSpec<T>[] {
