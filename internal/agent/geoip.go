@@ -1,9 +1,13 @@
 package agent
 
 import (
+	"bytes"
+	"compress/gzip"
 	"errors"
+	"io"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/oschwald/maxminddb-golang/v2"
@@ -122,4 +126,39 @@ func geoAllows(country string, mode string, list []string) bool {
 	}
 	// 黑名单：在名单里的拦。查不到国家的放行。
 	return !in
+}
+
+// GeoDBPath 是 GeoIP 库在节点上的落点。
+//
+// 与回源证书同一个目录：那个目录已经是 Agent 独占且权限收好的，
+// 而多开一个目录意味着多一处要在部署脚本里对齐的路径。
+func GeoDBPath(stateDir string) string {
+	if stateDir == "" {
+		stateDir = "/var/lib/edge-agent"
+	}
+	return filepath.Join(stateDir, "GeoLite2-Country.mmdb")
+}
+
+// writeGeoDB 把解压后的库原子写入落点。
+//
+// **先写临时文件再 rename。** 直接覆写的话，写到一半时进程挂掉会留下
+// 一个截断的文件 —— 而 maxminddb 打开它会报一句关于格式的错，
+// 那句话不会让人想到「上次写库被打断了」。
+func writeGeoDB(path string, mmdb []byte) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, mmdb, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// gunzip 解开主控推来的那份。
+func gunzip(b []byte) ([]byte, error) {
+	zr, err := gzip.NewReader(bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+	// 上限与主控那边一致：一条构造出来的消息不该让节点把内存吃光。
+	return io.ReadAll(io.LimitReader(zr, 32<<20))
 }

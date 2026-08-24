@@ -142,17 +142,36 @@ func New(o Options) (*Server, error) {
 	}
 
 	s := &Server{opt: o, log: o.Log, sessions: map[string]*session{}}
-	s.grpc = grpc.NewServer(grpc.Creds(credentials.NewTLS(&tls.Config{
-		Certificates: []tls.Certificate{cert},
-		// VerifyClientCertIfGiven 而不是 RequireAndVerify：接入首连时节点还没有
-		// 客户端证书，那一次靠一次性 Token 认证。给了证书就必须验得过。
-		ClientAuth: tls.VerifyClientCertIfGiven,
-		ClientCAs:  roots,
-		MinVersion: tls.VersionTLS12,
-	})))
+	s.grpc = grpc.NewServer(
+		grpc.Creds(credentials.NewTLS(&tls.Config{
+			Certificates: []tls.Certificate{cert},
+			// VerifyClientCertIfGiven 而不是 RequireAndVerify：接入首连时节点还没有
+			// 客户端证书，那一次靠一次性 Token 认证。给了证书就必须验得过。
+			ClientAuth: tls.VerifyClientCertIfGiven,
+			ClientCAs:  roots,
+			MinVersion: tls.VersionTLS12,
+		})),
+		// **GeoIP 库要经这条流下发，而它比默认上限大。**
+		//
+		// gRPC 默认收发上限是 4MB，GeoLite2-Country 原始约 9MB
+		// （压缩后约 3MB，靠近那条线）。撞上去的报错是
+		// 「received message larger than max」——一句不会让人想到
+		// 「换个库文件就好」的话。
+		//
+		// 两侧都要调：只调一侧的话，超限的那一端会在**发送时**就失败，
+		// 而另一端连一条日志都不会有。
+		grpc.MaxRecvMsgSize(maxTunnelMsgBytes),
+		grpc.MaxSendMsgSize(maxTunnelMsgBytes),
+	)
 	edgev1.RegisterEdgeTunnelServer(s.grpc, s)
 	return s, nil
 }
+
+// maxTunnelMsgBytes 是隧道上单条消息的上限。
+//
+// 32MB：GeoLite2-Country 约 9MB，留三倍余量。**不设成无限**——
+// 无限意味着一条构造出来的消息就能把主控的内存吃光。
+const maxTunnelMsgBytes = 32 << 20
 
 func (s *Server) Serve(lis net.Listener) error {
 	s.log.Info("gRPC 隧道监听", "addr", lis.Addr().String())

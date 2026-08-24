@@ -191,6 +191,7 @@ type MasterMsg struct {
 	//	*MasterMsg_Probe
 	//	*MasterMsg_Drain
 	//	*MasterMsg_Enrolled
+	//	*MasterMsg_GeoDb
 	M             isMasterMsg_M `protobuf_oneof:"m"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -269,6 +270,15 @@ func (x *MasterMsg) GetEnrolled() *Enrolled {
 	return nil
 }
 
+func (x *MasterMsg) GetGeoDb() *PushGeoDB {
+	if x != nil {
+		if x, ok := x.M.(*MasterMsg_GeoDb); ok {
+			return x.GeoDb
+		}
+	}
+	return nil
+}
+
 type isMasterMsg_M interface {
 	isMasterMsg_M()
 }
@@ -289,6 +299,10 @@ type MasterMsg_Enrolled struct {
 	Enrolled *Enrolled `protobuf:"bytes,5,opt,name=enrolled,proto3,oneof"` // 增补：接入握手的应答，承载隧道客户端证书
 }
 
+type MasterMsg_GeoDb struct {
+	GeoDb *PushGeoDB `protobuf:"bytes,6,opt,name=geo_db,json=geoDb,proto3,oneof"`
+}
+
 func (*MasterMsg_Push) isMasterMsg_M() {}
 
 func (*MasterMsg_Probe) isMasterMsg_M() {}
@@ -296,6 +310,8 @@ func (*MasterMsg_Probe) isMasterMsg_M() {}
 func (*MasterMsg_Drain) isMasterMsg_M() {}
 
 func (*MasterMsg_Enrolled) isMasterMsg_M() {}
+
+func (*MasterMsg_GeoDb) isMasterMsg_M() {}
 
 type Hello struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -440,8 +456,14 @@ type Heartbeat struct {
 	// 回源率（api-contract §3）：origin_total / req_total。
 	// 注意这不是缓存命中率——官方 Caddy 没有缓存模块，没到达 upstream 的请求
 	// 是被访问规则拦下或由静态响应处理掉的。
-	ReqTotal      uint64 `protobuf:"varint,8,opt,name=req_total,json=reqTotal,proto3" json:"req_total,omitempty"`
-	OriginTotal   uint64 `protobuf:"varint,9,opt,name=origin_total,json=originTotal,proto3" json:"origin_total,omitempty"`
+	ReqTotal    uint64 `protobuf:"varint,8,opt,name=req_total,json=reqTotal,proto3" json:"req_total,omitempty"`
+	OriginTotal uint64 `protobuf:"varint,9,opt,name=origin_total,json=originTotal,proto3" json:"origin_total,omitempty"`
+	// geo_db_sha 是本机 GeoIP 库的 SHA-256（十六进制），没有库时为空。
+	//
+	// **由节点报「它自己那份」，而不是主控记「我推过什么」**：主控记账的话，
+	// 一次推送失败之后它会一直以为节点有库，而那个域名的地域规则一直不生效
+	// —— 与 cfg_version 是同一条理由。
+	GeoDbSha      string `protobuf:"bytes,10,opt,name=geo_db_sha,json=geoDbSha,proto3" json:"geo_db_sha,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -537,6 +559,13 @@ func (x *Heartbeat) GetOriginTotal() uint64 {
 		return x.OriginTotal
 	}
 	return 0
+}
+
+func (x *Heartbeat) GetGeoDbSha() string {
+	if x != nil {
+		return x.GeoDbSha
+	}
+	return ""
 }
 
 type PushConfig struct {
@@ -1171,6 +1200,76 @@ func (x *CertEntry) GetFingerprint() string {
 	return ""
 }
 
+// PushGeoDB 把 GeoIP 库推给节点。
+//
+// **它不搭配置下发的车。** 库几周才换一次，而配置一天可能下发几十次——
+// 搭车的话每次下发都要多传几 MB，而其中绝大多数是同一份内容。
+//
+// 反过来也不行（只在配置下发时捎带）：那样一台**配置从没变过**的节点
+// 永远拿不到库，而它上面的地域规则一直不生效。
+//
+// 触发是主控在心跳里发现 geo_db_sha 与库里那份不一致。
+type PushGeoDB struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// gz 压缩的 mmdb。GeoLite2-Country 原始约 9MB，压缩后约 3MB。
+	//
+	// **压缩不是为了省带宽，是为了不撞 gRPC 的消息上限。** 默认上限是 4MB，
+	// 原始文件过不去——而它的报错是「received message larger than max」，
+	// 一句不会让人想到「换个库文件就好」的话。
+	// 两侧的上限也一并调高了（internal/tunnel 与 internal/agent），
+	// 压缩只是让常见情况离那条线远一点。
+	MmdbGz []byte `protobuf:"bytes,1,opt,name=mmdb_gz,json=mmdbGz,proto3" json:"mmdb_gz,omitempty"`
+	// sha256 是**解压后**文件的哈希，与心跳里报的那个同源。
+	// 用压缩前的：换一个压缩级别会改变压缩后的字节，而库本身没变。
+	Sha256        string `protobuf:"bytes,2,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PushGeoDB) Reset() {
+	*x = PushGeoDB{}
+	mi := &file_edge_v1_edge_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PushGeoDB) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PushGeoDB) ProtoMessage() {}
+
+func (x *PushGeoDB) ProtoReflect() protoreflect.Message {
+	mi := &file_edge_v1_edge_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PushGeoDB.ProtoReflect.Descriptor instead.
+func (*PushGeoDB) Descriptor() ([]byte, []int) {
+	return file_edge_v1_edge_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *PushGeoDB) GetMmdbGz() []byte {
+	if x != nil {
+		return x.MmdbGz
+	}
+	return nil
+}
+
+func (x *PushGeoDB) GetSha256() string {
+	if x != nil {
+		return x.Sha256
+	}
+	return ""
+}
+
 var File_edge_v1_edge_proto protoreflect.FileDescriptor
 
 const file_edge_v1_edge_proto_rawDesc = "" +
@@ -1185,12 +1284,13 @@ const file_edge_v1_edge_proto_rawDesc = "" +
 	"\x05certs\x18\x05 \x01(\v2\x11.edge.v1.CertListH\x00R\x05certs\x129\n" +
 	"\fprobe_result\x18\x06 \x01(\v2\x14.edge.v1.ProbeResultH\x00R\vprobeResult\x129\n" +
 	"\fdrain_result\x18\a \x01(\v2\x14.edge.v1.DrainResultH\x00R\vdrainResultB\x03\n" +
-	"\x01m\"\xc9\x01\n" +
+	"\x01m\"\xf6\x01\n" +
 	"\tMasterMsg\x12)\n" +
 	"\x04push\x18\x01 \x01(\v2\x13.edge.v1.PushConfigH\x00R\x04push\x12&\n" +
 	"\x05probe\x18\x02 \x01(\v2\x0e.edge.v1.ProbeH\x00R\x05probe\x12&\n" +
 	"\x05drain\x18\x03 \x01(\v2\x0e.edge.v1.DrainH\x00R\x05drain\x12/\n" +
-	"\benrolled\x18\x05 \x01(\v2\x11.edge.v1.EnrolledH\x00R\benrolledB\x03\n" +
+	"\benrolled\x18\x05 \x01(\v2\x11.edge.v1.EnrolledH\x00R\benrolled\x12+\n" +
+	"\x06geo_db\x18\x06 \x01(\v2\x12.edge.v1.PushGeoDBH\x00R\x05geoDbB\x03\n" +
 	"\x01mJ\x04\b\x04\x10\x05R\x05renew\"P\n" +
 	"\x05Hello\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12\x17\n" +
@@ -1201,7 +1301,7 @@ const file_edge_v1_edge_proto_rawDesc = "" +
 	"\x0etunnel_key_pem\x18\x02 \x01(\fR\ftunnelKeyPem\x12\"\n" +
 	"\rtunnel_ca_pem\x18\x03 \x01(\fR\vtunnelCaPem\x12\x1f\n" +
 	"\vcfg_version\x18\x04 \x01(\tR\n" +
-	"cfgVersion\"\xed\x01\n" +
+	"cfgVersion\"\x8b\x02\n" +
 	"\tHeartbeat\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x10\n" +
 	"\x03cpu\x18\x02 \x01(\x01R\x03cpu\x12\x10\n" +
@@ -1212,7 +1312,10 @@ const file_edge_v1_edge_proto_rawDesc = "" +
 	"\x06routes\x18\x06 \x01(\rR\x06routes\x12\x14\n" +
 	"\x05rules\x18\a \x01(\rR\x05rules\x12\x1b\n" +
 	"\treq_total\x18\b \x01(\x04R\breqTotal\x12!\n" +
-	"\forigin_total\x18\t \x01(\x04R\voriginTotal\"\xee\x02\n" +
+	"\forigin_total\x18\t \x01(\x04R\voriginTotal\x12\x1c\n" +
+	"\n" +
+	"geo_db_sha\x18\n" +
+	" \x01(\tR\bgeoDbSha\"\xee\x02\n" +
 	"\n" +
 	"PushConfig\x12\x1f\n" +
 	"\vcfg_version\x18\x01 \x01(\tR\n" +
@@ -1263,7 +1366,10 @@ const file_edge_v1_edge_proto_rawDesc = "" +
 	"\tCertEntry\x12\x16\n" +
 	"\x06domain\x18\x01 \x01(\tR\x06domain\x12$\n" +
 	"\x0enot_after_unix\x18\x02 \x01(\x03R\fnotAfterUnix\x12 \n" +
-	"\vfingerprint\x18\x03 \x01(\tR\vfingerprint2B\n" +
+	"\vfingerprint\x18\x03 \x01(\tR\vfingerprint\"<\n" +
+	"\tPushGeoDB\x12\x17\n" +
+	"\ammdb_gz\x18\x01 \x01(\fR\x06mmdbGz\x12\x16\n" +
+	"\x06sha256\x18\x02 \x01(\tR\x06sha2562B\n" +
 	"\n" +
 	"EdgeTunnel\x124\n" +
 	"\aChannel\x12\x11.edge.v1.AgentMsg\x1a\x12.edge.v1.MasterMsg(\x010\x01B\x85\x01\n" +
@@ -1281,7 +1387,7 @@ func file_edge_v1_edge_proto_rawDescGZIP() []byte {
 	return file_edge_v1_edge_proto_rawDescData
 }
 
-var file_edge_v1_edge_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_edge_v1_edge_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_edge_v1_edge_proto_goTypes = []any{
 	(*AgentMsg)(nil),    // 0: edge.v1.AgentMsg
 	(*MasterMsg)(nil),   // 1: edge.v1.MasterMsg
@@ -1298,6 +1404,7 @@ var file_edge_v1_edge_proto_goTypes = []any{
 	(*LogLine)(nil),     // 12: edge.v1.LogLine
 	(*CertList)(nil),    // 13: edge.v1.CertList
 	(*CertEntry)(nil),   // 14: edge.v1.CertEntry
+	(*PushGeoDB)(nil),   // 15: edge.v1.PushGeoDB
 }
 var file_edge_v1_edge_proto_depIdxs = []int32{
 	2,  // 0: edge.v1.AgentMsg.hello:type_name -> edge.v1.Hello
@@ -1311,15 +1418,16 @@ var file_edge_v1_edge_proto_depIdxs = []int32{
 	7,  // 8: edge.v1.MasterMsg.probe:type_name -> edge.v1.Probe
 	9,  // 9: edge.v1.MasterMsg.drain:type_name -> edge.v1.Drain
 	3,  // 10: edge.v1.MasterMsg.enrolled:type_name -> edge.v1.Enrolled
-	12, // 11: edge.v1.LogBatch.lines:type_name -> edge.v1.LogLine
-	14, // 12: edge.v1.CertList.entries:type_name -> edge.v1.CertEntry
-	0,  // 13: edge.v1.EdgeTunnel.Channel:input_type -> edge.v1.AgentMsg
-	1,  // 14: edge.v1.EdgeTunnel.Channel:output_type -> edge.v1.MasterMsg
-	14, // [14:15] is the sub-list for method output_type
-	13, // [13:14] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	15, // 11: edge.v1.MasterMsg.geo_db:type_name -> edge.v1.PushGeoDB
+	12, // 12: edge.v1.LogBatch.lines:type_name -> edge.v1.LogLine
+	14, // 13: edge.v1.CertList.entries:type_name -> edge.v1.CertEntry
+	0,  // 14: edge.v1.EdgeTunnel.Channel:input_type -> edge.v1.AgentMsg
+	1,  // 15: edge.v1.EdgeTunnel.Channel:output_type -> edge.v1.MasterMsg
+	15, // [15:16] is the sub-list for method output_type
+	14, // [14:15] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_edge_v1_edge_proto_init() }
@@ -1341,6 +1449,7 @@ func file_edge_v1_edge_proto_init() {
 		(*MasterMsg_Probe)(nil),
 		(*MasterMsg_Drain)(nil),
 		(*MasterMsg_Enrolled)(nil),
+		(*MasterMsg_GeoDb)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1348,7 +1457,7 @@ func file_edge_v1_edge_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_edge_v1_edge_proto_rawDesc), len(file_edge_v1_edge_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   15,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

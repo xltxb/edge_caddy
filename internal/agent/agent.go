@@ -59,8 +59,10 @@ type Agent struct {
 
 	mu         sync.Mutex
 	cfgVersion string
-	routes     uint32
-	rules      uint32
+	// geoSHA 是本机 GeoIP 库的哈希，随心跳报上去。空表示没有库。
+	geoSHA string
+	routes uint32
+	rules  uint32
 }
 
 func New(cfg Config) *Agent {
@@ -85,6 +87,13 @@ func (a *Agent) Verify() *VerifyServer { return a.verify }
 
 // Run 建立一条隧道并跑到它断开为止。重连由调用方负责。
 func (a *Agent) Run(ctx context.Context) error {
+	// **先把磁盘上的 GeoIP 库加载回来。**
+	//
+	// 不加载的话，每次重启到主控推来之前地域规则都不生效 ——
+	// 而库其实就在磁盘上。与 health 那边启动时装载已知节点是同一条：
+	// 重启不该把已经具备的能力丢掉。
+	a.loadGeoDBFromDisk()
+
 	creds, enrolling, err := a.credentials()
 	if err != nil {
 		return err
@@ -144,6 +153,9 @@ func (a *Agent) Run(ctx context.Context) error {
 			a.handlePush(ctx, stream, m.Push)
 		case *edgev1.MasterMsg_Probe:
 			a.handleProbe(ctx, stream, m.Probe)
+		case *edgev1.MasterMsg_GeoDb:
+			a.applyGeoDB(m.GeoDb)
+
 		case *edgev1.MasterMsg_Drain:
 			// 排空要等，不能占着这条读循环 —— 占住的话主控这段时间
 			// 推不下来配置也探不了活，而排空可能要等几十秒。
@@ -365,6 +377,10 @@ func (a *Agent) heartbeatLoop(ctx context.Context, stream edgev1.EdgeTunnel_Chan
 			Cpu: m.CPU, Mem: m.Mem, Conns: m.Conns,
 			Routes: a.routes, Rules: a.rules,
 			ReqTotal: m.ReqTotal, OriginTotal: m.OriginTotal,
+			// **报「本机那份」的哈希，不是「主控推过什么」。**
+			// 主控记账的话，一次推送失败之后它会一直以为节点有库，
+			// 而那个域名的地域规则一直不生效 —— 与 cfg_version 同一条理由。
+			GeoDbSha: a.geoSHA,
 		}
 		a.mu.Unlock()
 		if err := stream.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_Hb{Hb: hb}}); err != nil {
@@ -516,4 +532,63 @@ func edgePorts(caddyJSON []byte) []uint32 {
 		}
 	}
 	return out
+}
+
+// applyGeoDB 收下主控推来的 GeoIP 库：校验、落盘、热加载、更新心跳里的哈希。
+//
+// **哈希要自己算，不能信主控报的那个。** 信它的话，一次传输截断
+// （或者主控那边算错了）会让节点报出一个与文件内容不符的哈希 ——
+// 而主控看到哈希一致就不再重推，于是那个坏文件会一直留在节点上。
+func (a *Agent) applyGeoDB(p *edgev1.PushGeoDB) {
+	mmdb, err := gunzip(p.GetMmdbGz())
+	if err != nil {
+		a.log.Error("解压 GeoIP 库失败", "err", err)
+		return
+	}
+	sum := sha256.Sum256(mmdb)
+	sha := hex.EncodeToString(sum[:])
+	if want := p.GetSha256(); want != "" && want != sha {
+		a.log.Error("GeoIP 库校验不过，丢弃这一份",
+			"主控说", want[:12], "实际", sha[:12])
+		return
+	}
+
+	path := GeoDBPath(a.cfg.StateDir)
+	if err := writeGeoDB(path, mmdb); err != nil {
+		a.log.Error("写入 GeoIP 库失败", "path", path, "err", err)
+		return
+	}
+	if err := a.verify.LoadGeoDB(path); err != nil {
+		// **落盘成功而加载失败要说清是哪一半。** 混成一句的话，
+		// 人会去查磁盘权限，而问题在文件内容。
+		a.log.Error("GeoIP 库已落盘，但加载失败", "path", path, "err", err)
+		return
+	}
+
+	a.mu.Lock()
+	a.geoSHA = sha
+	a.mu.Unlock()
+	a.log.Info("GeoIP 库已更新", "sha256", sha[:12], "字节", len(mmdb))
+}
+
+// loadGeoDBFromDisk 在启动时把上次落盘的那份加载回来。
+//
+// **不加载的话，每次重启到主控推来之前，地域规则都不生效** ——
+// 而库其实就在磁盘上。这与 health 那边启动时装载已知节点是同一条：
+// 重启不该把已经具备的能力丢掉。
+func (a *Agent) loadGeoDBFromDisk() {
+	path := GeoDBPath(a.cfg.StateDir)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return // 没有就没有，主控会推
+	}
+	if err := a.verify.LoadGeoDB(path); err != nil {
+		a.log.Warn("磁盘上的 GeoIP 库加载失败，等主控重推", "err", err)
+		return
+	}
+	sum := sha256.Sum256(b)
+	a.mu.Lock()
+	a.geoSHA = hex.EncodeToString(sum[:])
+	a.mu.Unlock()
+	a.log.Info("已加载磁盘上的 GeoIP 库", "sha256", a.geoSHA[:12])
 }

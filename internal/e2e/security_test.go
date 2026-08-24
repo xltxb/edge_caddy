@@ -1,10 +1,21 @@
 package e2e_test
 
 import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"net"
 	"testing"
+	"time"
+
+	"github.com/maxmind/mmdbwriter"
+	"github.com/maxmind/mmdbwriter/mmdbtype"
 
 	"github.com/xltxb/edge_caddy/internal/api"
 	"github.com/xltxb/edge_caddy/internal/caddytest"
+	"github.com/xltxb/edge_caddy/internal/store"
 )
 
 // setupSite 建一条路由、接一个节点、下发，返回可以直接 curl 的域名。
@@ -254,4 +265,151 @@ func TestGeoRuleWithoutDBLetsTrafficThrough(t *testing.T) {
 	if !r.waitForNodeLog("node-hk-01", "GeoIP") {
 		t.Error("放行了却没说 —— 一条悄悄失效的安全规则比没有规则更坏")
 	}
+}
+
+// TestGeoDBReachesNodeAndTakesEffect 是地域这条链路的真验收。
+//
+// 从主控库里放一份 mmdb，到节点心跳报出旧哈希、主控推送、节点落盘热加载、
+// 地域规则真的按它拦人 —— **每一环都是真的**，没有打桩。
+//
+// 判据是「请求被拦了」，不是「推送成功了」：推送成功只说明字节到了，
+// 而这一整条链路里任何一环把库放错地方、加载失败、或者哈希没更新，
+// 表现都是「推送成功而规则不生效」。
+func TestGeoDBReachesNodeAndTakesEffect(t *testing.T) {
+	r := newRig(t, caddytest.EdgeTCP())
+
+	// 主控先有一份库：把回环判成 CN。
+	mmdb := readFixtureMMDB(t)
+	sum := sha256.Sum256(mmdb)
+	if err := r.store.PutGeoDB(context.Background(), store.GeoDB{
+		MMDB: mmdb, SHA256: hex.EncodeToString(sum[:]), Source: "manual",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	setupSite(t, r, "geo2.example.com")
+	r.mustDo("PUT", "/rules/geo2", map[string]any{
+		"name": "封禁 CN", "type": "geo_block", "enabled": true,
+		"apply_to": []string{"geo2.example.com"},
+		"spec":     map[string]any{"geo_mode": "block", "geo_countries": []string{"CN"}},
+	})
+	r.deployNow("rule:geo2")
+
+	// 等库到达并生效：**判据是行为，不是日志**。
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		if code, _ := r.curlVia("geo2.example.com"); code == 403 {
+			return // 成了
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	code, _ := r.curlVia("geo2.example.com")
+	t.Fatalf("库推到节点之后回环该被判成 CN 并拦下，实际 %d —— "+
+		"这一整条链路里任何一环（推送、落盘、热加载、哈希更新）断了，"+
+		"表现都是「推送成功而规则不生效」", code)
+}
+
+// readFixtureMMDB 造一份把**回环判成 CN** 的最小 mmdb。
+//
+// 回环是保留网络，mmdbwriter 默认拒绝往里插 —— 要显式开
+// IncludeReservedNetworks。真库里当然不会有这一段，
+// 而 e2e 里请求只能从回环发出，所以这是唯一能验到「按国家拦」的办法。
+func readFixtureMMDB(t *testing.T) []byte {
+	t.Helper()
+	w, err := mmdbwriter.New(mmdbwriter.Options{
+		DatabaseType:            "GeoLite2-Country",
+		RecordSize:              24,
+		IncludeReservedNetworks: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cidr := range []string{"127.0.0.0/8", "::1/128"} {
+		_, n, err := net.ParseCIDR(cidr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Insert(n, mmdbtype.Map{
+			"country": mmdbtype.Map{"iso_code": mmdbtype.String("CN")},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var buf bytes.Buffer
+	if _, err := w.WriteTo(&buf); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// TestNodeReportsGeoDBHash 钉的是**「哪些节点还没有库」看得见**。
+//
+// 不看得见的话，「地域规则形同虚设」这件事只出现在节点日志里 ——
+// 而那要人主动去翻。一条界面上显示为启用、而实际不生效的安全规则，
+// 比没有这条规则更坏。
+//
+// 它同时守住哈希更新那一环：节点收下库却不更新哈希的话，
+// 主控会**每次心跳都重推一份几 MB 的库**，而地域规则照常生效
+// —— 于是那个 bug 从行为上完全看不出来。
+func TestNodeReportsGeoDBHash(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	// 主控还没有库：这一列该是 null，**不是 false**。
+	// 没在用地域功能的系统里，每台节点都标红是在报告一个不存在的问题。
+	if got := geoOKOf(t, r); got != nil {
+		t.Errorf("主控没有库时 geo_db_ok 该是 null，实际 %v", *got)
+	}
+
+	mmdb := readFixtureMMDB(t)
+	sum := sha256.Sum256(mmdb)
+	if err := r.store.PutGeoDB(context.Background(), store.GeoDB{
+		MMDB: mmdb, SHA256: hex.EncodeToString(sum[:]), Source: "manual",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 主控有了库而节点还没收到：false。收到之后转 true。
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := geoOKOf(t, r); got != nil && *got {
+			return
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	got := geoOKOf(t, r)
+	t.Fatalf("库推到节点之后 geo_db_ok 该转 true，实际 %s —— "+
+		"节点收下库却不更新哈希的话，主控会每次心跳都重推一份几 MB 的库，"+
+		"而地域规则照常生效，这个 bug 从行为上完全看不出来", boolPtrStr(got))
+}
+
+func geoOKOf(t *testing.T, r *rig) *bool {
+	t.Helper()
+	e := r.mustDo("GET", "/nodes", nil)
+	var d struct {
+		Items []struct {
+			GeoDBOK *bool `json:"geo_db_ok"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Items) != 1 {
+		t.Fatalf("装置坏了：该有 1 个节点，实际 %d", len(d.Items))
+	}
+	return d.Items[0].GeoDBOK
+}
+
+// boolPtrStr 把 *bool 写成人读得懂的。**直接 %v 打的是指针地址** ——
+// 一个测试失败信息里印出 0x3a0ee10c4d60，等于没有这条信息。
+func boolPtrStr(b *bool) string {
+	if b == nil {
+		return "null"
+	}
+	if *b {
+		return "true"
+	}
+	return "false"
 }

@@ -59,6 +59,7 @@ type Master struct {
 	SessionTTL     time.Duration
 	OpsBotToken    string
 	CertBotToken   string
+	MaxMindKey     string
 	WebRoot        string
 
 	// Advertise 是主控对节点公布的地址，进服务端证书的 SAN，也拼进安装命令。
@@ -102,6 +103,7 @@ func LoadMaster() (Master, error) {
 		SessionTTL:     time.Duration(envInt("EC_SESSION_TTL_HOURS", 12)) * time.Hour,
 		OpsBotToken:    os.Getenv("EC_OPS_BOT_TOKEN"),
 		CertBotToken:   os.Getenv("EC_CERT_BOT_TOKEN"),
+		MaxMindKey:     os.Getenv("EC_MAXMIND_LICENSE_KEY"),
 		WebRoot:        env("EC_WEB_ROOT", "web/dist"),
 		// **不给默认值。** 任何默认值在生产上都是错的——没人的主控真叫那个名字——
 		// 而一个能启动的错误默认值比起不来更危险：它会让人以为配好了，

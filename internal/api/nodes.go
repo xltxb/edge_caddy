@@ -75,6 +75,16 @@ type nodeResp struct {
 	DNSChangedAt *string `json:"dns_changed_at"`
 	// AgentVersion 是节点上跑的 Agent 版本。空串表示这台机器还没接入过。
 	AgentVersion string `json:"agent_version"`
+
+	// GeoDBOK 说这台节点上的 GeoIP 库跟不跟得上主控那份。
+	//
+	//	true   跟上了
+	//	false  **没有库、或者是旧的** —— 它上面的地域规则不生效
+	//	null   主控自己就没有库（没在用地域功能），这个问题不适用
+	//
+	// **null 不是 false**（§0.4）：一个没在用地域功能的系统，
+	// 每台节点都标红是在报告一个不存在的问题，而人两天就学会忽略它。
+	GeoDBOK *bool `json:"geo_db_ok"`
 }
 
 func (s *Server) handleListNodes(c *gin.Context) {
@@ -98,6 +108,13 @@ func (s *Server) handleListNodes(c *gin.Context) {
 		for _, id := range s.tunnel.OnlineNodes() {
 			online[id] = true
 		}
+	}
+
+	// 主控那份库的哈希。**读不到就当没有**：这一列是附加信息，
+	// 为它把整页变成错误页不成比例，而 null 恰好表达「这个问题不适用」。
+	masterGeoSHA := ""
+	if g, err := s.store.GetGeoDB(ctx, false); err == nil {
+		masterGeoSHA = g.SHA256
 	}
 
 	items := make([]nodeResp, 0, len(nodes))
@@ -127,6 +144,12 @@ func (s *Server) handleListNodes(c *gin.Context) {
 			item.DrainedAt = &ts
 		}
 		item.AgentVersion = n.AgentVersion
+		if masterGeoSHA != "" {
+			// **主控有库时这一列才有意义。** 没在用地域功能的系统里，
+			// 每台节点都标红是在报告一个不存在的问题。
+			ok := n.GeoDBSha == masterGeoSHA
+			item.GeoDBOK = &ok
+		}
 		if c, err := s.store.CountReconnects(ctx, n.ID, time.Hour); err != nil {
 			// 留 null（零值就是 nil），并且照样进日志 ——
 			// 日志给事后排查的人，null 给此刻在看界面的人。两个都要。

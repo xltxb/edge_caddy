@@ -1,9 +1,12 @@
 package tunnel
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	edgev1 "github.com/xltxb/edge_caddy/gen/edge/v1"
@@ -28,6 +31,10 @@ type session struct {
 	probeSeq int
 	drains   map[string]chan *edgev1.DrainResult
 	drainSeq int
+
+	// geoPushing 挡住重复推送。心跳每几秒一次，而推一份库要几秒 ——
+	// 不挡的话一台落后的节点会被同一份库连推十几次，把隧道占满。
+	geoPushing atomic.Bool
 }
 
 func newSession(nodeID string, stream edgev1.EdgeTunnel_ChannelServer) *session {
@@ -83,9 +90,18 @@ func (s *session) readLoop(ctx context.Context, srv *Server) error {
 			if srv.opt.OnHeartbeat != nil {
 				status = srv.opt.OnHeartbeat(beat)
 			}
-			if err := srv.opt.Store.TouchHeartbeat(ctx, s.nodeID, hb.GetCfgVersion(), status); err != nil {
+			if err := srv.opt.Store.TouchHeartbeatWithGeo(ctx, s.nodeID, hb.GetCfgVersion(), status, hb.GetGeoDbSha()); err != nil {
 				srv.log.Error("记录心跳失败", "node_id", s.nodeID, "err", err)
 			}
+
+			// **GeoIP 库靠心跳比对推送，不搭配置下发的车。**
+			//
+			// 搭车的话，一台配置从没变过的节点永远拿不到库，
+			// 而它上面的地域规则一直不生效 —— 而界面上那条规则显示为启用。
+			//
+			// 判据是节点报的那个哈希，不是主控记的「我推过什么」：
+			// 主控记账的话，一次推送失败之后它会一直以为节点有库。
+			srv.maybePushGeoDB(ctx, s, hb.GetGeoDbSha())
 
 		case *edgev1.AgentMsg_PushResult:
 			s.deliver(m.PushResult)
@@ -314,4 +330,67 @@ func (s *session) probe(ctx context.Context, timeout time.Duration) (ProbeOutcom
 	case <-ctx.Done():
 		return ProbeOutcome{}, ctx.Err()
 	}
+}
+
+// maybePushGeoDB 在节点的库与主控那份不一致时推一份过去。
+//
+// **失败只记日志，不影响心跳。** 库推不过去时地域规则不生效，
+// 而那件事由 Agent 那一侧说出来（它每次放行都会写一条 warn）——
+// 在这里把心跳处理搞失败，会让一个节点因为一个附加功能而显示成异常。
+func (srv *Server) maybePushGeoDB(ctx context.Context, s *session, nodeSHA string) {
+	if srv.opt.Store == nil {
+		return
+	}
+	cur, err := srv.opt.Store.GetGeoDB(ctx, false)
+	if err != nil {
+		return // 主控自己都没有库，没什么可推的
+	}
+	if cur.SHA256 == "" || cur.SHA256 == nodeSHA {
+		return
+	}
+	// **一个节点同时只推一次。** 心跳每几秒一次，而推一次要几秒——
+	// 不挡的话一台落后的节点会被同一份库连推十几次，
+	// 每次几 MB，把隧道占满。
+	if !s.geoPushing.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer s.geoPushing.Store(false)
+		full, err := srv.opt.Store.GetGeoDB(context.WithoutCancel(ctx), true)
+		if err != nil {
+			srv.log.Error("读取 GeoIP 库失败", "err", err)
+			return
+		}
+		gz, err := gzipBytes(full.MMDB)
+		if err != nil {
+			srv.log.Error("压缩 GeoIP 库失败", "err", err)
+			return
+		}
+		srv.log.Info("推送 GeoIP 库", "node_id", s.nodeID,
+			"sha256", full.SHA256[:12], "压缩后字节", len(gz))
+		msg := &edgev1.MasterMsg{M: &edgev1.MasterMsg_GeoDb{
+			GeoDb: &edgev1.PushGeoDB{MmdbGz: gz, Sha256: full.SHA256},
+		}}
+		select {
+		case s.out <- msg:
+		case <-s.closed:
+			srv.log.Warn("推送 GeoIP 库时隧道已断", "node_id", s.nodeID)
+		case <-time.After(30 * time.Second):
+			// **超时要说出来。** 悄悄丢掉的话，节点会一直报旧哈希、
+			// 主控会一直重推，而两边都不知道为什么推不动。
+			srv.log.Error("推送 GeoIP 库超时，发送队列满", "node_id", s.nodeID)
+		}
+	}()
+}
+
+func gzipBytes(b []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	w := gzip.NewWriter(&buf)
+	if _, err := w.Write(b); err != nil {
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

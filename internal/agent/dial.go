@@ -35,7 +35,16 @@ const tunnelPath = "/api/v1/tunnel"
 // 这一点是承重的：下发走内联证书（ADR-0010），
 // **每个客户域名的私钥都在这条隧道里传**。
 func dialOptions(master string, creds credentials.TransportCredentials) (string, []grpc.DialOption, error) {
-	opts := []grpc.DialOption{grpc.WithTransportCredentials(creds)}
+	opts := []grpc.DialOption{
+		grpc.WithTransportCredentials(creds),
+		// 与主控那一侧对齐（internal/tunnel 的 maxTunnelMsgBytes）。
+		// **只调一侧的话，超限的那一端会在发送时就失败，
+		// 而另一端连一条日志都不会有。**
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(32<<20),
+			grpc.MaxCallSendMsgSize(32<<20),
+		),
+	}
 
 	if !strings.Contains(master, "://") {
 		// 直连：保持原样，旧节点的配置一个字都不用改。

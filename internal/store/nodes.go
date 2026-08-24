@@ -15,6 +15,9 @@ type Node struct {
 	Vendor   string `json:"vendor"`
 	Line     string `json:"line"`
 	PublicIP string `json:"public_ip"`
+	// GeoDBSha 是这台节点上 GeoIP 库的哈希，节点自己报的。
+	// 空表示它还没有库 —— 那时它上面的地域规则不生效。
+	GeoDBSha string `json:"-"`
 	// Status 取 StatusOK / StatusWarn / StatusDown 之一。
 	Status     string     `json:"status"`
 	CfgVersion string     `json:"cfg_version"`
@@ -68,7 +71,7 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 		`SELECT id, city, vendor, line, host(public_ip), status::text,
 		        cfg_version, dns_enabled, last_hb_at, created_at, drained_at,
 		        coalesce(dns_reason::text, ''), coalesce(dns_actor, ''), dns_changed_at,
-		        agent_version
+		        agent_version, geo_db_sha
 		 FROM edge_nodes ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -81,7 +84,7 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 		if err := rows.Scan(&n.ID, &n.City, &n.Vendor, &n.Line, &n.PublicIP,
 			&n.Status, &n.CfgVersion, &n.DNSEnabled, &n.LastHBAt, &n.CreatedAt,
 			&n.DrainedAt, &n.DNSReason, &n.DNSActor, &n.DNSChangedAt,
-			&n.AgentVersion); err != nil {
+			&n.AgentVersion, &n.GeoDBSha); err != nil {
 			return nil, err
 		}
 		out = append(out, n)
@@ -95,6 +98,18 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 // status 只在 ok / warn 之间取：判定离线是 health 模块的事，
 // 而一次到达的心跳按定义就说明它没离线。
 func (s *Store) TouchHeartbeat(ctx context.Context, nodeID, cfgVersion, status string) error {
+	return s.touchHeartbeat(ctx, nodeID, cfgVersion, status, nil)
+}
+
+// TouchHeartbeatWithGeo 同上，外加节点报的 GeoIP 库哈希。
+//
+// **分成两个函数而不是加一个参数**：加参数的话每个调用方都要想一下传什么，
+// 而只有隧道那一处知道这个值。别处传空串会把一个已有库的节点标成没有。
+func (s *Store) TouchHeartbeatWithGeo(ctx context.Context, nodeID, cfgVersion, status, geoSHA string) error {
+	return s.touchHeartbeat(ctx, nodeID, cfgVersion, status, &geoSHA)
+}
+
+func (s *Store) touchHeartbeat(ctx context.Context, nodeID, cfgVersion, status string, geoSHA *string) error {
 	if status != "warn" {
 		status = "ok"
 	}
@@ -102,6 +117,13 @@ func (s *Store) TouchHeartbeat(ctx context.Context, nodeID, cfgVersion, status s
 	// 由 scripts/probes.py 的「心跳不冲掉下线标记」盯着。
 	// 往这里加一句「节点回来了就清掉下线标记」听起来很合理，而那会让
 	// 下线在心跳到达的那一刻静默失效。
+	if geoSHA != nil {
+		_, err := s.Pool.Exec(ctx,
+			`UPDATE edge_nodes SET last_hb_at = now(), status = $3::node_status,
+			        cfg_version = $2, geo_db_sha = $4
+			 WHERE id = $1`, nodeID, cfgVersion, status, *geoSHA)
+		return err
+	}
 	_, err := s.Pool.Exec(ctx,
 		`UPDATE edge_nodes SET last_hb_at = now(), status = $3::node_status, cfg_version = $2
 		 WHERE id = $1`, nodeID, cfgVersion, status)
@@ -289,11 +311,11 @@ func (s *Store) GetNode(ctx context.Context, id string) (Node, error) {
 		`SELECT id, city, vendor, line, host(public_ip), status::text,
 		        cfg_version, dns_enabled, last_hb_at, created_at, drained_at,
 		        coalesce(dns_reason::text, ''), coalesce(dns_actor, ''), dns_changed_at,
-		        agent_version
+		        agent_version, geo_db_sha
 		 FROM edge_nodes WHERE id = $1`, id).
 		Scan(&n.ID, &n.City, &n.Vendor, &n.Line, &n.PublicIP,
 			&n.Status, &n.CfgVersion, &n.DNSEnabled, &n.LastHBAt, &n.CreatedAt,
-			&n.DrainedAt, &n.DNSReason, &n.DNSActor, &n.DNSChangedAt, &n.AgentVersion)
+			&n.DrainedAt, &n.DNSReason, &n.DNSActor, &n.DNSChangedAt, &n.AgentVersion, &n.GeoDBSha)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return n, ErrNotFound
 	}

@@ -19,6 +19,7 @@ import (
 	"github.com/xltxb/edge_caddy/internal/config"
 	"github.com/xltxb/edge_caddy/internal/deploy"
 	"github.com/xltxb/edge_caddy/internal/dnsops"
+	"github.com/xltxb/edge_caddy/internal/geoip"
 	"github.com/xltxb/edge_caddy/internal/health"
 	"github.com/xltxb/edge_caddy/internal/pki"
 	"github.com/xltxb/edge_caddy/internal/render"
@@ -244,6 +245,18 @@ func main() {
 	// 每天扫一次到期。**拆掉自动续期之后，这是「证书要过期了」
 	// 唯一会主动找人的地方** —— 漏了这一行，证书会安静地走到到期那一天。
 	go certMgr.Run(ctx, 24*time.Hour)
+
+	// GeoIP 库：配了 key 才取。
+	//
+	// **没配就完全不启动这个循环**，而不是启动了每天报一次错 ——
+	// 地域规则是可选功能，没用它的人不该每天在日志里看到一条红的。
+	// 而用了它的人会在节点日志里看到「本机还没有 GeoIP 库」，
+	// 那条比主控这边的下载失败更贴近他要解决的问题。
+	if cfg.MaxMindKey != "" {
+		go (&geoip.Fetcher{
+			Store: st, LicenseKey: cfg.MaxMindKey, Log: log,
+		}).Run(ctx, 24*time.Hour)
+	}
 
 	srv := api.New(api.Options{
 		Store: st, Hub: hub, Tunnel: tun, Health: monitor, Alerts: notifier, DNS: dnsOrch,

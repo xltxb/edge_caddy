@@ -40,6 +40,7 @@ message MasterMsg {
     Probe probe = 2;
     Drain drain = 3;
     Enrolled enrolled = 5;  // 增补：接入握手的应答，承载隧道客户端证书
+    PushGeoDB geo_db = 6;
   }
 }
 
@@ -78,6 +79,13 @@ message Heartbeat {
   // 是被访问规则拦下或由静态响应处理掉的。
   uint64 req_total = 8;
   uint64 origin_total = 9;
+
+  // geo_db_sha 是本机 GeoIP 库的 SHA-256（十六进制），没有库时为空。
+  //
+  // **由节点报「它自己那份」，而不是主控记「我推过什么」**：主控记账的话，
+  // 一次推送失败之后它会一直以为节点有库，而那个域名的地域规则一直不生效
+  // —— 与 cfg_version 是同一条理由。
+  string geo_db_sha = 10;
 }
 
 // ---- 下发 ----
@@ -174,4 +182,30 @@ message CertEntry {
   string domain = 1;
   int64 not_after_unix = 2;
   string fingerprint = 3;
+}
+
+// ---- GeoIP 库 ----
+
+// PushGeoDB 把 GeoIP 库推给节点。
+//
+// **它不搭配置下发的车。** 库几周才换一次，而配置一天可能下发几十次——
+// 搭车的话每次下发都要多传几 MB，而其中绝大多数是同一份内容。
+//
+// 反过来也不行（只在配置下发时捎带）：那样一台**配置从没变过**的节点
+// 永远拿不到库，而它上面的地域规则一直不生效。
+//
+// 触发是主控在心跳里发现 geo_db_sha 与库里那份不一致。
+message PushGeoDB {
+  // gz 压缩的 mmdb。GeoLite2-Country 原始约 9MB，压缩后约 3MB。
+  //
+  // **压缩不是为了省带宽，是为了不撞 gRPC 的消息上限。** 默认上限是 4MB，
+  // 原始文件过不去——而它的报错是「received message larger than max」，
+  // 一句不会让人想到「换个库文件就好」的话。
+  // 两侧的上限也一并调高了（internal/tunnel 与 internal/agent），
+  // 压缩只是让常见情况离那条线远一点。
+  bytes mmdb_gz = 1;
+
+  // sha256 是**解压后**文件的哈希，与心跳里报的那个同源。
+  // 用压缩前的：换一个压缩级别会改变压缩后的字节，而库本身没变。
+  string sha256 = 2;
 }
