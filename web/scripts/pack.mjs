@@ -78,8 +78,6 @@ const OUT_DIR = join(REPO, 'dist')
 const sh = (cmd, args, cwd) =>
   execFileSync(cmd, args, { cwd: cwd ?? REPO, encoding: 'utf8' }).trim()
 
-const sha = sh('git', ['rev-parse', '--short', 'HEAD'])
-
 /**
  * **决定 dist 内容的那些路径。** 版本戳的作用域必须和产物的作用域一致。
  *
@@ -183,6 +181,26 @@ const SCOPE = [
  * 验的是「我写进去的等于我算出来的」，而不是「产物真的对应那个 commit」——
  * 在脏工作树上必然通过。
  */
+/**
+ * **戳的是「SCOPE 里最后一次改动」，不是 HEAD。**
+ *
+ * 下面 `dirty` 只看 SCOPE（决定 dist 内容的那些路径），而这一行原先取 HEAD ——
+ * **同一个脚本里两个作用域**，而它自己的注释写着「版本戳的作用域必须和产物的
+ * 作用域一致」。
+ *
+ * 一个人写代码时看不出区别：HEAD 就是最后一次改前端的提交。
+ *
+ * 而这个仓库是**两个 agent 共用一棵工作树**：后端提交一次纯 Go 的改动，
+ * HEAD 就变了，前端产物一个字节没动 —— 于是
+ *
+ * - 同样的产物被打成不同名字的包，而它们逐字节相同；
+ * - 更糟的是**包名指向一个不含任何前端代码的 commit**。
+ *   拿着 `ec0a123` 去查「这个包里的前端是什么」，看到的是一堆 `.go` 文件。
+ *
+ * 撞到它的那一次：我提交在 `b4d7630`，后端紧接着提交了 `ec0a123`，
+ * 而包打出来叫 `edge-console-ec0a123.tar.gz`。
+ */
+const sha = sh('git', ['log', '-1', '--format=%h', '--', ...SCOPE])
 const dirty = sh('git', ['status', '--porcelain', '--', ...SCOPE]) !== ''
 const stamp = dirty ? `${sha}-dirty` : sha
 
@@ -277,6 +295,30 @@ const problems = []
 // 1~3. 路径、属主、模式
 const listing = sh('tar', ['tzvf', tgz]).split('\n').filter(Boolean)
 if (listing.length < 10) problems.push(`包里只有 ${listing.length} 个条目，太少了`)
+
+/*
+ * **包名里那个 commit，必须真的动过 dist 的内容。**
+ *
+ * 这一条防的是「戳的作用域滑回 HEAD」。它撞到过：`sha` 取的是
+ * `rev-parse HEAD`，而 `dirty` 只看 SCOPE —— 同一个脚本里两个作用域。
+ *
+ * 一个人干活时看不出区别。这个仓库是**两个 agent 共用一棵工作树**：
+ * 后端提交一次纯 Go 改动，HEAD 就变了，而前端产物一个字节没动 ——
+ * 包名却跟着变，且指向一个不含任何前端代码的 commit。
+ *
+ * 判据不硬编码「应该是哪个 commit」，而是问那个 commit 碰没碰过 SCOPE ——
+ * 正常情况下（我就是最后一个提交的人）HEAD 与它相同，这条照样通过。
+ *
+ * 脏工作树那一档跳过：`-dirty` 时戳说的本来就不是「这个 commit 的内容」。
+ */
+if (!dirty) {
+  const touched = sh('git', ['show', '--name-only', '--format=', sha, '--', ...SCOPE])
+  if (!touched) {
+    problems.push(
+      `包名里的 ${sha} 没有动过 dist 的任何来源 —— 版本戳的作用域跟产物对不上了`,
+    )
+  }
+}
 
 /*
  * 不去数日期有几段。
