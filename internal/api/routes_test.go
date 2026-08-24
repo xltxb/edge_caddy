@@ -302,3 +302,55 @@ func TestOverviewReportsMasterVersion(t *testing.T) {
 			"没有它，「修得不对」和「根本没部署」在界面上是同一个样子")
 	}
 }
+
+// **`GET /nodes` 的字段集要与契约 §2 那张表一致。**
+//
+// 这个端点的字段最多，而它还在长（今天一天里加了 reconnects_1h、
+// dns_reason / dns_actor / dns_changed_at、geo_db_ok）。
+//
+// 而它此前**没有任何东西比对过形状**：前端那套 mock-对-真主控的检查里
+// 没有它——那不是「检查漏报」，是压根没检查。这一条补的是后端这一半：
+// **结构体加了字段而契约没跟，这里就红。**
+//
+// 它管不到的：字段的**类型**变了（string → int），以及前端那份类型定义
+// 跟不跟得上。前者留给契约里的示例，后者是前端那条检查的事。
+// 写出来是为了让下一个人知道这一条守到哪儿为止。
+func TestNodeListFieldsMatchContract(t *testing.T) {
+	// 契约 §2 那张表里的键。
+	want := map[string]bool{
+		"id": true, "city": true, "vendor": true, "line": true,
+		"public_ip": true, "status": true, "online": true,
+		"reconnects_1h": true, "cpu": true, "mem": true, "conns": true,
+		"cpu_series": true, "last_hb_at": true, "hb_age_ms": true,
+		"cfg_version": true, "drift": true, "dns_enabled": true,
+		"drained_at": true, "dns_reason": true, "dns_actor": true,
+		"dns_changed_at": true, "agent_version": true, "geo_db_ok": true,
+		"routes": true, "rules": true, "created_at": true,
+	}
+
+	b, err := json.Marshal(api.NodeRespForTest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	// 装置自检：序列化得真的产出了东西，否则下面两个循环都会空转。
+	if len(got) < 20 {
+		t.Fatalf("只序列化出 %d 个键 —— 这不是我们以为的东西", len(got))
+	}
+
+	for k := range got {
+		if !want[k] {
+			t.Errorf("节点项多出一个契约 §2 没写的键 %q —— "+
+				"给 nodeResp 加字段会静默漏进这个响应，而前端那套形状检查"+
+				"里没有这个端点", k)
+		}
+	}
+	for k := range want {
+		if _, ok := got[k]; !ok {
+			t.Errorf("契约 §2 写了 %q 而节点项没有它", k)
+		}
+	}
+}
