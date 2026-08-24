@@ -135,12 +135,26 @@ export async function handleConfig(req: IncomingMessage, res: ServerResponse): P
         items: state.rules,
         next_before_id: null,
         filter_fields: {
+          /*
+           * **这张表照真主控抄，不猜。**
+           *
+           * 第一版是猜的，四处都错 —— `check:shapes` 改成打真 dev server 之后
+           * 第一次跑就抓到了它们，而错的方向正是那条注释预言的那个：
+           *
+           * - `user_agent` / `header` 各少了 `prefix` / `suffix`
+           * - `referer` 整个漏了
+           * - `method` 是我凭空加的，真主控根本没有这个 field
+           *
+           * 前三条都是**藏起一个后端接受的**：dev 里那个下拉少几个选项，
+           * 而界面上看不出任何异常 —— 人只会以为「就只有这些」。
+           * 最后一条是相反方向：给出一个后端会拒的，人配完被拒，还算看得见。
+           */
+          header: ['contains', 'prefix', 'suffix', 'equals', 'regex'],
           path: ['contains', 'prefix', 'suffix', 'equals', 'regex'],
-          user_agent: ['contains', 'equals', 'regex'],
-          header: ['contains', 'equals', 'regex'],
           // Caddy 的 query 匹配器只比精确值 —— 这一档只有 equals（契约 §6.2）
           query: ['equals'],
-          method: ['equals'],
+          referer: ['contains', 'prefix', 'suffix', 'equals', 'regex'],
+          user_agent: ['contains', 'prefix', 'suffix', 'equals', 'regex'],
         },
         filter_fields_need_name: { header: true, query: true },
       }),

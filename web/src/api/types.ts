@@ -806,7 +806,19 @@ export interface DnsSyncWire {
    * 那一档退回只显示 `detail`。跟 `covers` / `reconnects_1h` 同一条：
    * 空数组是个断言，`null` 是「这次说不了」。
    */
-  targets: DnsSyncTargetWire[] | null
+  /**
+   * **这个键可能整个不存在** —— 不只是 `null`。
+   *
+   * `check:shapes` 打真 dev server 之后撞出来的：真主控在「尚未配置 DNS
+   * 服务商」时回的 `dns_sync` 只有 `ok` / `at` / `detail` 三个键。
+   * 契约 §11 的示例里它是在的，所以这里原先声明成必有。
+   *
+   * 三档要分开（跟 `covers` / `reconnects_1h` 同一条）：
+   * 有数组是「按域名分开记的结果」，`null` 是「这次说不了」，
+   * **键不存在是「这个主控在这一档下不发它」** —— 而前端读到的都是 falsy，
+   * 照着「必有」写出来的 `.map()` 会崩在一台没配服务商的主控上。
+   */
+  targets?: DnsSyncTargetWire[] | null
 }
 
 /** 单个域名的同步结果。`detail` 原样显示 —— 它说的是这一个为什么没上。 */

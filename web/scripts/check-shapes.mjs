@@ -79,13 +79,56 @@ function isHard(mock, real) {
  */
 /** 本轮比对中因为空数组而**没比到内容**的路径。每个端点比对前清空。 */
 let empties = []
+/** 这一轮被显式跳过的路径 —— 报告里要说出来，不能悄悄少比一块。 */
+let skipped = []
+
+/**
+ * 这一轮声明为「可空」的路径 —— 真主控在这里回 `null` 不算分歧。
+ *
+ * **但它也不算比过了。** 一边 null 一边有结构，这一层的字段一个都没比到 ——
+ * 跟「两边都是空数组」是同一种盲区，所以走同一个 `empties` 报告。
+ */
+let nullables = new Set()
+
+/**
+ * **按 type 变形的那一层，不能拿「第一个元素」当代表。**
+ *
+ * 访问规则是个异构数组：`ip_whitelist` 的 spec 只有 `ips`，`service_secret`
+ * 有 header / algo / ttl_s。两边各取第一条来比，比的是**哪种规则碰巧排在最前**
+ * —— 那不是形状检查，是巧合检查，而它每次都会报一堆假分歧。
+ *
+ * 跳过的是 `spec` 那一层，`items[]` 的其余字段（id / type / enabled /
+ * apply_to / version）照比 —— 那些是同构的，也是这个端点主要的形状。
+ *
+ * **这是个已知的、说出来的缺口**：spec 的形状目前没有任何一处在比。
+ * 要补的话得按 type 分组各比一次，那要脚本理解规则的结构 —— 还没做。
+ */
+const SKIP_PATHS = new Set(['$.data.items[].spec'])
 
 function diffShape(a, b, path = '$', out = []) {
+  if (SKIP_PATHS.has(path)) {
+    skipped.push(path)
+    return out
+  }
   if (a === b) return out
   const objA = a.startsWith('{')
   const objB = b.startsWith('{')
   const arrA = a.startsWith('[')
   const arrB = b.startsWith('[')
+
+  /*
+   * **契约上就可空的字段，一边 null 一边有数据，不算形状分歧。**
+   *
+   * `dns_sync.targets`（没同步过）和 `cpu_series`（主控刚重启）都是这种：
+   * mock 造了数据是对的 —— 界面要展示那个场景；真主控回 null 也是对的。
+   *
+   * 但**记进 `empties`**：这一层里的字段一个都没比到，跟「两边都是空数组」
+   * 同一种盲区。不记的话，一个豁免过的端点跟一次真的逐字段比过长得一样。
+   */
+  if (nullables.has(path) && (a === 'null' || b === 'null') && a !== b) {
+    empties.push({ path, why: '一边是 null —— 真主控此刻没有这个数据' })
+    return out
+  }
 
   if (arrA && arrB) {
     const ea = a.slice(1, -1)
@@ -101,7 +144,7 @@ function diffShape(a, b, path = '$', out = []) {
        *
        * > **一条探测通过了，不代表它验的是你以为的那件事。**
        */
-      empties.push(path)
+      empties.push({ path, why: '两边都是空数组' })
       return out
     }
     return diffShape(ea, eb, `${path}[]`, out)
@@ -146,23 +189,62 @@ function diffShape(a, b, path = '$', out = []) {
 
 /* ── 两个世界 ───────────────────────────────────────────────────────── */
 
+
+/*
+ * 起一个**真的** dev server，而不是在进程内单独装 MSW。
+ *
+ * ## 为什么是真的起
+ *
+ * 这个仓库有两套 mock：MSW 的 `mocks/handlers.ts` 和 Node 侧的 vite 插件
+ * （`mocks/node-mock.ts` / `config-mock.ts` / `ws-plugin.ts`）。
+ * **进程内只装 MSW 的话，后一套完全看不见** —— `/nodes` 和 `/rules` 都属于它，
+ * 而那两个恰好是字段最多、最该被比的端点。
+ *
+ * 这曾经是一个写在下面 CASES 里的洞。它的代价是实的：`scope` / `key_type`
+ * （前端声明了、后端从来没发过）和 `not_after`（后端一直在发、前端不知道）
+ * 都是在别处偶然发现的 —— 它们本该由这里抓到。
+ *
+ * ## 两套 mock 的优先级跟浏览器里一致
+ *
+ * MSW 用 `bypass`：它拦得到的自己回，拦不到的**真的发到 vite server**，
+ * 落到插件的 middleware 上。浏览器里也是这个顺序 —— service worker 先拦，
+ * 没拦到才走网络。**分工一致，这个脚本面对的才是界面面对的那个世界。**
+ *
+ * ## `appType` 保持默认（spa）
+ *
+ * 不设成 `custom`：真 dev server 是 spa 模式，没有匹配的中间件时返回
+ * index.html。一个不存在的端点在这里应该拿到那份 HTML，而不是 404 ——
+ * 那正是 e2e 撞过的「JSON 第 5 个字符处意外」的来源，
+ * 它是这个世界真实的样子。
+ */
+const vite = await createViteServer({
+  // 避开 5173（dev）与常用的调试端口；strictPort 关着，占用了就往后找
+  server: { port: 5199, strictPort: false, host: '127.0.0.1' },
+  logLevel: 'error',
+})
+await vite.listen()
+const viteAddr = vite.httpServer?.address()
+if (!viteAddr || typeof viteAddr === 'string') {
+  console.log('\n起不了本地 dev server，这个检查没法进行。\n')
+  process.exit(1)
+}
+const MOCK_BASE = `http://127.0.0.1:${viteAddr.port}/api/v1`
+
 /*
  * MSW 的 handler 里写的是相对路径（`/api/v1/...`），浏览器里靠 `location` 解析成
  * 绝对地址。Node 里没有 `location`，于是**一条都匹配不上** —— 而它的表现是
  * 「没有 handler 处理这个请求」，看起来像 mock 里少写了端点。给它一个 origin。
+ *
+ * **这个 origin 必须是 vite 那个 server 的，不能是随便一个 `http://localhost/`。**
+ *
+ * 改成打真 dev server 的时候我在这里绊了一次：origin 对不上，MSW 一条都没匹配，
+ * 于是每个请求都 bypass 到 vite，落在插件那句「主控不会把 /api/v1/* 回落到
+ * index.html」的 404 上。**11 个端点全红**，而报告看起来像 mock 整个坏了。
+ *
+ * 症状离原因很远 —— 一行 origin 的差别，表现成「所有端点都没有 mock」。
  */
-globalThis.location = new URL('http://localhost/')
+globalThis.location = new URL(`http://127.0.0.1:${viteAddr.port}/`)
 
-/*
- * 用 Vite 加载 mock —— 它是 TS，而且 import 里带 `@/` 别名，Node 直接 import
- * 解析不了。走 Vite 还有一层好处：**加载它的是和 dev server 同一套解析规则**，
- * 否则这个检查器面对的又是第三个世界了。
- */
-const vite = await createViteServer({
-  server: { middlewareMode: true },
-  appType: 'custom',
-  logLevel: 'error',
-})
 const { handlers } = await vite.ssrLoadModule('/mocks/handlers.ts')
 const server = setupServer(...handlers)
 
@@ -182,9 +264,19 @@ async function real(path, init = {}) {
 }
 
 async function mock(path, init = {}) {
-  server.listen({ onUnhandledRequest: 'error' })
+  /*
+   * **`bypass` 而不是 `error`。** MSW 拦不到的请求要真的发出去 ——
+   * 那是 Node 侧 vite 插件提供的那一半（`/nodes`、`/rules`…）。
+   * 用 `error` 的话它们会在这里报「没有匹配的 handler」，
+   * 而它们在浏览器里工作得好好的。
+   *
+   * 开关只在这个函数里 —— `real()` 也用 fetch，MSW 一直开着的话
+   * 它会把发给真主控的请求也拦下来，于是这个脚本会拿 mock 跟 mock 比，
+   * **而那永远是一致的**。
+   */
+  server.listen({ onUnhandledRequest: 'bypass' })
   try {
-    const res = await fetch('http://localhost/api/v1' + path, {
+    const res = await fetch(MOCK_BASE + path, {
       ...init,
       headers: { 'Content-Type': 'application/json', ...init.headers },
     })
@@ -210,6 +302,35 @@ if (login.status !== 200 || login.body?.code !== 0) {
 }
 
 /*
+ * ── 第二道自检：**替身那一侧的两半都要真的在** ──
+ *
+ * 这个脚本现在打的是一个真 dev server，而替身有两半：MSW 的 handlers 和
+ * Node 侧的 vite 插件。任何一半没接管，下面每一条分歧都不作数 ——
+ * 而它们的表现**不是「装置坏了」，是「所有端点都对不上」**。
+ *
+ * 我改这个脚本时就踩了：`globalThis.location` 的 origin 还是旧的，
+ * MSW 一条都没匹配、全部 bypass 到 vite，落在插件那句 404 上。
+ * **11 个端点全红**，报告读起来像 mock 整个坏掉了 —— 症状离原因很远。
+ *
+ * 所以各探一个：`/auth/session` 只有 MSW 有，`/nodes` 只有插件有。
+ */
+const probeMsw = await mock('/auth/session')
+const probeVite = await mock('/nodes')
+if (probeMsw.status !== 200 || probeVite.status !== 200) {
+  const dead = probeMsw.status !== 200 ? 'MSW' : 'vite 插件'
+  console.log(`\n替身有一半没接管（${dead}），这个检查没法进行。`)
+  console.log(`  /auth/session（MSW）HTTP ${probeMsw.status} · /nodes（插件）HTTP ${probeVite.status}`)
+  if (probeMsw.status !== 200) {
+    console.log('  MSW 的 handler 写的是相对路径，靠 `globalThis.location` 给 origin ——')
+    console.log('  它要跟 dev server 的地址一致，否则一条都匹配不上而全部 bypass。')
+  } else {
+    console.log('  vite 插件由 `VITE_USE_MOCK !== "false"` 启用，检查一下环境变量。')
+  }
+  console.log('\n  下面每一条分歧都不作数，所以不往下报。\n')
+  process.exit(1)
+}
+
+/*
  * 只对**读**做比对，外加 `PUT /settings` 这一个写。
  *
  * 写端点会改真主控的状态，而这是个检查器不是测试——它不该在别人正用着的
@@ -221,25 +342,49 @@ const CASES = [
   { name: 'GET /overview', path: '/overview' },
   { name: 'GET /settings', path: '/settings' },
   /*
-   * ── 已知缺口：`GET /nodes` 比不了，而它是最该比的那个 ──
+   * `/nodes` 与 `/rules` 由 **Node 侧的 vite 插件**提供，不是 MSW。
    *
-   * 节点页是这个控制台最核心的一页，而**它的响应形状从没被比过**。代价是实的：
-   * `scope` / `key_type`（前端声明了、后端从来没发过，界面上一直是空格子）
-   * 和 `not_after`（后端一直在发、前端不知道）都是在别处偶然发现的 ——
-   * 它们本该由这里抓到。
+   * 它们从前比不了 —— 这个脚本只在进程内装 MSW，那一半完全看不见。
+   * 现在它打的是一个真的 dev server，两套 mock 都在后面（见上面 `MOCK_BASE`）。
    *
-   * 比不了的原因是**这个仓库有两套 mock**：MSW 的 `mocks/handlers.ts`（这个脚本
-   * 取的就是它）和 Node 侧的 vite 插件 `mocks/node-mock.ts`。`/nodes` 属于后者，
-   * 而这个脚本 `ssrLoadModule('/mocks/handlers.ts')` 拿不到它。加进 CASES 会
-   * 直接报「没有匹配的 handler」。
-   *
-   * **不给 handlers.ts 再写一份 `/nodes`** —— 那就有两份 mock 了，而两份迟早
-   * 分叉；到时候这个脚本比的是「MSW 那份和真主控一致」，而界面用的是另一份。
-   * 那比不比更坏：它会给出一个关于错误对象的合格证。
-   *
-   * 真正的修法是让这个脚本走 HTTP 打到 vite dev server（两套 mock 都在那后面），
-   * 而不是在进程内装 MSW。没做，**所以这里是一个洞，不是一个决定**。
+   * 这两个是字段最多的端点，代价也是实的：`scope` / `key_type`
+   * （前端声明了、后端从来没发过，界面上一直是空格子）和 `not_after`
+   * （后端一直在发、前端不知道）都是在别处偶然发现的 —— 它们本该由这里抓到。
    */
+  {
+    name: 'GET /nodes',
+    path: '/nodes',
+    /*
+     * **这两个契约上就可空，而真主控此刻没有数据。**
+     *
+     * `dns_sync.targets`：没配 DNS 服务商就没同步过（契约 §11）。
+     *   后端刚把 `omitempty` 去掉（`5dd443a`）—— 在那之前这个键**整个不存在**，
+     *   而契约说的是「`null` 是旧数据，不是『一个目标都没有』」：
+     *   **tag 让那句话没法成立**，三种写法只表达得出两个意思。
+     *   现在键永远在，没数据时是 null。
+     *
+     * `cpu_series`：主控重启后那 12 个点要重新攒（契约 §4）。
+     *
+     * mock 两边都造了数据 —— 那是对的，界面要展示那个场景（同步失败按域名
+     * 分开列、CPU 曲线）。真主控回 null 也是对的。**两边都对，而形状对不上。**
+     *
+     * 豁免不等于比过了：它们会出现在报告的 ⚠ 里，说「这一层一个字段都没比到」。
+     *
+     * ## 这个检查的结果依赖真主控此刻的状态
+     *
+     * `cpu_series` 这一条是刚重启主控时加的 —— 那时它是 null。**几分钟后
+     * 再跑，它已经攒出 12 个点，这条豁免就用不上了。**
+     *
+     * 留着，因为下一个重启主控的人会再撞一次；而那时的红是假的。
+     *
+     * 但这件事本身要说出来：**同一份代码，对着一个刚起来的主控和一个跑了
+     * 一天的主控，这个检查给出的结果不同。** 那是它的性质不是缺陷 ——
+     * 它比的就是真环境，而真环境有状态。知道这一点，才不会把一次偶然的绿
+     * 当成一次证明。
+     */
+    nullable: ['$.data.dns_sync.targets', '$.data.items[].cpu_series'],
+  },
+  { name: 'GET /rules', path: '/rules' },
   { name: 'GET /certs', path: '/certs' },
   { name: 'GET /deploys', path: '/deploys' },
   { name: 'GET /audit', path: '/audit' },
@@ -335,12 +480,16 @@ for (const c of CASES) {
    * 真主控收了」的分歧看起来跟一致一模一样。
    */
   empties = []
+  skipped = []
+  nullables = new Set(c.nullable ?? [])
   const diffs = diffShape(shapeOf(m.body), shapeOf(r.body))
   rows.push({
     name: c.name,
     diffs,
     /** 因为空数组而没比到内容的路径 —— 见 diffShape 里那一段。 */
     empties: [...empties],
+    /** 被 SKIP_PATHS 显式跳过的 —— 同样要说出来，少比一块不能是隐形的。 */
+    skipped: [...skipped],
     mockStatus: m.status,
     realStatus: r.status,
     mockCode: m.body?.code,
@@ -383,16 +532,34 @@ for (const row of rows) {
    * 一个是「这一层一个字段都没看到」。跟 test.mjs 里那条「一条都没跑不是全过了」
    * 是同一件事，只是粒度更细：这里是**端点通过了，而它的某一层是空转的**。
    */
+  /*
+   * **两个来源，措辞不能共用。**
+   *
+   * 一种是两边都空（种子有、真库没有），一种是一边 null（契约上可空、
+   * 此刻没数据）。前一句套在后一种上是**一句假话** —— 而它正好出现在
+   * 一个说「这里没比到」的位置上，读的人没有理由怀疑它。
+   */
   const emptyNote = row.empties?.length
-    ? `　⚠ ${row.empties.join('、')} 两边都是空数组 —— 这一层的字段一个都没比到`
+    ? row.empties
+        .map((e) => `　⚠ ${e.path} ${e.why} —— 这一层的字段一个都没比到`)
+        .join('')
+    : ''
+  /*
+   * 跟上面那条同源：**少比一块不能是隐形的**。
+   *
+   * 空数组那种是碰上的，这种是我们自己决定跳过的 —— 后者更该说出来，
+   * 因为「有意跳过」会随时间变成「忘了还有这么一块」。
+   */
+  const skipNote = row.skipped?.length
+    ? `　⚠ ${row.skipped.join('、')} 按 type 变形，没比（见 SKIP_PATHS）`
     : ''
 
   if (!hard.length && !statusDiff) {
-    console.log(`✓ ${row.name} ${softNote}${emptyNote}`)
+    console.log(`✓ ${row.name} ${softNote}${emptyNote}${skipNote}`)
     continue
   }
   bad++
-  console.log(`✗ ${row.name} ${softNote}`)
+  console.log(`✗ ${row.name} ${softNote}${emptyNote}${skipNote}`)
   if (row.mockStatus !== row.realStatus) {
     console.log(`    HTTP  mock ${row.mockStatus} · 真主控 ${row.realStatus}`)
   }
