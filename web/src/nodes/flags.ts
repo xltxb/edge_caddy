@@ -43,6 +43,23 @@ export function nodeFlags(n: EdgeNode, dnsSyncOk: boolean | null): NodeFlag[] {
     })
   }
   if (n.drift) out.push({ text: '未收到最近下发', tone: 'warn' })
+  /*
+   * **判据是 `=== false`，不是 `!n.geoDbOk`。**
+   *
+   * 三档里只有 `false` 该说话（契约 §6.2）：`true` 是一致，`null` 是主控自己
+   * 没有库 —— 那时这套系统压根没在用地域功能，**每台节点标一句红是在报告一个
+   * 不存在的问题**，而人两天就学会忽略它，连带着忽略掉真出问题那天的那一条。
+   *
+   * `!n.geoDbOk` 会把 `null` 一起收进来。两个写法在 diff 里差三个字符，
+   * 而它们的区别是「这个功能没在用」和「你的防护全线失效」。
+   */
+  if (n.geoDbOk === false) {
+    out.push({
+      text: 'GeoIP 库未同步',
+      tone: 'warn',
+      title: '这台节点上的地域规则不生效 —— 库还没到，或者是旧的',
+    })
+  }
   return out
 }
 

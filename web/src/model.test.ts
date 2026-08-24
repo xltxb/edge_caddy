@@ -11,6 +11,7 @@ const wire = (over: Partial<NodeWire> = {}): NodeWire => ({
   status: 'ok',
   online: true,
   reconnects_1h: 0,
+  geo_db_ok: null,
   cpu: 15.2,
   mem: 32.8,
   conns: 12400,

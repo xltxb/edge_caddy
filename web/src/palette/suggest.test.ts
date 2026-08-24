@@ -11,6 +11,7 @@ const node = (id: string, over: Partial<EdgeNode> = {}): EdgeNode => ({
   status: 'ok',
   online: true,
   reconnects1h: 0,
+  geoDbOk: null,
   cpu: 10,
   mem: 20,
   conns: 100,

@@ -28,6 +28,7 @@ const wire = (id: string, cfg: string, over: Partial<NodeWire> = {}): NodeWire =
   public_ip: '203.0.113.7',
   status: 'ok',
   online: true,
+  geo_db_ok: null,
   reconnects_1h: 0,
   cpu: 10,
   mem: 20,

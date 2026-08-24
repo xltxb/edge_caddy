@@ -11,6 +11,7 @@ const node = (over: Partial<EdgeNode> = {}): EdgeNode => ({
   status: 'ok',
   online: true,
   reconnects1h: 0,
+  geoDbOk: null,
   cpu: 10,
   mem: 20,
   conns: 100,
@@ -213,5 +214,47 @@ describe('隧道建立次数：0 和「数不出来」必须分得开', () => {
   it('status ok + 在线 + 心跳新鲜，照样说 —— 那是它唯一的用途', () => {
     const n = node({ status: 'ok', online: true, hbAgeMs: 300, reconnects1h: 4 })
     expect(reconnectNote(n)).toContain('4')
+  })
+})
+
+/**
+ * GeoIP 库那一档。**三个值，只有一个该说话。**
+ *
+ * 这三条挡的是同一个改坏：把判据写成 `!n.geoDbOk`（或者 `n.geoDbOk === null ||
+ * !n.geoDbOk` 之类的等价物）。那个写法会把「主控没有库」也标成红的 ——
+ * 一套没在用地域功能的系统，每台节点天天挂一条警告。
+ *
+ * **人两天就学会忽略它**，连带着忽略掉真出问题那天的那一条。
+ */
+describe('geoDbOk 三档', () => {
+  const geo = (n: EdgeNode) => nodeFlags(n, true).find((f) => f.text.includes('GeoIP'))
+
+  it('false：标出来 —— 它上面的地域规则不生效', () => {
+    const f = geo(node({ geoDbOk: false }))
+    expect(f, 'false 是唯一该说话的那一档，而它没说').toBeDefined()
+    expect(f!.tone).toBe('warn')
+    // 光说「未同步」不够：人要知道后果是什么
+    expect(f!.title).toContain('不生效')
+  })
+
+  it('true：什么都不显示', () => {
+    expect(geo(node({ geoDbOk: true }))).toBeUndefined()
+  })
+
+  /*
+   * **这一条是这三条里唯一不显然的。**
+   *
+   * `null` = 主控自己没有库 = 这套系统没在用地域功能。它跟 `true` 一样安静，
+   * 但理由完全不同：`true` 是「查过了，一致」，`null` 是「没什么可查」。
+   *
+   * 而同一个 EdgeNode 上 `reconnects1h` 的 `null` 是相反的处理 ——
+   * 那个必须说出来（「数不出来，不是 0」）。照着那条的模式写这一条，
+   * 得到的就是一个天天报假警的界面。
+   */
+  it('null（主控自己没有库）：什么都不显示 —— 不是 false', () => {
+    expect(
+      geo(node({ geoDbOk: null })),
+      'null 被当成了「库缺失」—— 没在用这功能的系统会每台节点标一条红',
+    ).toBeUndefined()
   })
 })

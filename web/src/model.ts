@@ -55,6 +55,17 @@ export interface EdgeNode {
    * online / hbAgeMs 上全部是健康的。判断留给人，这里只把数摆出来。
    */
   reconnects1h: number | null
+  /**
+   * GeoIP 库跟主控那份一致吗（契约 §6.2）。**三档，`null` 不是 `false`。**
+   *
+   * `null` = 主控自己没有库，即这套系统没在用地域功能 —— 那时**什么都别显示**。
+   * 跟上面 `reconnects1h` 的 `null` 正好相反：那个是「数不出来，要说出来」，
+   * 这个是「不适用，说了就是天天报假警」。
+   *
+   * 所以这里**不能 `?? false`**：主控太旧没有这个字段时会被当成「库缺失」，
+   * 每台节点标一句红，而这套系统压根没在用地域规则。
+   */
+  geoDbOk: boolean | null
   cpu: number
   mem: number
   conns: number
@@ -103,6 +114,12 @@ export function fromNodeWire(w: NodeWire, stampedAt = Date.now()): EdgeNode {
      * 「这条隧道很稳」，而那正是数不出来时最不该说的一句话。
      */
     reconnects1h: w.reconnects_1h ?? null,
+    /*
+     * `?? null` 兜的是「主控太旧，没有这个字段」，而它落在**不显示**那一档 ——
+     * 与上一行同样写法、相反理由：那一行不能兜成 0（0 是「很稳」），
+     * 这一行不能兜成 false（false 是「库缺失」）。两个都会让界面说一件没发生的事。
+     */
+    geoDbOk: w.geo_db_ok ?? null,
     cpu: w.cpu,
     mem: w.mem,
     conns: w.conns,
