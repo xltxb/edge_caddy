@@ -258,3 +258,45 @@ describe('地域', () => {
     ).toBeTruthy()
   })
 })
+
+/**
+ * **白名单里只有 IPv4 段时要提醒 IPv6 会被拦。**
+ *
+ * `0.0.0.0/0` 读起来像「放行所有人」，而它只覆盖 IPv4 —— 一个 IPv6 访问者
+ * 不在名单里，`not` 成立，按处置方式拦下。用户在灰度上撞过。
+ *
+ * 它的失败静默且彻底：若那条路由是 `abort`，被拦的请求不产生响应、
+ * 不进日志、也不进 `blocked_1h`。
+ */
+describe('白名单的 IPv6 提醒', () => {
+  const wl = (ips: string[]) => hintOf(IP_WHITELIST_FIELDS, 'spec.ips', rule('ip_whitelist', { ips }))
+
+  it('只有 IPv4：提醒 IPv6 会被拦，并给出该加什么', () => {
+    const h = wl(['0.0.0.0/0'])
+    expect(h, '写 0.0.0.0/0 想表达「放行所有人」，而它只覆盖 IPv4').toContain('IPv6')
+    expect(h, '只说了有问题，没说该加什么').toContain('::/0')
+  })
+
+  it('名单里有 IPv6：不提 —— 他考虑过了', () => {
+    expect(wl(['0.0.0.0/0', '::/0'])).not.toContain('IPv6 访问者')
+    expect(wl(['2001:db8::/32'])).not.toContain('IPv6 访问者')
+  })
+
+  it('空名单：不提 —— 那时该说的是别的（名单是空的）', () => {
+    expect(wl([])).not.toContain('IPv6')
+  })
+
+  /**
+   * **黑名单不提这一句。**
+   *
+   * 那边缺 v6 段意味着 v6 放行 —— 安全的默认。同一个 `ips` 字段，
+   * 缺 v6 的后果在两个类型上正好相反，这是「只差一个 not」的又一次现身。
+   *
+   * 这一条挡的是「顺手把提醒加到两张表上」：那会让黑名单上出现一句
+   * **建议人去拦更多人**的提示，而它读起来跟白名单那句一样合理。
+   */
+  it('黑名单不提 —— 那边缺 v6 是安全的默认', () => {
+    const h = hintOf(IP_BLACKLIST_FIELDS, 'spec.ips', rule('ip_blacklist', { ips: ['1.2.3.4'] }))
+    expect(h, '黑名单上出现了 IPv6 提醒 —— 那会建议人去拦更多人').not.toContain('IPv6')
+  })
+})

@@ -9,7 +9,14 @@
 
 import type { PolicyWire, RouteWire, RuleWire } from '@/api/types'
 import { fieldsOf, type FieldSpec } from './field-spec'
-import { invalidIps, isBodyMax, isHostPort, isPositiveInt, normalizeLines } from '@/utils/validators'
+import {
+  invalidIps,
+  isBodyMax,
+  isHostPort,
+  isIpv6,
+  isPositiveInt,
+  normalizeLines,
+} from '@/utils/validators'
 
 /* ── 各资源的有效值类型（live 与草稿合并后的形状）── */
 
@@ -188,8 +195,29 @@ export const IP_WHITELIST_FIELDS = fieldsOf<RuleDraft>([
     field: 'spec.ips',
     label: '允许的来源 IP',
     rows: 7,
-    hint: (v) =>
-      `共 ${normalizeLines((v.spec as { ips?: string[] }).ips).length} 条。非白名单流量按各域名自己的处置方式（abort / 403）处理。`,
+    /*
+     * **只有 IPv4 段时要提醒 IPv6 会被拦。**
+     *
+     * `0.0.0.0/0` 读起来像「放行所有人」，而它**只覆盖 IPv4** ——
+     * 一个 IPv6 访问者不在名单里，`not` 成立，按处置方式拦下。
+     *
+     * 这不是 bug（白名单里没有 v6，就该拦 v6 —— 语义是对的），
+     * 是一次**误用**：写的是「所有 IPv4」，想的是「所有人」。
+     * 用户在灰度上撞过。
+     *
+     * 而它的失败**静默且彻底**：若那条路由是 `abort`，被拦的请求不产生响应、
+     * 不进日志、也不进 `blocked_1h` —— 没有任何一处会说出来。
+     *
+     * **黑名单不提这一句**：那边缺 v6 段意味着 v6 放行，那是安全的默认。
+     * 同一个 `ips` 字段，缺 v6 的后果在两个类型上正好相反 ——
+     * 这是「只差一个 not」的又一次现身。
+     */
+    hint: (v) => {
+      const list = normalizeLines((v.spec as { ips?: string[] }).ips)
+      const base = `共 ${list.length} 条。非白名单流量按各域名自己的处置方式（abort / 403）处理。`
+      if (list.length === 0 || list.some((x) => isIpv6(x.split('/')[0] ?? ''))) return base
+      return `${base} 名单里只有 IPv4 —— IPv6 访问者会被拦下。要放行所有人，再加一行 ::/0`
+    },
     validate: (v) => {
       const bad = invalidIps((v.spec as { ips?: string[] }).ips)
       if (bad.length === 0) return null

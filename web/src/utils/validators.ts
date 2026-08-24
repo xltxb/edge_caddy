@@ -26,21 +26,52 @@ export function isIpv4(s: string): boolean {
 }
 
 /**
- * 合法 IPv4 或 CIDR，如 `10.8.0.0/24`。
+ * 是不是一个 IPv6 地址。
+ *
+ * 借浏览器与 Node 都有的 URL 解析器 —— 手写 IPv6 文法要处理压缩形式（`::`）、
+ * IPv4 映射（`::ffff:1.2.3.4`）、区域 id，而那些细节里每一条都能写错。
+ * mock 那边比较两个地址是否相同用的也是这一招。
+ */
+export function isIpv6(s: string): boolean {
+  if (!s.includes(':')) return false
+  try {
+    return new URL(`http://[${s}]`).hostname.startsWith('[')
+  } catch {
+    return false
+  }
+}
+
+/**
+ * IP 或 CIDR，**v4 与 v6 都算**。
+ *
+ * ## 这里原先只认 IPv4，而那不是「少支持一种格式」
+ *
+ * 白名单里要放行所有人，得同时有 `0.0.0.0/0` 和 `::/0` —— 而 `::/0`
+ * **填不进去**：本地校验判它非法，人只能删掉它。
+ *
+ * 于是界面把唯一正确的做法拦住了，而它的后果是**静默且彻底**的：
+ * 一个 IPv6 访问者不在白名单里 → `not` 成立 → 按处置方式拦下。
+ * 若那条路由是 `abort`，被拦的请求不产生响应、不进日志、也不进 `blocked_1h`
+ * —— **没有任何一处会说出来**。
+ *
+ * 用户在灰度上撞的就是这个：他写 `0.0.0.0/0` 想表达「放行所有人」。
+ *
+ * ## 而它也不能松到只看长相
  *
  * 设计稿用的是 `^(\d{1,3}\.){3}\d{1,3}(\/\d{1,2})?$`，它会放过
- * `999.999.999.999/99` —— 那种值会一路走到 Caddy 才被拒，而那时它已经
- * 混在一次全网下发里了。
+ * `999.999.999.999/99` —— 那种值会一路走到 Caddy 才被拒，
+ * 而那时它已经混在一次全网下发里了。
  */
 export function isIpOrCidr(s: string): boolean {
   const [addr, prefix, ...extra] = s.split('/')
   if (extra.length > 0 || addr === undefined) return false
-  if (!isIpv4(addr)) return false
+  const v6 = isIpv6(addr)
+  if (!v6 && !isIpv4(addr)) return false
   if (prefix === undefined) return true
-  if (!/^\d{1,2}$/.test(prefix)) return false
+  if (!/^\d{1,3}$/.test(prefix)) return false
   if (prefix.length > 1 && prefix.startsWith('0')) return false
   const n = Number(prefix)
-  return n >= 0 && n <= 32
+  return n >= 0 && n <= (v6 ? 128 : 32)
 }
 
 /** 把多行文本按行规范化：去首尾空白、丢掉空行。等值比较前必须过这一步。 */

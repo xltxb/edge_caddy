@@ -144,6 +144,19 @@ function remove(i: number): void {
       </div>
 
       <button class="mini add" type="button" :disabled="disabled" @click="add">添加特征</button>
+
+      <!--
+        **拦 UA 时最容易忘的一侧：你自己的脚本。**
+
+        用户在灰度上把 `curl/` 拉黑，然后用 curl 去验限流 —— 请求在这条规则上
+        就被静默断连了，根本走不到限流那条。他看到的是「限流没生效」。
+
+        这一句只在真有 user_agent 特征时出现 —— 常驻的提醒读两天就成了背景。
+      -->
+      <p v-if="rows.some((r) => r.field === 'user_agent')" class="ua-note">
+        按 User-Agent 拦时留意：你自己的监控探针、验证脚本、curl 也带 UA，
+        它们会被同一条规则拦下。
+      </p>
     </template>
   </div>
 </template>
@@ -197,6 +210,15 @@ function remove(i: number): void {
 }
 .add {
   align-self: flex-start;
+}
+.ua-note {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  font-size: var(--fs-2xs);
+  line-height: 1.7;
+  color: var(--text-muted);
 }
 .empty {
   padding: var(--space-3);
