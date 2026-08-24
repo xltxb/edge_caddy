@@ -2,9 +2,11 @@ package agent
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/maxmind/mmdbwriter"
@@ -155,5 +157,66 @@ func TestReloadSwapsWithoutClosingInUse(t *testing.T) {
 	}
 	if _, err := g.Country("1.2.3.7"); !errors.Is(err, ErrNoGeoDB) {
 		t.Error("卸载之后该回 ErrNoGeoDB")
+	}
+}
+
+// TestGeoDBSwapDoesNotDropLookups：**换库不能让并发查询踩到已关闭的库。**
+//
+// Country 若在 RUnlock 之后才 Lookup，Load 的 old.Close() 可以插在中间 ——
+// maxminddb 对关闭后的 Lookup 回错，Country 把它当「查不到国家」，于是
+// 换库那一瞬间的请求会被按未知国家处置（白名单模式=拦）。而 closed 检查
+// 与 munmap 之间没有同步，-race 下这里是真数据竞争（issue #30）。
+//
+// 两份库里 1.2.3.4 都有国家，所以**任何一次空串都是踩到了关闭的 reader**，
+// 不需要 race detector 也能红。
+func TestGeoDBSwapDoesNotDropLookups(t *testing.T) {
+	db1 := buildTestDB(t, map[string]string{"1.0.0.0/8": "AU"})
+	db2 := buildTestDB(t, map[string]string{"1.0.0.0/8": "CN"})
+	g := newGeoDB()
+	if err := g.Load(db1); err != nil {
+		t.Fatal(err)
+	}
+	defer g.Load("")
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	dropped := make(chan string, 1)
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					c, err := g.Country("1.2.3.4")
+					if c == "" || err != nil {
+						select {
+						case dropped <- fmt.Sprintf("country=%q err=%v", c, err):
+						default:
+						}
+						return
+					}
+				}
+			}
+		}()
+	}
+	for i := 0; i < 300; i++ {
+		path := db1
+		if i%2 == 0 {
+			path = db2
+		}
+		if err := g.Load(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(stop)
+	wg.Wait()
+	select {
+	case d := <-dropped:
+		t.Fatalf("换库期间有查询被丢掉：%s —— 两份库里这个 IP 都有国家，"+
+			"空串只能来自已关闭的 reader", d)
+	default:
 	}
 }

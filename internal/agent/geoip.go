@@ -68,9 +68,13 @@ func (g *geoDB) Load(path string) error {
 //	("",   nil)            **库里没有这个 IP** —— 内网、保留段、或者库覆盖不到
 //	("",   ErrNoGeoDB)     本机没有库
 func (g *geoDB) Country(ip string) (string, error) {
+	// **读锁要一直握到 Lookup 结束。** 先取出 reader 再放锁的话，
+	// Load 的 old.Close() 可以插在放锁与 Lookup 之间 —— Load 里那句
+	// 「先换再关」防不住这个：关的时机对了，用的时机没被保护（issue #30）。
+	// Lookup+Decode 是纯内存操作，微秒级，握着读锁不构成竞争点。
 	g.mu.RLock()
+	defer g.mu.RUnlock()
 	r := g.reader
-	g.mu.RUnlock()
 	if r == nil {
 		return "", ErrNoGeoDB
 	}
