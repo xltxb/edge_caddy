@@ -29,6 +29,7 @@ const wire = (id: string, cfg: string, over: Partial<NodeWire> = {}): NodeWire =
   status: 'ok',
   online: true,
   geo_db_ok: null,
+  blocked_1h: null,
   reconnects_1h: 0,
   cpu: 10,
   mem: 20,

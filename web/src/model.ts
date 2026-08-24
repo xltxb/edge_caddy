@@ -66,6 +66,14 @@ export interface EdgeNode {
    * 每台节点标一句红，而这套系统压根没在用地域规则。
    */
   geoDbOk: boolean | null
+  /**
+   * 过去一小时被拦下的请求数（契约 §4）。**`null` = 还不知道，不是 0。**
+   *
+   * 跟 `reconnects1h` 同一档（要回答「此刻在不在被打」，而 0 正是「没被打」
+   * 的样子），**跟上一行的 `geoDbOk` 相反**（那个 null 是「不适用」，要闭嘴）。
+   * 三个 null 在这个类型里挨着，处置各不相同。
+   */
+  blocked1h: number | null
   cpu: number
   mem: number
   conns: number
@@ -120,6 +128,12 @@ export function fromNodeWire(w: NodeWire, stampedAt = Date.now()): EdgeNode {
      * 这一行不能兜成 false（false 是「库缺失」）。两个都会让界面说一件没发生的事。
      */
     geoDbOk: w.geo_db_ok ?? null,
+    /*
+     * `?? null` 兜「主控太旧」，而它落在**要说出来**那一档 ——
+     * 与上一行同样写法、相反去向：那一行兜成 null 是为了闭嘴，
+     * 这一行兜成 null 是为了开口。**不能兜成 0**：0 是「没被打」。
+     */
+    blocked1h: w.blocked_1h ?? null,
     cpu: w.cpu,
     mem: w.mem,
     conns: w.conns,

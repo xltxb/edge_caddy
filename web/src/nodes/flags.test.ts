@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canDelete, canToggleDns, nodeFlags, reconnectNote } from './flags'
+import { blockedNote, canDelete, canToggleDns, nodeFlags, reconnectNote } from './flags'
 import type { EdgeNode } from '@/model'
 
 const node = (over: Partial<EdgeNode> = {}): EdgeNode => ({
@@ -12,6 +12,7 @@ const node = (over: Partial<EdgeNode> = {}): EdgeNode => ({
   online: true,
   reconnects1h: 0,
   geoDbOk: null,
+  blocked1h: null,
   cpu: 10,
   mem: 20,
   conns: 100,
@@ -256,5 +257,55 @@ describe('geoDbOk 三档', () => {
       geo(node({ geoDbOk: null })),
       'null 被当成了「库缺失」—— 没在用这功能的系统会每台节点标一条红',
     ).toBeUndefined()
+  })
+})
+
+/**
+ * 「拦了多少」三档。
+ *
+ * 这是同一个 `EdgeNode` 上第三个 `null`，而三个的处置各不相同：
+ * `reconnects1h` 要说出来、`geoDbOk` 要闭嘴、这一个要说出来。
+ * **照着 `geoDbOk` 的模式写这一条会得到一个在挨打时闭嘴的界面。**
+ */
+describe('blockedNote 三档', () => {
+  it('有数：说出来', () => {
+    expect(blockedNote(node({ blocked1h: 12480 }))).toContain('12480')
+  })
+
+  /*
+   * **`null` 不能显示成 0。**
+   *
+   * 它要回答的是「此刻在不在被打」，而 `0` 正是「没被打」的样子 ——
+   * 拿 0 当兜底，等于让它在自己失效的那一刻伪装成它最想否定的那个状态。
+   */
+  it('null：说「还没有」，不能说成 0', () => {
+    const s = blockedNote(node({ blocked1h: null }))!
+    expect(s, 'null 被显示成了 0 —— 一台正在挨打的机器看起来很太平').not.toMatch(/\b0\b/)
+    expect(s).toContain('还没有')
+  })
+
+  /**
+   * **`0` 那一档最需要解释。**
+   *
+   * 处置方式是 `abort`（静默断连）时，被拦的请求**不产生任何响应** ——
+   * Caddy 按状态码的计数里没有它。所以一条黑名单规则拦得很起劲，
+   * 这个数照样是 0。
+   *
+   * 不说的话，人会据此以为规则没生效、跑去查规则 ——
+   * **而真正该看的是那条路由的处置方式**。
+   */
+  it('0：要说清「静默断连」那一档数不进来', () => {
+    const s = blockedNote(node({ blocked1h: 0 }))!
+    expect(s, '0 被说成了「没人来打」—— 而 abort 那一档根本数不到').toContain('静默断连')
+  })
+
+  /*
+   * 三档的措辞必须两两不同 —— 否则上面三条里有的只是在验同一句话。
+   */
+  it('三档说的不是同一句话', () => {
+    const a = blockedNote(node({ blocked1h: 5 }))
+    const b = blockedNote(node({ blocked1h: 0 }))
+    const c = blockedNote(node({ blocked1h: null }))
+    expect(new Set([a, b, c]).size, '有两档共用了一句话').toBe(3)
   })
 })

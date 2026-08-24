@@ -14,7 +14,7 @@ import { useUiStore } from '@/stores/ui'
 import { hbAgeSec, type EdgeNode } from '@/model'
 import { fmtClock, fmtConns, fmtHbAge } from '@/utils/format'
 import type { DrainStep } from '@/api/types'
-import { canDelete, canToggleDns, nodeFlags, reconnectNote } from '@/nodes/flags'
+import { blockedNote, canDelete, canToggleDns, nodeFlags, reconnectNote } from '@/nodes/flags'
 
 const route = useRoute()
 const nodes = useNodesStore()
@@ -349,6 +349,14 @@ const LEVEL_COLOR: Record<string, string> = {
                     拿这两个数对账，而它们本来就不该相等（契约 §4）。
                   -->
                   <span v-if="reconnectNote(n)" class="warn">· {{ reconnectNote(n) }}</span>
+                  <!--
+                    **拦了多少。** 三档都要说出来，而 `0` 那一档最需要解释：
+                    处置方式选「静默断连」的路由，被拦的请求不产生任何响应，
+                    Caddy 按状态码的计数里没有它 —— 所以规则拦得很起劲，
+                    这个数照样是 0。不说的话人会跑去查规则，
+                    而真正该看的是那条路由的处置方式。
+                  -->
+                  <span class="muted">· {{ blockedNote(n) }}</span>
                 </dd>
               </dl>
 

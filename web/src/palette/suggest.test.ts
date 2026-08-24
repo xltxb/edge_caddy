@@ -12,6 +12,7 @@ const node = (id: string, over: Partial<EdgeNode> = {}): EdgeNode => ({
   online: true,
   reconnects1h: 0,
   geoDbOk: null,
+  blocked1h: null,
   cpu: 10,
   mem: 20,
   conns: 100,
