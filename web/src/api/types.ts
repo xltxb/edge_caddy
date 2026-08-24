@@ -639,6 +639,25 @@ export interface DnsSyncWire {
    */
   at: string | null
   detail: string
+  /**
+   * **每个域名各自的结果**（契约 §11）。
+   *
+   * `ok` 是「全都成功」—— 三个坏一个时它是 `false`，而**另外两个是好的这件事，
+   * 只有这里说得出来**。一个布尔说不出「三个里哪一个没上」，而人会按那个布尔
+   * 决定要不要去查。
+   *
+   * **`null` 是旧数据**（写于只支持单域名的版本），**不是「一个目标都没有」** ——
+   * 那一档退回只显示 `detail`。跟 `covers` / `reconnects_1h` 同一条：
+   * 空数组是个断言，`null` 是「这次说不了」。
+   */
+  targets: DnsSyncTargetWire[] | null
+}
+
+/** 单个域名的同步结果。`detail` 原样显示 —— 它说的是这一个为什么没上。 */
+export interface DnsSyncTargetWire {
+  hostname: string
+  ok: boolean
+  detail: string
 }
 
 /** `GET /nodes` 的响应。除了分页，还带着两个全局事实。 */
@@ -679,6 +698,29 @@ export interface NodeUpdateWire {
  */
 export interface NodeDeleteWire {
   id: string
+  detail: string
+}
+
+/**
+ * `PUT /settings` 的响应（契约 §11）。
+ *
+ * **改完服务商会立刻推一次解析**，而这两个字段说的是那一步成没成 ——
+ * 与 `NodeUpdateWire` / `DnsToggleWire` 同一条规矩：**库里写成功 ≠ 解析真的变了**。
+ *
+ * 契约里那段话记的是灰度上撞到的事：
+ *
+ * > 换服务商、填好凭证、保存成功、徽标变绿 —— 而服务商那边一条记录都没有。
+ *
+ * 触发同步的是「保存权重 / 动节点开关 / 改节点 IP / 心跳摘挂」，
+ * **改服务商本身不在其中**，人得再去随便碰一个别的东西才会推。
+ *
+ * `detail` 在**与 DNS 无关的那次修改里是空串**（§0.4）—— 只改了心跳间隔时
+ * 弹一句「解析已同步」，是在报告一件没发生的事。所以呈现时要判空，
+ * 不能无条件把它拼进 toast。
+ */
+export interface SettingsUpdateWire {
+  dns_synced: boolean
+  /** 说清 dns_synced 为什么是那个值。直接呈现，不要自己编。 */
   detail: string
 }
 
@@ -804,6 +846,13 @@ export interface DnsWeightsWire {
   capabilities?: DnsCapabilitiesWire
   /** 服务商那边真的这样了没有。与 lines 里的 share（我们打算怎么分）是两件事。 */
   dns_sync?: DnsSyncWire
+  /**
+   * **这份轮换会被写到哪几个名字上**（契约 §11）。
+   *
+   * 与单数的 `domain` 的区别是承重的：那个是旧形态，**多域名时它是不全的**。
+   * 界面用这个。
+   */
+  domains: string[]
 }
 
 /* ── 11. 系统设置与告警 ── */
@@ -817,11 +866,45 @@ export type CredentialMode = 'api_token' | 'global_key'
  * `domain` 与 `sub` —— 那两个是**配置这件事本身需要的**（要往哪个 zone 写记录），
  * 不带它们的话界面配不出一个完整的服务商。
  */
-export interface DnsProviderWire {
-  kind: string
-  /** 解析域名，例如 `example.com`。空串 = 还没配过。 */
+/**
+ * 一条要管的记录写到哪儿（契约 §11）。
+ *
+ * **凭证与 `kind` 只有一份**（同一个服务商账号），变的是每条记录的落点。
+ * `zone_id` **每条各填**（仅 Cloudflare）：同一 zone 下的多个子域填同一个，
+ * 不同顶级域各填各的；DNSPod 不需要它。
+ */
+export interface DnsTargetWire {
   domain: string
   /** 子域前缀，可空 —— 记录写在 `<sub>.<domain>` 上。 */
+  sub: string
+  zone_id: string
+}
+
+export interface DnsProviderWire {
+  kind: string
+  /**
+   * **要管的全部主机名。** 配过的话永远非空 —— 照它渲染。
+   *
+   * 轮换是**共享**的：所有域名指向同一组边缘节点，权重表不分域名。
+   */
+  /**
+   * **`null` 是「一条域名都没配」，不是空数组** —— 真主控在库里没有记录时
+   * 回的是 `null`（`check:shapes` 撞出来的：mock 一直回数组，于是类型里也
+   * 写成了数组，而界面拿它直接 `.map()` 会炸在一台刚装好的主控上）。
+   *
+   * 两者在界面上要表现成同一件事（都是「还没有域名」），但类型上不能合并 ——
+   * 合并的代价是下一个人照着类型写出一个只在新装环境里崩的页面。
+   */
+  targets: DnsTargetWire[] | null
+  /**
+   * @deprecated 旧形态，只剩兼容用途 —— **多域名时它是不全的**。
+   *
+   * 库里有旧数据（写于只支持单域名的版本），主控在 `targets` 为空而它非空时
+   * 合成一条。**不直接删是因为一次读不出来的配置会表现成「解析突然不同步了」**，
+   * 而没有任何一处说得出为什么。界面别拿它当权威。
+   */
+  domain: string
+  /** @deprecated 见 `domain`。 */
   sub: string
   credential_mode: CredentialMode | ''
   /** 凭证只写入不回显 —— 这里永远没有明文，只有「配没配」。 */
@@ -853,7 +936,16 @@ export interface DnsProviderWire {
  */
 export interface DnsProviderFields {
   kind?: string
+  /**
+   * **给了就整个替换，不是逐条合并**（契约 §11）。
+   *
+   * 合并的话「删掉一个域名」没法表达：给一个少一条的列表会被读成「这几条不变」，
+   * 而那个域名会永远留在配置里继续被同步。
+   */
+  targets?: DnsTargetWire[]
+  /** @deprecated 旧形态，新界面发 `targets`。 */
   domain?: string
+  /** @deprecated 见 `domain`。 */
   sub?: string
   credential_mode?: CredentialMode
   zone_id?: string

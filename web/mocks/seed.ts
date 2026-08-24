@@ -413,7 +413,7 @@ export const settings: SettingsWire & Record<string, unknown> = {
   warn_cpu_pct: 80,
   warn_mem_pct: 90,
   // 凭证只写入不回显：这里永远没有明文，只有「配没配」
-  dns_provider: { kind: 'cloudflare', domain: 'example.com', sub: '', credential_mode: 'api_token', configured: true },
+  dns_provider: { kind: 'cloudflare', targets: [{ domain: 'example.com', sub: 'cdn', zone_id: 'zone-abc123' }, { domain: 'other-site.com', sub: '', zone_id: 'zone-def456' }], domain: 'example.com', sub: '', credential_mode: 'api_token', configured: true },
   /*
    * 照契约 §11 抄的 —— **而这一份是这条链上唯一没有机械保障的一段**：
    * 真主控那边它由 MissingFields 求值得出，到了这里是我手抄的。

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { http, errorText } from '@/api/http'
-import type { DnsProviderFields, SettingsWire } from '@/api/types'
+import type { DnsProviderFields, SettingsUpdateWire, SettingsWire } from '@/api/types'
 import type { SettingsPutBody } from '@/api/requests'
 import { useUiStore } from '@/stores/ui'
 
@@ -69,7 +69,9 @@ const dropAfter = computed(() =>
 const dnsEdit = ref<DnsProviderFields>({})
 
 /** 只有不回显的那几个才需要「填了才发」。回显字段的脏值走 `dirty` 的整体比对。 */
-const dnsDirty = computed(() => Object.values(dnsEdit.value).some((v) => v !== undefined && v !== ''))
+const dnsDirty = computed(() =>
+  Object.values(dnsEdit.value).some((v) => v !== undefined && v !== ''),
+)
 
 /** 凭证的三种状态。见模板里凭证那一行的注释。 */
 const credTag = computed(() => {
@@ -145,8 +147,6 @@ async function save(): Promise<void> {
        */
       const p: DnsProviderFields = {
         kind: cur.kind as DnsProviderFields['kind'],
-        domain: cur.domain,
-        sub: cur.sub,
         credential_mode: cur.credential_mode as DnsProviderFields['credential_mode'],
       }
       for (const [k, v] of Object.entries(dnsEdit.value)) {
@@ -164,10 +164,26 @@ async function save(): Promise<void> {
      *
      * 保存后重新 GET 一次。多一趟请求，换掉一整类「回显与真相不一致」。
      */
-    await http.put('/settings', body)
+    const r = await http.put<SettingsUpdateWire>('/settings', body)
     dnsEdit.value = {}
     await load()
-    ui.toast('ok', '设置已保存')
+    /*
+     * **改完服务商会立刻推一次解析，而那一步可能没成**（契约 §11）。
+     *
+     * 灰度上撞到过：换服务商、填好凭证、保存成功、徽标变绿 —— 而服务商那边
+     * 一条记录都没有。触发同步的是「保存权重 / 动节点开关 / 改节点 IP /
+     * 心跳摘挂」，**改服务商本身不在其中**。
+     *
+     * `detail` 在与 DNS 无关的修改里是空串（§0.4）—— 只改了心跳间隔时说
+     * 「解析已同步」，是在报告一件没发生的事。所以判空，不无条件拼进去。
+     */
+    if (!r?.detail) {
+      ui.toast('ok', '设置已保存')
+    } else if (r.dns_synced) {
+      ui.toast('ok', '设置已保存，解析已推到服务商', r.detail)
+    } else {
+      ui.toast('warn', '设置已保存，但解析没推上去', r.detail)
+    }
   } catch (e) {
     ui.toast('warn', '保存失败', errorText(e, ''))
   } finally {
@@ -334,32 +350,6 @@ async function clearProvider(): Promise<void> {
           </div>
         </div>
 
-        <div class="row">
-          <label for="dns-domain">解析域名</label>
-          <div class="ctl">
-            <input
-              id="dns-domain"
-              data-field="domain"
-              v-model="form.dns_provider.domain"
-              class="text"
-              placeholder="example.com"
-            />
-            <p class="note">记录写在这个域名下。</p>
-          </div>
-        </div>
-
-        <div class="row">
-          <label for="dns-sub">子域前缀</label>
-          <div class="ctl">
-            <input
-              id="dns-sub"
-              v-model="form.dns_provider.sub"
-              class="text"
-              placeholder="（可空）"
-            />
-            <p class="note">留空则记录直接写在解析域名上。</p>
-          </div>
-        </div>
 
         <!-- 两个 Cloudflare 的凭证方式一样（契约 §11），DNSPod 没有这一档 -->
         <div v-if="isCloudflare" class="row">
@@ -374,36 +364,11 @@ async function clearProvider(): Promise<void> {
         </div>
 
         <!--
-          **Zone ID 与 Account ID 两种凭证方式都必填**（契约 §11）。
+          **Zone ID 挪到每条域名那一行去了**（契约 §11）：同一个 zone 下的多个
+          子域填同一个，不同顶级域各填各的 —— 一个顶层的 Zone ID 表达不了这件事。
 
-          `account_id` 此前被关在 `global_key` 分支里，而且占位符写着「可空」——
-          于是 **api_token 模式下界面上根本没有这个输入框**，人填不了它。
-          灰度上的症状：只填 kind / domain / token 保存成功、设置页显示已配置，
-          而推权重时 Cloudflare 回
-          `GET /accounts//load_balancers/pools` → 7003「Could not route to ...」。
-
-          **那个双斜杠就是空字段**，而 Cloudflare 的错误消息不认识我们的字段名，
-          它把人送去查 token 和权限 —— 离真因最远的两个地方。
-
-          两个都是拼进 URL 的路径段：加权调度用的 pool 是账号级的，
-          load balancer 挂在 zone 上。少任何一个都不是「功能弱一点」，
-          是**整条推送不成立**。
-
-          契约那张表当时把 `account_id` 写成「可选」，这个框是照它做的 ——
-          **契约里的一句错会被忠实地复制出去**。
+          它此前在这里，而那时一套配置只管一个主机名。
         -->
-        <div v-if="isCloudflare" class="row">
-          <label for="dns-zone">Zone ID</label>
-          <div class="ctl">
-            <input
-              id="dns-zone"
-              data-field="zone_id"
-              v-model="dnsEdit.zone_id"
-              class="text mono"
-              :placeholder="form.dns_provider.configured ? '留空 = 不改动' : '必填'"
-            />
-          </div>
-        </div>
 
         <!--
           **只有负载均衡那个要。** 纯 DNS 的记录挂在 zone 上，账号级 LB 权限

@@ -3,7 +3,7 @@ import { WebSocketServer, type WebSocket } from 'ws'
 import type { EventKind } from '../src/api/types'
 import { handleConfig, resetConfig } from './config-mock'
 import { handleDeploy, resetDeploys } from './deploy-mock'
-import { handleDns, handleNodes, heartbeatNodes, resetNodes } from './node-mock'
+import { handleDns, handleNodes, heartbeatNodes, resetNodes, setSyncOverride } from './node-mock'
 import * as seed from './seed'
 
 const WS_PATH = '/api/v1/ws'
@@ -68,6 +68,22 @@ export function wsMockPlugin(): Plugin {
        * 影响。让每个用例自己复位，比让它们小心地共享一份漂移的状态可靠得多。
        * 这个端点不在契约里，真主控上不存在 —— e2e 只跑 mock 模式。
        */
+      /*
+       * **e2e 造同步场景用**，与 `__test/reset` 同类：不在契约里，真主控上不存在。
+       * `/dns/weights` 由这个插件提供，playwright 的 `page.route` 拦不到它。
+       */
+      server.middlewares.use((req, res, next) => {
+        if (req.url !== '/api/v1/__test/dns-sync' || req.method !== 'POST') return next()
+        let raw = ''
+        req.on('data', (c) => (raw += c))
+        req.on('end', () => {
+          setSyncOverride(raw ? JSON.parse(raw) : null)
+          res.statusCode = 200
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ code: 0, data: null, msg: '' }))
+        })
+      })
+
       server.middlewares.use((req, res, next) => {
         if (req.url !== '/api/v1/__test/reset' || req.method !== 'POST') return next()
         resetConfig()

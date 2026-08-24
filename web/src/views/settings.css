@@ -222,3 +222,83 @@
   text-underline-offset: 3px;
   cursor: pointer;
 }
+
+/*
+ * 三家服务商的能力对照。**两列**：名字一列，能干什么一列 ——
+ * 堆叠着读的话，那三行「能表达什么」会连成一段，分不清哪句配哪家。
+ */
+.kinds {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: var(--space-2) 0 0;
+  font-size: var(--fs-2xs);
+  line-height: 1.7;
+}
+.kinds dt {
+  color: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+.kinds dd {
+  margin: 0;
+  color: var(--text-muted);
+}
+.kinds b {
+  color: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+
+/*
+ * 一条解析目标一行。列数会变 —— `zone_id` 只有 Cloudflare 有 ——
+ * 所以用 flex 而不是固定列的 grid。
+ *
+ * **预览独占一行**（`flex: 1 0 100%`）：它跟在输入框后面时会被挤出卡片右边，
+ * 而那正是它要说的东西 —— 记录最终写到哪个名字上。溢出到看不见等于没有。
+ */
+.target {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.target .text {
+  flex: 1 1 150px;
+  min-width: 0;
+}
+.t-preview {
+  flex: 1 0 100%;
+  font-size: var(--fs-2xs);
+  color: var(--text-faint);
+  word-break: break-all;
+}
+.t-preview::before {
+  content: '→ ';
+}
+.empty-targets {
+  margin-bottom: var(--space-2);
+  padding: var(--space-3);
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+}
+.add {
+  align-self: flex-start;
+  margin-top: var(--space-1);
+}
+
+/*
+ * `.ctl` 默认是横排的 flex —— 一格里摆一个输入框加一句说明。
+ * 域名这一格装的是**若干整行**（每条目标、添加按钮、那句说明），要竖着排。
+ *
+ * 不加这个类时它们横着挤，而**那个错误会伪装成正确**：Cloudflare 下每行三个
+ * 输入框，宽度恰好把「添加域名」挤到下一行 —— 看起来完全正常。换成 DNSPod
+ * 少了 Zone ID 那一框，宽度富余，按钮就跳到第二条域名的右边去了。
+ *
+ * 凑巧排对不是排对。这是切服务商时看出来的，静态看一屏看不出来。
+ */
+.ctl.stack {
+  flex-direction: column;
+  align-items: stretch;
+}

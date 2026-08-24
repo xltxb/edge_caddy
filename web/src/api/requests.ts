@@ -310,7 +310,19 @@ export const REQUEST_SHAPES: Record<string, Shape> = {
 export const NESTED_SHAPES: Record<string, Shape> = {
   'PUT /settings#dns_provider': shape<DnsProviderSubBody>()({
     required: [],
-    optional: ['kind', 'domain', 'sub', 'credential_mode', 'zone_id', 'account_id', 'email', 'credential'],
+    optional: [
+      'kind',
+      /* 给了就整个替换，不是逐条合并 —— 合并的话「删掉一个域名」没法表达。 */
+      'targets',
+      /* domain / sub / zone_id 是旧形态，新界面不发它们，登记着是为了兼容旧数据。 */
+      'domain',
+      'sub',
+      'credential_mode',
+      'zone_id',
+      'account_id',
+      'email',
+      'credential',
+    ],
   }),
   /* clear 是独立动作，不能与上面任何字段同给 —— 同给后端返回 1002（契约 §11）。 */
   'PUT /settings#dns_provider.clear': { required: ['clear'], optional: [] },

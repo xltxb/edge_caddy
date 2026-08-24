@@ -40,6 +40,13 @@ export const NAV: NavItem[] = [
     icon: 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20M2 12h20',
   },
   {
+    key: 'domains',
+    label: '解析域名',
+    path: '/domains',
+    group: '调度',
+    icon: 'M4 6h16M4 12h10M4 18h7M17 14l4 4-4 4M21 18h-8',
+  },
+  {
     key: 'workbench',
     label: '配置工作台',
     path: '/workbench',

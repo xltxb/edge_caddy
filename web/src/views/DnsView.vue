@@ -244,7 +244,11 @@ async function save(): Promise<void> {
     <header class="head">
       <div class="title">DNS 调度</div>
       <div class="sub">
-        {{ data?.domain ? `解析域名 ${data.domain}` : '按解析线路分组' }} ·
+        <!--
+          **用 `domains`（复数），不用 `domain`。** 后者是旧形态，多域名时它是
+          不全的 —— 只显示其中一个会让人以为另外几个没在管（契约 §11）。
+        -->
+        {{ data?.domains?.length ? `解析域名 ${data.domains.join('、')}` : '按解析线路分组' }} ·
         {{ configured ? '保存后立即同步到 DNS 服务商' : '尚未配置服务商' }}
       </div>
       <RouterLink class="mini" to="/settings">DNS 服务商设置</RouterLink>
@@ -275,6 +279,24 @@ async function save(): Promise<void> {
     -->
     <div v-if="configured && sync && !sync.ok" class="banner warn">
       下面这些权重是<b>待生效的安排</b>，服务商那边还没反映：{{ sync.detail }}
+      <!--
+        **一个布尔说不出「三个里哪一个没上」**（契约 §11）。
+
+        `ok` 是「全都成功」，三个坏一个时它就是 false —— 而**另外两个是好的
+        这件事，只有 targets 说得出来**。人会按那个布尔决定要不要去查，
+        而「全坏」和「坏一个」要做的事完全不同。
+
+        `targets` 为 `null` 是**旧数据**（写于只支持单域名的版本），
+        **不是「一个目标都没有」** —— 那一档只显示上面那句 detail，
+        不能渲染成一张空表格：空表格读起来像「一个域名都没配」。
+      -->
+      <ul v-if="sync.targets?.length" class="sync-targets">
+        <li v-for="t in sync.targets" :key="t.hostname" :class="{ bad: !t.ok }">
+          <span class="mark">{{ t.ok ? '✓' : '✕' }}</span>
+          <span class="host mono">{{ t.hostname }}</span>
+          <span class="why">{{ t.detail }}</span>
+        </li>
+      </ul>
     </div>
     <!--
       **成功时也要把 detail 说出来。**
@@ -425,6 +447,33 @@ async function save(): Promise<void> {
 .banner.info {
   background: var(--accent-subtle);
   color: var(--accent-text);
+}
+.sync-targets {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.sync-targets li {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  font-size: var(--fs-micro);
+  color: var(--text-muted);
+}
+.sync-targets .mark {
+  flex: none;
+  width: 12px;
+  color: var(--success-text, var(--accent));
+}
+.sync-targets li.bad .mark {
+  color: var(--danger-text);
+}
+.sync-targets .host {
+  flex: none;
+  color: var(--text-body);
 }
 .banner.warn {
   background: var(--warning-subtle);

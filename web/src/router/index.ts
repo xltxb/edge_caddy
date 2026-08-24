@@ -13,6 +13,7 @@ const routes: RouteRecordRaw[] = [
   { path: '/overview', name: 'overview', component: () => import('@/views/OverviewView.vue') },
   { path: '/nodes', name: 'nodes', component: () => import('@/views/NodesView.vue') },
   { path: '/dns', name: 'dns', component: () => import('@/views/DnsView.vue') },
+  { path: '/domains', name: 'domains', component: () => import('@/views/DomainsView.vue') },
   {
     path: '/workbench/:key?',
     name: 'workbench',

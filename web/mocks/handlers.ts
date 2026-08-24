@@ -194,13 +194,14 @@ export const handlers = [
       if (dns.clear) {
         seed.settings.dns_provider = {
           kind: '',
+          targets: [],
           domain: '',
           sub: '',
           credential_mode: '',
           configured: false,
         }
       }
-      return ok(null)
+      return ok({ dns_synced: false, detail: '服务商配置已清除，解析不再被推送' })
     }
 
     // 不带 dns_provider = 不动它（契约 §11）。带了就逐字段合并。
@@ -208,6 +209,12 @@ export const handlers = [
       const cur = seed.settings.dns_provider
       seed.settings.dns_provider = {
         kind: (dns.kind as typeof cur.kind) ?? cur.kind,
+        /*
+         * **给了就整个替换，不是逐条合并**（契约 §11）——别处都是「不给 = 不动」，
+         * 这一条不同。合并的话「删掉一个域名」没法表达：给一个少一条的列表会被
+         * 读成「这几条不变」，而那个域名会永远留在配置里继续被同步。
+         */
+        targets: (dns.targets as typeof cur.targets) ?? cur.targets,
         domain: (dns.domain as string) ?? cur.domain,
         sub: (dns.sub as string) ?? cur.sub,
         credential_mode: (dns.credential_mode as typeof cur.credential_mode) ?? cur.credential_mode,
@@ -216,7 +223,35 @@ export const handlers = [
       }
     }
 
-    return ok(null)
+    /*
+     * **改完 DNS 相关的东西会立刻推一次解析**（契约 §11），响应带这两个字段。
+     *
+     * mock 此前回 `data: null` —— 而真主控从来就不是。`check:shapes` 撞出来的：
+     * 界面照着 mock 写，于是「保存成功」之后什么都不说，
+     * **而那正是契约里记着的那个灰度事故**：换服务商、保存成功、徽标变绿，
+     * 服务商那边一条记录都没有。
+     *
+     * `detail` 在与 DNS 无关的修改里是空串（§0.4）—— 只改心跳间隔时说
+     * 「解析已同步」，是在报告一件没发生的事。
+     */
+    if (!dns) return ok({ dns_synced: false, detail: '' })
+    /*
+     * **没配服务商时 `detail` 是空串** —— 在真主控上试出来的，不是照契约抄的。
+     *
+     * 契约那张表说 `dns_synced: false` 时 detail 会给出「能力不足的理由」，
+     * 而没配服务商这一档它回的是空的。mock 原先在这里编了一句
+     * 「没有配 DNS 服务商，解析未变动」，界面照着它写就会以为
+     * **这一档总有话可显示**。
+     *
+     * `check:shapes` 抓不到这种：两边都是 `{dns_synced:boolean, detail:string}`，
+     * **形状一样，值不同**。它比的是形状。
+     */
+    const configured = !!seed.settings.dns_provider.kind && seed.settings.dns_provider.configured
+    return ok(
+      configured
+        ? { dns_synced: true, detail: '解析安排已推到服务商' }
+        : { dns_synced: false, detail: '' },
+    )
   }),
 
   http.get(`${BASE}/alerts`, () => ok(seed.alerts)),

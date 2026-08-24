@@ -39,9 +39,27 @@ function freshNodes() {
 
 export const nodeState = freshNodes()
 
+/**
+ * **e2e 用来造同步场景的开关。** 与 `__test/reset` 同类：不在契约里，
+ * 真主控上不存在。
+ *
+ * 为什么需要它：`/dns/weights` 由这个 Node 侧插件提供，`page.route` 拦不到它
+ * （实测拦截次数为 0）。而「三个域名坏一个」「targets 为 null 的旧数据」这两个
+ * 形状**必须有人走** —— 界面上那段展开列表否则就是没人看过的代码。
+ *
+ * 夹具本身保持全成功：那是「成功时 detail 不能被丢掉」那条的前提。
+ * **一个夹具不能同时是两种场景**，所以另一种由这里注入。
+ */
+let syncOverride: unknown = null
+
+export function setSyncOverride(v: unknown): void {
+  syncOverride = v
+}
+
 /** 复位到 seed —— 只给 e2e 用。 */
 export function resetNodes(): void {
   Object.assign(nodeState, freshNodes())
+  syncOverride = null
 }
 
 /**
@@ -145,7 +163,15 @@ function pushEvent(deps: NodeMockDeps, node: string | null, kind: string, msg: s
  * mock 跟着 kind 走，否则 dev 下永远看不到纯 DNS 那一档的说法 ——
  * 而那一档正是「库里五条不一致」的常态。
  */
-function dnsSync() {
+interface SyncShape {
+  ok: boolean
+  at: string
+  detail: string
+  targets: { hostname: string; ok: boolean; detail: string }[] | null
+}
+
+function dnsSync(): SyncShape {
+  if (syncOverride) return syncOverride as SyncShape
   const kind = settingsKind()
   const name = 'cdn.example.com'
   if (kind === 'cloudflare_dns') {
@@ -156,12 +182,40 @@ function dnsSync() {
         `解析安排已同步到服务商（写入 ${name}）。库里五条线路的配置并不一致` +
         '（多半是之前用别的服务商时配的）；普通 DNS 记录分不出线路，' +
         '这次按各线路节点的并集推送',
+      targets: (seed.settings.dns_provider.targets ?? []).map((t) => ({
+        hostname: t.sub ? `${t.sub}.${t.domain}` : t.domain,
+        ok: true,
+        detail: '已同步',
+      })),
     }
   }
+  /*
+   * **一个坏的形状**：两个成功一个失败。`ok` 是「全都成功」，所以它是 false ——
+   * 而**另外两个是好的这件事，只有 targets 说得出来**。
+   *
+   * 夹具造成坏的而不是全绿：全绿的话「展开列出哪一个坏了」那一支在 dev 下
+   * 永远走不到，界面上那段就是没人看过的代码。
+   */
+  const hosts = (seed.settings.dns_provider.targets ?? []).map((t) =>
+    t.sub ? `${t.sub}.${t.domain}` : t.domain,
+  )
+  /*
+   * **夹具是全成功的**，「三个里坏一个」那个形状由 e2e 用路由拦截自己造
+   * （`tests/e2e/dns.spec.ts`）。
+   *
+   * 这里造成坏的话，另一条守「成功时那句 detail 不能被丢掉」的 e2e 就没有
+   * 夹具了 —— **一个夹具不能同时是两种场景**，而两个场景都得有人走。
+   */
+  const targets = hosts.map((h) => ({ hostname: h, ok: true, detail: '已同步' }))
+  const bad = targets.filter((t) => !t.ok)
   return {
-    ok: true,
+    ok: bad.length === 0,
     at: new Date().toISOString(),
-    detail: `解析安排已同步到服务商（写入 ${name}）`,
+    detail: bad.length
+      ? `${targets.length} 个域名里 ${targets.length - bad.length} 个同步成功；` +
+        `失败的：${bad.map((t) => t.hostname).join('、')}`
+      : `解析安排已同步到服务商（写入 ${name}）`,
+    targets,
   }
 }
 
@@ -541,7 +595,14 @@ export async function handleDns(req: IncomingMessage, res: ServerResponse): Prom
     // 界面上那条限制就永远走不到。
     return (
       ok(res, {
+        /*
+         * **多域名时 `domain`（单数）是不全的**（契约 §11）—— 留着只为不立刻
+         * 破坏旧界面。新界面读 `domains`。
+         */
         domain: 'cdn.example.com',
+        domains: (seed.settings.dns_provider.targets ?? []).map((t) =>
+          t.sub ? `${t.sub}.${t.domain}` : t.domain,
+        ),
         dns_sync: dnsSync(),
         lines: buildLines(),
         /*

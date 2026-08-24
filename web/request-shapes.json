@@ -149,6 +149,7 @@
       "required": [],
       "optional": [
         "kind",
+        "targets",
         "domain",
         "sub",
         "credential_mode",

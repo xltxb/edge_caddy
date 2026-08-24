@@ -32,3 +32,29 @@ export async function withDraftSaved(page: Page, action: () => Promise<void>): P
 export function pendingBadge(page: Page) {
   return page.locator('header').getByText('待下发').locator('xpath=following-sibling::b[1]')
 }
+
+/**
+ * 走到某一页，**走 SPA 内部路由，不用 `page.goto` / `page.reload`**。
+ *
+ * 两个原因，都是撞出来的：
+ *
+ * 1. **整页导航会把 MSW 的 seed 清回初始值。** handlers 活在浏览器里，页面一
+ *    重载就重新初始化 —— 前一步用 `PUT` 存进去的东西全没了。症状不是「设置
+ *    失败」，是**这一页读到的还是上一轮的值**，而那看起来像界面渲染错了。
+ *    （Node 侧 vite 插件提供的那些端点不受影响，它们的状态在 Node 进程里。）
+ *
+ * 2. **同一路径 `push` 不会重新挂载组件**，于是它不会重新 GET。
+ *    所以已经在目标页时先绕一下 —— 这正是「改了服务端状态、要这一页重新读」
+ *    的那个场景。
+ *
+ * 顺带这也更接近人实际做的事：点左边的菜单，而不是敲地址栏。
+ */
+export async function visit(page: Page, path: string, ready: string): Promise<void> {
+  if (new URL(page.url()).pathname === path) {
+    await page.click('nav a[href="/overview"]')
+    await page.waitForURL('**/overview')
+  }
+  await page.click(`nav a[href="${path}"]`)
+  await page.waitForURL(`**${path}`)
+  await page.waitForSelector(ready)
+}
