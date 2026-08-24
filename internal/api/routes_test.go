@@ -106,6 +106,7 @@ var contractMentionExemptions = map[string]string{
 	// account_id 为空时那个双斜杠长什么样 —— 扫描器分不出上游和自家，
 	// 而分不出是对的：它宁可多问一句，也不该猜。
 	"GET /accounts//load_balancers/pools": "上游（Cloudflare）的路径，出现在 account_id 必填那段的病症描述里",
+	"PUT /rules/x":                        "§6.2 里举的例子（停用 + 空 ips 存得进去），:id 位置是个占位的 x",
 }
 
 func registered(r *gin.Engine) map[string]bool {
