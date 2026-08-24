@@ -355,3 +355,40 @@ func TestNodeListFieldsMatchContract(t *testing.T) {
 		}
 	}
 }
+
+// **`{res_key, field, reason}` 这个形状要与契约 §0.3 一致。**
+//
+// 它有两个消费方：`1002` 的 `errors`，和 `GET /rules` 的 `incomplete` ——
+// 而两边的界面都照契约写。改一个键名，两处一起哑掉，
+// 而**接口照常返回 200**，只是界面上那些原因不再显示。
+//
+// 前端指出这个形状**目前没有任何一处在比**：他那套形状检查跳过了
+// `incomplete`（它是 ruleId → 清单的 map，比键等于比「哪些规则 id 恰好
+// 两边都有」，那是巧合不是形状）。这一条补的是后端这一半。
+func TestFieldErrorKeysMatchContract(t *testing.T) {
+	want := map[string]bool{"res_key": true, "field": true, "reason": true}
+
+	b, err := json.Marshal(api.FieldErrorForTest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("序列化出 %d 个键（期望 3）—— 这不是我们以为的东西：%v", len(got), got)
+	}
+	for k := range got {
+		if !want[k] {
+			t.Errorf("多出一个契约 §0.3 没写的键 %q", k)
+		}
+	}
+	for k := range want {
+		if _, ok := got[k]; !ok {
+			t.Errorf("契约 §0.3 写了 %q 而它没有 —— "+
+				"1002 的 errors 与 GET /rules 的 incomplete 会一起哑掉，"+
+				"而接口照常返回 200", k)
+		}
+	}
+}
