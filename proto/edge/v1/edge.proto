@@ -50,6 +50,13 @@ message Hello {
   string token = 1;    // 一次性接入 Token；已接入的节点留空，身份由 mTLS 证书决定
   string node_id = 2;
   string version = 3;  // Agent 版本
+
+  // verify_kinds 与心跳里那个同源，**在握手时就报**。
+  //
+  // 只在心跳里报的话，从「隧道连上」到「第一次心跳」之间有一个窗口 ——
+  // 那期间主控会把一台其实支持的节点判成不支持，于是下发被拒。
+  // **一道会误报的安全门，最后会被人关掉。**
+  repeated string verify_kinds = 4;
 }
 
 // Enrolled 是主控对 Hello 的应答。只在凭 Token 首连时携带证书；
@@ -79,6 +86,22 @@ message Heartbeat {
   // 是被访问规则拦下或由静态响应处理掉的。
   uint64 req_total = 8;
   uint64 origin_total = 9;
+
+  // verify_kinds 是本机的校验端点**认得哪些规则类型**。
+  //
+  // **这是升级期的护栏，实测出来的**：旧 Agent 收到一条它不认识的规则类型
+  // （rate_limit / geo_block）时，校验端点走 default 分支回 403 ——
+  // 于是那个域名的**第一个请求就被拒**。不是降级，是整站对所有人关闭，
+  // 而配置看起来完全正常。
+  //
+  // 校验端点是 fail-closed 的（ADR-0003），那对「这个请求没有凭据」是对的；
+  // 而「这个节点不认识这条规则」是另一回事 —— 把我们的版本落后
+  // 变成所有访问者的 403，是把一次升级疏忽放大成一次全站故障。
+  //
+  // **空表示旧 Agent**：主控按「只认得 service_secret / jwt_bearer」处理。
+  // 由节点报而不是主控按 agent_version 推断：版本号到能力的映射是第二份知识，
+  // 而它会在某次改动之后悄悄过期。
+  repeated string verify_kinds = 11;
 
   // geo_db_sha 是本机 GeoIP 库的 SHA-256（十六进制），没有库时为空。
   //

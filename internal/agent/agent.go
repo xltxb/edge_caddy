@@ -114,7 +114,12 @@ func (a *Agent) Run(ctx context.Context) error {
 		return fmt.Errorf("打开隧道: %w", err)
 	}
 
-	hello := &edgev1.Hello{NodeId: a.cfg.NodeID, Version: a.cfg.Version}
+	// **握手时就报能力。** 只在心跳里报的话，从「隧道连上」到「第一次心跳」
+	// 之间有一个窗口，那期间主控会把一台其实支持的节点判成不支持。
+	hello := &edgev1.Hello{
+		NodeId: a.cfg.NodeID, Version: a.cfg.Version,
+		VerifyKinds: VerifyKinds(),
+	}
 	if enrolling {
 		hello.Token = a.cfg.Token
 	}
@@ -381,6 +386,9 @@ func (a *Agent) heartbeatLoop(ctx context.Context, stream edgev1.EdgeTunnel_Chan
 			// 主控记账的话，一次推送失败之后它会一直以为节点有库，
 			// 而那个域名的地域规则一直不生效 —— 与 cfg_version 同一条理由。
 			GeoDbSha: a.geoSHA,
+			// **报出本机认得哪些规则类型。** 主控据此拒绝下发它不认识的，
+			// 而不是等到请求到达时由校验端点回 403 —— 那时整个域名已经关了。
+			VerifyKinds: VerifyKinds(),
 		}
 		a.mu.Unlock()
 		if err := stream.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_Hb{Hb: hb}}); err != nil {

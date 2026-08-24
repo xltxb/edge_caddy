@@ -18,6 +18,11 @@ type Node struct {
 	// GeoDBSha 是这台节点上 GeoIP 库的哈希，节点自己报的。
 	// 空表示它还没有库 —— 那时它上面的地域规则不生效。
 	GeoDBSha string `json:"-"`
+	// VerifyKinds 是这台节点的校验端点认得哪些规则类型。
+	//
+	// **空表示旧 Agent**（它不报这个），不是「一种都不认得」——
+	// 主控按「只认得 service_secret / jwt_bearer」处理。
+	VerifyKinds []string `json:"-"`
 	// Status 取 StatusOK / StatusWarn / StatusDown 之一。
 	Status     string     `json:"status"`
 	CfgVersion string     `json:"cfg_version"`
@@ -71,7 +76,7 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 		`SELECT id, city, vendor, line, host(public_ip), status::text,
 		        cfg_version, dns_enabled, last_hb_at, created_at, drained_at,
 		        coalesce(dns_reason::text, ''), coalesce(dns_actor, ''), dns_changed_at,
-		        agent_version, geo_db_sha
+		        agent_version, geo_db_sha, verify_kinds
 		 FROM edge_nodes ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -84,7 +89,7 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 		if err := rows.Scan(&n.ID, &n.City, &n.Vendor, &n.Line, &n.PublicIP,
 			&n.Status, &n.CfgVersion, &n.DNSEnabled, &n.LastHBAt, &n.CreatedAt,
 			&n.DrainedAt, &n.DNSReason, &n.DNSActor, &n.DNSChangedAt,
-			&n.AgentVersion, &n.GeoDBSha); err != nil {
+			&n.AgentVersion, &n.GeoDBSha, &n.VerifyKinds); err != nil {
 			return nil, err
 		}
 		out = append(out, n)
@@ -98,18 +103,18 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 // status 只在 ok / warn 之间取：判定离线是 health 模块的事，
 // 而一次到达的心跳按定义就说明它没离线。
 func (s *Store) TouchHeartbeat(ctx context.Context, nodeID, cfgVersion, status string) error {
-	return s.touchHeartbeat(ctx, nodeID, cfgVersion, status, nil)
+	return s.touchHeartbeat(ctx, nodeID, cfgVersion, status, nil, nil)
 }
 
 // TouchHeartbeatWithGeo 同上，外加节点报的 GeoIP 库哈希。
 //
 // **分成两个函数而不是加一个参数**：加参数的话每个调用方都要想一下传什么，
 // 而只有隧道那一处知道这个值。别处传空串会把一个已有库的节点标成没有。
-func (s *Store) TouchHeartbeatWithGeo(ctx context.Context, nodeID, cfgVersion, status, geoSHA string) error {
-	return s.touchHeartbeat(ctx, nodeID, cfgVersion, status, &geoSHA)
+func (s *Store) TouchHeartbeatWithGeo(ctx context.Context, nodeID, cfgVersion, status, geoSHA string, kinds []string) error {
+	return s.touchHeartbeat(ctx, nodeID, cfgVersion, status, &geoSHA, kinds)
 }
 
-func (s *Store) touchHeartbeat(ctx context.Context, nodeID, cfgVersion, status string, geoSHA *string) error {
+func (s *Store) touchHeartbeat(ctx context.Context, nodeID, cfgVersion, status string, geoSHA *string, kinds []string) error {
 	if status != "warn" {
 		status = "ok"
 	}
@@ -118,10 +123,13 @@ func (s *Store) touchHeartbeat(ctx context.Context, nodeID, cfgVersion, status s
 	// 往这里加一句「节点回来了就清掉下线标记」听起来很合理，而那会让
 	// 下线在心跳到达的那一刻静默失效。
 	if geoSHA != nil {
+		if kinds == nil {
+			kinds = []string{}
+		}
 		_, err := s.Pool.Exec(ctx,
 			`UPDATE edge_nodes SET last_hb_at = now(), status = $3::node_status,
-			        cfg_version = $2, geo_db_sha = $4
-			 WHERE id = $1`, nodeID, cfgVersion, status, *geoSHA)
+			        cfg_version = $2, geo_db_sha = $4, verify_kinds = $5
+			 WHERE id = $1`, nodeID, cfgVersion, status, *geoSHA, kinds)
 		return err
 	}
 	_, err := s.Pool.Exec(ctx,
@@ -148,9 +156,18 @@ func (s *Store) CountNodesByStatus(ctx context.Context) (ok, warn, down, total i
 // SetAgentVersion 记下节点上跑的 Agent 版本。
 //
 // 每次接入都写：Agent 升级之后重连，那一刻的版本才是当前值。
-func (s *Store) SetAgentVersion(ctx context.Context, nodeID, version string) error {
+// SetAgentVersion 记下接入时报的版本与**它认得哪些规则类型**。
+//
+// **两件事一起写，因为它们来自同一条 Hello。** 分成两次的话，
+// 中间那一瞬间会有「版本是新的、能力还是空的」这种状态，
+// 而下发那道门读的正是能力 —— 它会把一台刚升级完的节点判成旧的。
+func (s *Store) SetAgentVersion(ctx context.Context, nodeID, version string, kinds []string) error {
+	if kinds == nil {
+		kinds = []string{}
+	}
 	_, err := s.Pool.Exec(ctx,
-		`UPDATE edge_nodes SET agent_version = $2 WHERE id = $1`, nodeID, version)
+		`UPDATE edge_nodes SET agent_version = $2, verify_kinds = $3 WHERE id = $1`,
+		nodeID, version, kinds)
 	return err
 }
 
@@ -311,11 +328,11 @@ func (s *Store) GetNode(ctx context.Context, id string) (Node, error) {
 		`SELECT id, city, vendor, line, host(public_ip), status::text,
 		        cfg_version, dns_enabled, last_hb_at, created_at, drained_at,
 		        coalesce(dns_reason::text, ''), coalesce(dns_actor, ''), dns_changed_at,
-		        agent_version, geo_db_sha
+		        agent_version, geo_db_sha, verify_kinds
 		 FROM edge_nodes WHERE id = $1`, id).
 		Scan(&n.ID, &n.City, &n.Vendor, &n.Line, &n.PublicIP,
 			&n.Status, &n.CfgVersion, &n.DNSEnabled, &n.LastHBAt, &n.CreatedAt,
-			&n.DrainedAt, &n.DNSReason, &n.DNSActor, &n.DNSChangedAt, &n.AgentVersion, &n.GeoDBSha)
+			&n.DrainedAt, &n.DNSReason, &n.DNSActor, &n.DNSChangedAt, &n.AgentVersion, &n.GeoDBSha, &n.VerifyKinds)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return n, ErrNotFound
 	}

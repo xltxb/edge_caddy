@@ -111,6 +111,25 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 		return Result{}, issues, nil
 	}
 
+	// **有节点认不出这次要下发的规则类型时，整体拒绝。**
+	//
+	// 实测出来的：旧 Agent 收到一条它不认识的规则类型（rate_limit / geo_block）
+	// 时，校验端点走 default 分支回 403 —— 那个域名的**第一个请求就被拒**。
+	// 不是降级，是整站对所有人关闭，而配置看起来完全正常。
+	//
+	// 校验端点是 fail-closed 的（ADR-0003），那对「这个请求没有凭据」是对的；
+	// 而「这个节点不认识这条规则」是另一回事 —— 把我们的版本落后变成所有
+	// 访问者的 403，是把一次升级疏忽放大成一次全站故障。
+	//
+	// 拦在这里而不是让节点拒：节点拒的话人看到的是「下发失败」，
+	// 而**已经在跑的那些节点已经应用了新配置** —— 一半节点新一半旧，
+	// 那是最难查的一种状态。
+	if unsup, err := s.unsupportedRules(ctx, rules); err != nil {
+		return Result{}, nil, err
+	} else if len(unsup) > 0 {
+		return Result{}, unsup, nil
+	}
+
 	// 验签材料走旁路，不进 Caddy 配置——Admin API 能读回整份运行配置。
 	verifyRules, err := json.Marshal(render.VerifyRules(rules))
 	if err != nil {
@@ -759,4 +778,82 @@ func (s *Scheduler) Rollback(ctx context.Context, cfgVersion, operator string) (
 	s.event(ctx, "", "info",
 		fmt.Sprintf("已把 %s 的差异写回草稿（%d 处），等待人工确认后下发", cfgVersion, len(keys)))
 	return out, nil
+}
+
+// legacyVerifyKinds 是**不报 verify_kinds 的那些 Agent** 认得的类型。
+//
+// 空的 verify_kinds 表示旧 Agent（那个字段是后加的），**不是「一种都不认得」**。
+// 这两个是最早就有的，而 rate_limit / geo_block 是后加的 —— 一台旧 Agent
+// 碰到后两个会回 403。
+var legacyVerifyKinds = map[string]bool{"service_secret": true, "jwt_bearer": true}
+
+// unsupportedRules 找出「有节点认不出」的规则。
+//
+// **只看走校验端点的那几种。** ip_whitelist / ip_blacklist / request_filter
+// 是 Caddy 原生匹配器渲染出来的，旧 Agent 照样应用得了 —— 它只是把一份
+// Caddy 配置贴上去，不需要认识里面的任何东西。
+func (s *Scheduler) unsupportedRules(ctx context.Context, rules []model.Rule) ([]render.Issue, error) {
+	needs := map[string]bool{}
+	for _, r := range rules {
+		if !r.Enabled || len(r.ApplyTo) == 0 {
+			continue
+		}
+		switch r.Type {
+		case model.RuleServiceSecret, model.RuleJWTBearer,
+			model.RuleRateLimit, model.RuleGeoBlock:
+			needs[r.Type] = true
+		}
+	}
+	if len(needs) == 0 {
+		return nil, nil
+	}
+
+	nodes, err := s.Store.ListNodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var issues []render.Issue
+	for _, r := range rules {
+		if !r.Enabled || len(r.ApplyTo) == 0 || !needs[r.Type] {
+			continue
+		}
+		var missing []string
+		for _, n := range nodes {
+			// **下线的节点不算。** 它收不到这次下发，而把它算进来会让人
+			// 为了下发一条规则去把一台故意下线的机器升级掉。
+			if n.DrainedAt != nil {
+				continue
+			}
+			if !nodeSupports(n, r.Type) {
+				missing = append(missing, n.ID)
+			}
+		}
+		if len(missing) > 0 {
+			issues = append(issues, render.Issue{
+				ResKey: "rule:" + r.ID,
+				Field:  "type",
+				Reason: fmt.Sprintf(
+					"这些节点上的 edge-agent 还不认识 %q 规则：%s。"+
+						"照这样下发，那些节点上这条规则绑定的域名会对所有人返回 403 —— "+
+						"先升级它们（edge-node.sh update --agent-bin <新二进制>）",
+					r.Type, strings.Join(missing, "、")),
+			})
+		}
+	}
+	return issues, nil
+}
+
+func nodeSupports(n store.Node, kind string) bool {
+	if len(n.VerifyKinds) == 0 {
+		// 没报过 —— 旧 Agent，或者刚建还没连上过。
+		// **按最保守的那一档处理**：认得的只有最早那两种。
+		return legacyVerifyKinds[kind]
+	}
+	for _, k := range n.VerifyKinds {
+		if k == kind {
+			return true
+		}
+	}
+	return false
 }

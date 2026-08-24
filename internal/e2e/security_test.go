@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -539,5 +540,97 @@ func TestDisabledRuleCanHoldAnEmptySpec(t *testing.T) {
 	})
 	if bad.Code != api.CodeValidation {
 		t.Errorf("启用一条空白名单该被拒（它会拦下所有访问），实际 code=%d", bad.Code)
+	}
+}
+
+// TestDeployRefusedWhenNodeCannotUnderstandRule 钉的是**升级期的那道门**。
+//
+// 实测出来的：旧 Agent 收到一条它不认识的规则类型（rate_limit / geo_block）时，
+// 校验端点走 default 分支回 403 —— 那个域名的**第一个请求就被拒**。
+// 不是降级，是整站对所有人关闭，而配置看起来完全正常。
+//
+// 校验端点是 fail-closed 的（ADR-0003），那对「这个请求没有凭据」是对的；
+// 而「这个节点不认识这条规则」是另一回事 —— 把我们的版本落后变成所有
+// 访问者的 403，是把一次升级疏忽放大成一次全站故障。
+//
+// 拦在下发这一步而不是让节点拒：节点拒的话人看到的是「下发失败」，
+// 而**已经应用了的那些节点已经是新配置** —— 一半新一半旧，最难查的一种状态。
+func TestDeployRefusedWhenNodeCannotUnderstandRule(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "up.example.com", "upstream": r.upstream, "block_mode": "abort",
+	})
+	r.deployNow("route:up.example.com")
+
+	r.mustDo("PUT", "/rules/up", map[string]any{
+		"name": "限流", "type": "rate_limit", "enabled": true,
+		"apply_to": []string{"up.example.com"},
+		"spec":     map[string]any{"requests": 10, "window_s": 60},
+	})
+
+	// 一、当前这个 Agent 认得 rate_limit，下发该通过。
+	//
+	// **这一条是承重的**：没有它，一个「无条件拒绝」的实现也能让下面那条全绿，
+	// 而那意味着这四种规则永远下发不出去。
+	if _, e := r.do("POST", "/deploys", map[string]any{
+		"res_keys": []string{"rule:up"},
+	}); e.Code != api.CodeOK {
+		t.Fatalf("当前 Agent 认得 rate_limit，不该被拦：code=%d msg=%q", e.Code, e.Msg)
+	}
+
+	// 二、把库里那台节点的能力清空，模拟一台旧 Agent。
+	//
+	// **空表示旧 Agent**（那个字段是后加的），不是「一种都不认得」——
+	// 主控按「只认得 service_secret / jwt_bearer」处理。
+	if _, err := r.store.Pool.Exec(context.Background(),
+		`UPDATE edge_nodes SET verify_kinds = '{}' WHERE id = 'node-hk-01'`); err != nil {
+		t.Fatal(err)
+	}
+
+	_, e := r.do("POST", "/deploys", map[string]any{"res_keys": []string{"rule:up"}})
+	if e.Code != api.CodeValidation {
+		t.Fatalf("节点不认识这条规则时该整体拒绝，实际 code=%d msg=%q", e.Code, e.Msg)
+	}
+	for _, want := range []string{"node-hk-01", "403", "update"} {
+		if !strings.Contains(string(e.Data), want) {
+			t.Errorf("报错里没有 %q —— 要说清是哪台机器、后果是什么、怎么修：%s",
+				want, e.Data)
+		}
+	}
+}
+
+// TestLegacyRulesStillDeployToOldAgents 是反面。
+//
+// 那道门只该拦**走校验端点**的新类型。`ip_blacklist` / `request_filter`
+// 是 Caddy 原生匹配器渲染出来的 —— 旧 Agent 照样应用得了，它只是把一份
+// Caddy 配置贴上去，不需要认识里面的任何东西。
+//
+// 没有这一条，一道「凡是新类型都拦」的门会把两个本来兼容的功能一起挡住。
+func TestLegacyRulesStillDeployToOldAgents(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "lg.example.com", "upstream": r.upstream, "block_mode": "abort",
+	})
+	if _, err := r.store.Pool.Exec(context.Background(),
+		`UPDATE edge_nodes SET verify_kinds = '{}' WHERE id = 'node-hk-01'`); err != nil {
+		t.Fatal(err)
+	}
+
+	r.mustDo("PUT", "/rules/lg", map[string]any{
+		"name": "黑名单", "type": "ip_blacklist", "enabled": true,
+		"apply_to": []string{"lg.example.com"},
+		"spec":     map[string]any{"ips": []string{"198.51.100.0/24"}},
+	})
+	if _, e := r.do("POST", "/deploys", map[string]any{
+		"res_keys": []string{"route:lg.example.com", "rule:lg"},
+	}); e.Code != api.CodeOK {
+		t.Fatalf("ip_blacklist 走 Caddy 原生匹配器，旧 Agent 照样应用得了，"+
+			"不该被拦：code=%d msg=%q", e.Code, e.Msg)
 	}
 }

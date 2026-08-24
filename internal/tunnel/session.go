@@ -90,7 +90,7 @@ func (s *session) readLoop(ctx context.Context, srv *Server) error {
 			if srv.opt.OnHeartbeat != nil {
 				status = srv.opt.OnHeartbeat(beat)
 			}
-			if err := srv.opt.Store.TouchHeartbeatWithGeo(ctx, s.nodeID, hb.GetCfgVersion(), status, hb.GetGeoDbSha()); err != nil {
+			if err := srv.opt.Store.TouchHeartbeatWithGeo(ctx, s.nodeID, hb.GetCfgVersion(), status, hb.GetGeoDbSha(), hb.GetVerifyKinds()); err != nil {
 				srv.log.Error("记录心跳失败", "node_id", s.nodeID, "err", err)
 			}
 

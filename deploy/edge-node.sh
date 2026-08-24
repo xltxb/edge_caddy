@@ -438,6 +438,65 @@ check_unit() {
   return 1
 }
 
+# do_update 换掉 edge-agent 二进制并重启。
+#
+# **不碰配置、不碰状态目录、不碰 Caddy。** 更新只该换那一个文件 ——
+# 顺手「重新写一遍配置」的更新流程，会在某次改动之后悄悄覆盖掉人手工调过的东西。
+#
+# 接入 Token 是一次性的，装好之后 /var/lib/edge-agent 里已经是隧道证书，
+# 所以更新**不需要也不该**要 --token。要 Token 的更新流程等于每次都重新接入，
+# 而那会在主控那边留下一台「换了身份」的机器。
+do_update() {
+  local agent_src="" 
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --agent-bin) agent_src="${2:-}"; shift 2 ;;
+      *) die "update 只认 --agent-bin，不认 $1" ;;
+    esac
+  done
+  [ -n "$agent_src" ] || die "要 --agent-bin <新二进制的路径>"
+  [ -f "$agent_src" ] || die "$agent_src 不存在"
+  [ -x "$AGENT_BIN" ] || die "$AGENT_BIN 不在 —— 这台机器还没装过，用 install"
+
+  # **新旧不是同一个文件才继续。** 拿同一个文件当「新版」是最常见的一种
+  # 「更新了但什么也没变」——而它之后的一切看起来都正常。
+  if cmp -s "$agent_src" "$AGENT_BIN"; then
+    log "新二进制与当前的完全相同，什么也没做"
+    return 0
+  fi
+
+  local backup="${AGENT_BIN}.prev"
+  log "备份当前二进制到 $backup"
+  cp -p "$AGENT_BIN" "$backup"
+
+  log "换上新的"
+  install -m 0755 "$agent_src" "$AGENT_BIN"
+
+  log "重启 edge-agent"
+  systemctl restart edge-agent
+
+  # **起来了不等于连上了。** 进程活着而隧道连不上时，节点在控制台上是离线的
+  # ——而那正是更新最容易出的那种问题（版本对不上、证书路径变了）。
+  # 所以等的是「隧道通了」，不是「进程还在」。
+  local i=0
+  while [ $i -lt 30 ]; do
+    if systemctl is-active --quiet edge-agent && \
+       journalctl -u edge-agent --since "-30s" 2>/dev/null | grep -q "接入完成\|隧道已重连\|已连接主控"; then
+      log "更新完成。旧的留在 $backup —— 确认没问题之后可以删掉。"
+      return 0
+    fi
+    sleep 1
+    i=$((i + 1))
+  done
+
+  # **自动回滚。** 一台连不上主控的节点是收不到任何配置的，
+  # 包括「把它换回去」那条 —— 所以这一步不能等人来做。
+  log "30 秒内没有看到隧道连上，回滚到旧版本"
+  install -m 0755 "$backup" "$AGENT_BIN"
+  systemctl restart edge-agent
+  die "新版本没能连上主控，已回滚。看 journalctl -u edge-agent -n 50"
+}
+
 do_uninstall() {
   need_root
   systemctl disable --now edge-agent 2>/dev/null || true
@@ -454,12 +513,17 @@ usage() {
 用法：
   $0 install --master <wss://host 或 host:port> --node-id <id> --token <一次性> --ca-pin <sha256>
              [--agent-bin <路径>] [--http3]
+  $0 update --agent-bin <新二进制的路径>
   $0 verify
   $0 uninstall
 
 --ca-pin 是主控隧道 CA 证书的 SHA-256，控制台「添加节点」时一并给出。
 **它不能省也不能改**：接入首连时本机还没有 CA，指纹是确认对面就是你的主控的
 唯一依据（ADR-0009）。
+
+update **只换二进制**，不碰配置、不碰状态目录、不碰 Caddy，也不需要 Token
+（这台机器已经有隧道证书了）。换完等隧道连上；30 秒内没连上就**自动回滚**
+——一台连不上主控的节点收不到任何配置，包括「把它换回去」那条。
 
 本脚本**不下载** edge-agent 二进制。用 --agent-bin 指向本机已有的文件。
 USAGE
@@ -468,6 +532,7 @@ USAGE
 main() {
   case "${1:-}" in
     install)   shift; do_install "$@" ;;
+    update)    shift; do_update "$@" ;;
     verify)    shift; do_verify ;;
     uninstall) shift; do_uninstall ;;
     ""|-h|--help) usage ;;

@@ -314,10 +314,16 @@ func (*MasterMsg_Enrolled) isMasterMsg_M() {}
 func (*MasterMsg_GeoDb) isMasterMsg_M() {}
 
 type Hello struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Token         string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"` // 一次性接入 Token；已接入的节点留空，身份由 mTLS 证书决定
-	NodeId        string                 `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
-	Version       string                 `protobuf:"bytes,3,opt,name=version,proto3" json:"version,omitempty"` // Agent 版本
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Token   string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"` // 一次性接入 Token；已接入的节点留空，身份由 mTLS 证书决定
+	NodeId  string                 `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Version string                 `protobuf:"bytes,3,opt,name=version,proto3" json:"version,omitempty"` // Agent 版本
+	// verify_kinds 与心跳里那个同源，**在握手时就报**。
+	//
+	// 只在心跳里报的话，从「隧道连上」到「第一次心跳」之间有一个窗口 ——
+	// 那期间主控会把一台其实支持的节点判成不支持，于是下发被拒。
+	// **一道会误报的安全门，最后会被人关掉。**
+	VerifyKinds   []string `protobuf:"bytes,4,rep,name=verify_kinds,json=verifyKinds,proto3" json:"verify_kinds,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -371,6 +377,13 @@ func (x *Hello) GetVersion() string {
 		return x.Version
 	}
 	return ""
+}
+
+func (x *Hello) GetVerifyKinds() []string {
+	if x != nil {
+		return x.VerifyKinds
+	}
+	return nil
 }
 
 // Enrolled 是主控对 Hello 的应答。只在凭 Token 首连时携带证书；
@@ -458,6 +471,21 @@ type Heartbeat struct {
 	// 是被访问规则拦下或由静态响应处理掉的。
 	ReqTotal    uint64 `protobuf:"varint,8,opt,name=req_total,json=reqTotal,proto3" json:"req_total,omitempty"`
 	OriginTotal uint64 `protobuf:"varint,9,opt,name=origin_total,json=originTotal,proto3" json:"origin_total,omitempty"`
+	// verify_kinds 是本机的校验端点**认得哪些规则类型**。
+	//
+	// **这是升级期的护栏，实测出来的**：旧 Agent 收到一条它不认识的规则类型
+	// （rate_limit / geo_block）时，校验端点走 default 分支回 403 ——
+	// 于是那个域名的**第一个请求就被拒**。不是降级，是整站对所有人关闭，
+	// 而配置看起来完全正常。
+	//
+	// 校验端点是 fail-closed 的（ADR-0003），那对「这个请求没有凭据」是对的；
+	// 而「这个节点不认识这条规则」是另一回事 —— 把我们的版本落后
+	// 变成所有访问者的 403，是把一次升级疏忽放大成一次全站故障。
+	//
+	// **空表示旧 Agent**：主控按「只认得 service_secret / jwt_bearer」处理。
+	// 由节点报而不是主控按 agent_version 推断：版本号到能力的映射是第二份知识，
+	// 而它会在某次改动之后悄悄过期。
+	VerifyKinds []string `protobuf:"bytes,11,rep,name=verify_kinds,json=verifyKinds,proto3" json:"verify_kinds,omitempty"`
 	// geo_db_sha 是本机 GeoIP 库的 SHA-256（十六进制），没有库时为空。
 	//
 	// **由节点报「它自己那份」，而不是主控记「我推过什么」**：主控记账的话，
@@ -559,6 +587,13 @@ func (x *Heartbeat) GetOriginTotal() uint64 {
 		return x.OriginTotal
 	}
 	return 0
+}
+
+func (x *Heartbeat) GetVerifyKinds() []string {
+	if x != nil {
+		return x.VerifyKinds
+	}
+	return nil
 }
 
 func (x *Heartbeat) GetGeoDbSha() string {
@@ -1291,17 +1326,18 @@ const file_edge_v1_edge_proto_rawDesc = "" +
 	"\x05drain\x18\x03 \x01(\v2\x0e.edge.v1.DrainH\x00R\x05drain\x12/\n" +
 	"\benrolled\x18\x05 \x01(\v2\x11.edge.v1.EnrolledH\x00R\benrolled\x12+\n" +
 	"\x06geo_db\x18\x06 \x01(\v2\x12.edge.v1.PushGeoDBH\x00R\x05geoDbB\x03\n" +
-	"\x01mJ\x04\b\x04\x10\x05R\x05renew\"P\n" +
+	"\x01mJ\x04\b\x04\x10\x05R\x05renew\"s\n" +
 	"\x05Hello\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12\x17\n" +
 	"\anode_id\x18\x02 \x01(\tR\x06nodeId\x12\x18\n" +
-	"\aversion\x18\x03 \x01(\tR\aversion\"\x9d\x01\n" +
+	"\aversion\x18\x03 \x01(\tR\aversion\x12!\n" +
+	"\fverify_kinds\x18\x04 \x03(\tR\vverifyKinds\"\x9d\x01\n" +
 	"\bEnrolled\x12&\n" +
 	"\x0ftunnel_cert_pem\x18\x01 \x01(\fR\rtunnelCertPem\x12$\n" +
 	"\x0etunnel_key_pem\x18\x02 \x01(\fR\ftunnelKeyPem\x12\"\n" +
 	"\rtunnel_ca_pem\x18\x03 \x01(\fR\vtunnelCaPem\x12\x1f\n" +
 	"\vcfg_version\x18\x04 \x01(\tR\n" +
-	"cfgVersion\"\x8b\x02\n" +
+	"cfgVersion\"\xae\x02\n" +
 	"\tHeartbeat\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x10\n" +
 	"\x03cpu\x18\x02 \x01(\x01R\x03cpu\x12\x10\n" +
@@ -1312,7 +1348,8 @@ const file_edge_v1_edge_proto_rawDesc = "" +
 	"\x06routes\x18\x06 \x01(\rR\x06routes\x12\x14\n" +
 	"\x05rules\x18\a \x01(\rR\x05rules\x12\x1b\n" +
 	"\treq_total\x18\b \x01(\x04R\breqTotal\x12!\n" +
-	"\forigin_total\x18\t \x01(\x04R\voriginTotal\x12\x1c\n" +
+	"\forigin_total\x18\t \x01(\x04R\voriginTotal\x12!\n" +
+	"\fverify_kinds\x18\v \x03(\tR\vverifyKinds\x12\x1c\n" +
 	"\n" +
 	"geo_db_sha\x18\n" +
 	" \x01(\tR\bgeoDbSha\"\xee\x02\n" +

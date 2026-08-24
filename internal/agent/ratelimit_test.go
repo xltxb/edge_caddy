@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"os"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 )
@@ -186,5 +189,72 @@ func TestSweepAllSkipsIncompleteRules(t *testing.T) {
 	})
 	if l.size() != before {
 		t.Errorf("一条参数不全的规则清掉了别人的桶（%d → %d）", before, l.size())
+	}
+}
+
+// TestVerifyKindsCoversEveryHandledType 钉的是**报出去的清单与真正处理的类型一致**。
+//
+// 主控靠这份清单决定「这条规则能不能下发到这台节点」。**分叉的两个方向后果相反**：
+//
+//	报了而不处理  →  主控放行下发，而节点收到请求时走 default 回 403 —— 整站关闭
+//	处理了而不报  →  主控拒绝下发，一个其实能用的功能用不了
+//
+// 前者是事故，后者是阻碍。而它们都**不会有任何东西变红** ——
+// 除非有这么一条把两处对起来。
+//
+// 判法：从 verify.go 的源码里抓出 handleVerify 与 verify() 里所有
+// `rule.Type == "x"` / `case "x"`，与 VerifyKinds() 逐一对账。
+// **读源码而不是调用它**：调用要造出每一种规则的完整上下文，
+// 而那份上下文本身就会漏掉新加的类型。
+func TestVerifyKindsCoversEveryHandledType(t *testing.T) {
+	src, err := os.ReadFile("verify.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+
+	handled := map[string]bool{}
+
+	// handleVerify 里的 `rule.Type == "x"`。
+	for _, m := range regexp.MustCompile(`rule\.Type == "([a-z_]+)"`).
+		FindAllStringSubmatch(text, -1) {
+		handled[m[1]] = true
+	}
+
+	// verify() 里那个 switch 的 case。**只在那个函数的范围里找** ——
+	// 整份文件搜 `case "x":` 会抓到别处的（HMAC 头解析里有个 `case "t":`），
+	// 第一版就是那样写的，测试当场红，而红的是测试不是代码。
+	if i := strings.Index(text, "func (v *VerifyServer) verify("); i >= 0 {
+		body := text[i:]
+		if j := strings.Index(body, "\n}\n"); j >= 0 {
+			body = body[:j]
+		}
+		for _, m := range regexp.MustCompile(`case "([a-z_]+)":`).
+			FindAllStringSubmatch(body, -1) {
+			handled[m[1]] = true
+		}
+	}
+	// 装置自检：一个都没抓到的话，下面两个循环全是空转。
+	if len(handled) < 3 {
+		t.Fatalf("只从 verify.go 里抓到 %d 种类型（%v）—— "+
+			"写法变了？这条测试此刻什么也没检查", len(handled), handled)
+	}
+
+	reported := map[string]bool{}
+	for _, k := range VerifyKinds() {
+		reported[k] = true
+	}
+
+	for k := range handled {
+		if !reported[k] {
+			t.Errorf("verify.go 处理了 %q 而 VerifyKinds() 没报 —— "+
+				"主控会拒绝下发这类规则，一个其实能用的功能用不了", k)
+		}
+	}
+	for k := range reported {
+		if !handled[k] {
+			t.Errorf("VerifyKinds() 报了 %q 而 verify.go 不处理它 —— "+
+				"主控会放行下发，然后节点收到请求走 default 回 403，整站关闭", k)
+		}
 	}
 }

@@ -275,7 +275,7 @@ func TestAgentVersionIsOverwrittenOnEachEnroll(t *testing.T) {
 	if v := read(); v != "" {
 		t.Fatalf("还没接入过，应当是空串，实际 %q", v)
 	}
-	if err := s.SetAgentVersion(ctx, "node-a", "d3da612 (d3da612)"); err != nil {
+	if err := s.SetAgentVersion(ctx, "node-a", "d3da612 (d3da612)", nil); err != nil {
 		t.Fatal(err)
 	}
 	if v := read(); v != "d3da612 (d3da612)" {
@@ -283,7 +283,7 @@ func TestAgentVersionIsOverwrittenOnEachEnroll(t *testing.T) {
 	}
 	// **升级之后要变。** 这条是这个字段存在的全部理由——
 	// 一个不会变的版本号跟硬编码的 "0.1.0" 没有区别。
-	if err := s.SetAgentVersion(ctx, "node-a", "v0.2.0 (abc1234)"); err != nil {
+	if err := s.SetAgentVersion(ctx, "node-a", "v0.2.0 (abc1234)", nil); err != nil {
 		t.Fatal(err)
 	}
 	if v := read(); v != "v0.2.0 (abc1234)" {

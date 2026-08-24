@@ -418,5 +418,16 @@ func clientIPOf(r *http.Request) string {
 	return r.Header.Get("X-Edge-Client-IP")
 }
 
+// VerifyKinds 是这个校验端点认得的规则类型。
+//
+// **它是从 verify 那个 switch 里长出来的，不是另写一份清单。**
+// 另写的话，加第八种规则时改了 switch 忘了清单 —— 而那时主控会以为
+// 节点支持它，照常下发，然后那个域名的第一个请求就是 403。
+//
+// 加新类型时**两处都要改**，而漏改会被 TestVerifyKindsCoversEveryHandledType 抓住。
+func VerifyKinds() []string {
+	return []string{"service_secret", "jwt_bearer", "rate_limit", "geo_block"}
+}
+
 // LoadGeoDB 换上一份 GeoIP 库。空路径卸载。
 func (v *VerifyServer) LoadGeoDB(path string) error { return v.geo.Load(path) }

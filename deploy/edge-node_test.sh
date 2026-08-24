@@ -199,5 +199,37 @@ hasnt "$out" "unbound variable" "verify 跑完不留 unbound variable"
 # 「do_verify 第一行就返回」时也全绿 —— 那时它当然不会有 unbound variable。
 has "$out" "没有**查" "verify 跑到了最后那段说明（否则上面两条是空转）"
 
+# ── update ────────────────────────────────────────────────────────────
+#
+# **这一组的存在理由是一次实测**：旧 agent 遇到新规则类型（rate_limit /
+# geo_block）时，那个域名的**第一个请求就是 403** —— 不是降级，是整站关闭，
+# 而配置看起来完全正常。所以「怎么更新 agent」不是运维细节，是安全功能的一部分。
+
+usage_out="$(usage 2>&1)"
+has "$usage_out" "update --agent-bin" "用法里有 update"
+has "$usage_out" "自动回滚" "用法里说清了会自动回滚"
+hasnt "$usage_out" "update --agent-bin <新二进制的路径> --token" \
+  "update 不要 Token（这台机器已经有隧道证书了）"
+
+# **同一个文件不算更新。**
+#
+# 拿同一个文件当「新版」是最常见的一种「更新了但什么也没变」——
+# 而它之后的一切看起来都正常：进程重启了、日志也正常、版本号还是旧的。
+tmpbin="$(mktemp)"; printf 'x' > "$tmpbin"
+# 这里不真的跑 do_update（它要 systemctl），只验那句 cmp 的判据在脚本里。
+has "$(cat "$HERE/edge-node.sh")" 'cmp -s "$agent_src" "$AGENT_BIN"' \
+  "update 会先比对新旧是不是同一个文件"
+has "$(cat "$HERE/edge-node.sh")" 'cp -p "$AGENT_BIN" "$backup"' \
+  "update 换之前先备份"
+has "$(cat "$HERE/edge-node.sh")" 'install -m 0755 "$backup" "$AGENT_BIN"' \
+  "连不上主控时会用备份换回去"
+
+# **等的是「隧道连上」，不是「进程还在」。**
+#
+# 进程活着而隧道连不上时，节点在控制台上是离线的 —— 而那正是更新最容易出的
+# 那种问题。只判 is-active 的话，一次失败的更新会被报成成功。
+has "$(cat "$HERE/edge-node.sh")" '接入完成' "update 等的是隧道真的连上了"
+rm -f "$tmpbin"
+
 printf '\n──────────\n通过 %d，失败 %d\n\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
