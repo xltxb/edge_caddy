@@ -18,9 +18,18 @@ import json
 import pathlib
 import tempfile
 import subprocess
+import hashlib
 import sys
 
+# ROOT 是仓库根。脚本在 scripts/ 下，所以往上一层。
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+
 def main():
+    # `--check-stamp` 只查凭据，不跑测试 —— 给 pre-commit 用，见文件末尾。
+    if len(sys.argv) > 1 and sys.argv[1] == "--check-stamp":
+        return check_stamp()
+
     args = sys.argv[1:] or ["./..."]
     p = subprocess.run(["go", "test", *args, "-count=1", "-json"],
                        capture_output=True, text=True)
@@ -160,6 +169,7 @@ def main():
     # **判词放最后一行**，理由与 comments.py / unread.py 相同：
     # `| tail -1` 是最省事、因此最常见的读法，让它说真话比要求自己读全篇可靠。
     bad = bool(failed or nonjson or buildout or p.returncode != 0)
+    stamp(not bad)
     print()
     if buildout:
         print("  ✗ 编译不过 —— 那些包的测试一条都没跑，这不是「没问题」")
@@ -170,5 +180,65 @@ def main():
     return 1 if bad else 0
 
 
+# ---- 绿色凭据 ----------------------------------------------------------
+#
+# 这一段存在的理由：**我在红的状态下提交过三次。**
+#
+# 每次的形状都一样：把 `gotest.py` 和 `git commit` 串在一条命令里，
+# 只读了 commit 的结果。判词挪到最后一行解决的是「读到假的绿」，
+# 解决不了「压根没看」。
+#
+# 而把 70 秒的全量测试挂进 pre-commit，是我自己警告过的那种门：
+# **昂贵到让人绕开，等于没有门，而且比没有门更糟。**
+#
+# 所以门不重跑测试，只查**有没有一份对得上当前代码的绿色凭据**。
+# 哈希覆盖工作树里全部 .go 文件：跑完之后又改了代码，哈希就对不上，
+# 凭据自动失效 —— 那正是「跑过了但那不是这一版」这一档。
+
+def _tree_sha() -> str:
+    """工作树里全部 .go 文件的内容指纹。
+
+    **按内容而不是按 mtime**：`git checkout` 会改 mtime 而不改内容，
+    那时凭据本该仍然有效。
+    """
+    h = hashlib.sha256()
+    for f in sorted(ROOT.rglob("*.go")):
+        if "/web/" in str(f) or "/gen/" in str(f):
+            continue
+        h.update(str(f.relative_to(ROOT)).encode())
+        h.update(f.read_bytes())
+    return h.hexdigest()
+
+
+def stamp_path() -> pathlib.Path:
+    return ROOT / ".git" / "gotest-stamp.json"
+
+
+def stamp(ok: bool) -> None:
+    try:
+        stamp_path().write_text(json.dumps({"sha": _tree_sha(), "ok": ok}),
+                                encoding="utf-8")
+    except OSError:
+        pass  # 写不进去不该让测试本身失败
+
+
+def check_stamp() -> int:
+    """给 pre-commit 用：当前代码有没有一份绿色凭据。"""
+    try:
+        d = json.loads(stamp_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        print("  ✗ 没有测试凭据 —— 先跑一遍 python3 scripts/gotest.py")
+        return 1
+    if d.get("sha") != _tree_sha():
+        print("  ✗ 测试凭据对不上当前代码 —— 跑过之后又改了 .go，"
+              "再跑一遍 python3 scripts/gotest.py")
+        return 1
+    if not d.get("ok"):
+        print("  ✗ 上一次测试是红的 —— 修完再提交，"
+              "或者 git commit --no-verify（那等于说「我知道它是红的」）")
+        return 1
+    return 0
+
 if __name__ == "__main__":
     sys.exit(main())
+
