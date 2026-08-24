@@ -83,10 +83,10 @@ func TestSweepDropsFullBucketsOnly(t *testing.T) {
 	// 只用 1 个的话它 1 秒就补满了，于是下面那句「1 秒时一个都不该清」
 	// 是错的期望 —— 第一版就是这么写的，测试当场红，而红的是测试不是代码。
 	for i := 0; i < 3; i++ {
-		l.allow("idle", 5, 1)
+		l.allow("r|idle", 5, 1)
 	}
 	for i := 0; i < 5; i++ { // 用光
-		l.allow("busy", 5, 1)
+		l.allow("r|busy", 5, 1)
 	}
 	if l.size() != 2 {
 		t.Fatalf("装置坏了：该有 2 个桶，实际 %d", l.size())
@@ -94,14 +94,14 @@ func TestSweepDropsFullBucketsOnly(t *testing.T) {
 
 	// 还没到能攒满的时候，一个都不该清。
 	now = now.Add(time.Second)
-	if n := l.sweep(5, 1); n != 0 {
+	if n := l.sweepPrefix("r|", 5, 1); n != 0 {
 		t.Errorf("清早了 %d 个 —— 没攒满的桶删掉会把它的计数一起抹掉，"+
 			"等于给正在被限的那个人重置额度", n)
 	}
 
 	// idle 只用掉 1 个，1 秒就补满了；busy 用光 5 个，要 5 秒。
 	now = now.Add(4 * time.Second)
-	l.sweep(5, 1)
+	l.sweepPrefix("r|", 5, 1)
 	if l.size() != 0 {
 		t.Errorf("都攒满了还留着 %d 个 —— 这张表会随攻击一起长大", l.size())
 	}
@@ -182,13 +182,21 @@ func TestSweepAllSkipsIncompleteRules(t *testing.T) {
 	l := newLimiter()
 	l.allow("good|1.1.1.1", 2, 1)
 	l.allow("good|1.1.1.1", 2, 1)
+	// bad 此前参数齐全时建过桶，之后被改成了不全 —— 桶还在。
+	l.allow("bad|2.2.2.2", 2, 1)
 	before := l.size()
 
+	// 两条都在册：good 参数齐全但桶没攒满，bad 参数不全。
+	// （good 必须在册 —— 不在册的桶是孤儿，会被 dropOrphans 正当清掉，
+	// 那验的就不是「参数不全的规则乱清」了。）
 	l.sweepAll(map[string]*verifyRule{
-		"bad": {ID: "bad", Type: "rate_limit", Requests: 0, WindowSec: 0},
+		"good": {ID: "good", Type: "rate_limit", Requests: 2, WindowSec: 60},
+		"bad":  {ID: "bad", Type: "rate_limit", Requests: 0, WindowSec: 0},
 	})
 	if l.size() != before {
-		t.Errorf("一条参数不全的规则清掉了别人的桶（%d → %d）", before, l.size())
+		t.Errorf("一条参数不全的规则清掉了不该清的桶（%d → %d）——"+
+			"拿 0 当 burst 清是全删；而 bad 自己的桶也该留着：它在册，"+
+			"只是此刻算不出「攒满」，清了等于重置正在被限的人的额度", before, l.size())
 	}
 }
 
@@ -256,5 +264,43 @@ func TestVerifyKindsCoversEveryHandledType(t *testing.T) {
 			t.Errorf("VerifyKinds() 报了 %q 而 verify.go 不处理它 —— "+
 				"主控会放行下发，然后节点收到请求走 default 回 403，整站关闭", k)
 		}
+	}
+}
+
+// TestSweepAllDropsOrphanBuckets：**已删规则的桶要清掉**。
+//
+// sweepAll 若只按当前规则集的前缀清，一条规则被删（或改 ID）后它留下的桶
+// 不匹配任何前缀 —— 没有任何路径会清它，直到进程重启（issue #29）。
+// 被 CC 打过一轮再删规则，残留的量就是攻击期间的独立 IP 数。
+func TestSweepAllDropsOrphanBuckets(t *testing.T) {
+	l := newLimiter()
+	l.allow("deleted|1.2.3.4", 5, 1)     // 已删规则留下的桶
+	l.allow("live|1.2.3.4", 5, 5.0/300)  // 在册规则的桶，还远没攒满
+
+	l.sweepAll(map[string]*verifyRule{
+		"live": {ID: "live", Type: "rate_limit", Requests: 5, WindowSec: 300},
+	})
+
+	if l.size() != 1 {
+		t.Fatalf("该只剩 live 的那个桶，实际剩 %d —— 孤儿桶没人会再查，留着就是泄漏", l.size())
+	}
+	// 剩下的必须是 live 的：它还在计数中，清掉等于重置额度。
+	if ok, _ := l.allow("live|1.2.3.4", 5, 5.0/300); !ok {
+		t.Error("live 的桶被误清了？（allow 拿到的是新桶，不该拒绝）")
+	} else if l.size() != 1 {
+		t.Error("live 的桶被清掉后又新建了一个 —— 计数丢了")
+	}
+}
+
+// 换了类型的规则同理：规则还在册，但 allow 再也不会为它建桶 —— 旧桶是孤儿。
+func TestSweepAllDropsBucketsOfRetypedRule(t *testing.T) {
+	l := newLimiter()
+	l.allow("was-rl|1.2.3.4", 5, 1)
+
+	l.sweepAll(map[string]*verifyRule{
+		"was-rl": {ID: "was-rl", Type: "ip_blacklist"}, // 从 rate_limit 改成了别的
+	})
+	if l.size() != 0 {
+		t.Errorf("改了类型的规则的旧桶还留着 %d 个", l.size())
 	}
 }

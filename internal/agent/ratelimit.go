@@ -2,6 +2,7 @@ package agent
 
 import (
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -92,6 +93,42 @@ func (l *limiter) sweepAll(rules map[string]*verifyRule) int {
 		}
 		n += l.sweepPrefix(r.ID+"|", r.Requests, float64(r.Requests)/float64(r.WindowSec))
 	}
+	return n + l.dropOrphans(rules)
+}
+
+// dropOrphans 清掉不属于任何在册限流规则的桶。
+//
+// 规则被删（或改了类型）后，allow 再也不会拿它的前缀建桶或查桶 ——
+// 旧桶没人会再碰，留着就只是泄漏，直到进程重启（issue #29）。
+// 被 CC 打过一轮再删规则，残留的量就是攻击期间的独立 IP 数。
+//
+// **参数不全的规则不算孤儿的主人缺席**：它在册，只是此刻算不出「攒满」，
+// 它的桶由 sweepPrefix 那一侧跳过（清早了等于重置正在被限的人的额度），
+// 这里同样留着 —— 两侧对同一条规则的处置要一致。
+//
+// 判法是前缀匹配而不是按 "|" 切 id：规则 id 里真有 "|" 时，
+// 切出来的前半段永远匹配不上，那条规则的桶会被**每分钟清一次** ——
+// 等于给它的攻击者每分钟重置一次额度，而没有任何报错。
+func (l *limiter) dropOrphans(rules map[string]*verifyRule) int {
+	prefixes := make([]string, 0, len(rules))
+	for _, r := range rules {
+		if r.Type == "rate_limit" {
+			prefixes = append(prefixes, r.ID+"|")
+		}
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := 0
+buckets:
+	for k := range l.buckets {
+		for _, p := range prefixes {
+			if strings.HasPrefix(k, p) {
+				continue buckets
+			}
+		}
+		delete(l.buckets, k)
+		n++
+	}
 	return n
 }
 
@@ -104,20 +141,6 @@ func (l *limiter) sweepPrefix(prefix string, burst int, rate float64) int {
 		if len(k) < len(prefix) || k[:len(prefix)] != prefix {
 			continue
 		}
-		if b.tokens+now.Sub(b.last).Seconds()*rate >= float64(burst) {
-			delete(l.buckets, k)
-			n++
-		}
-	}
-	return n
-}
-
-func (l *limiter) sweep(burst int, rate float64) int {
-	now := l.now()
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	n := 0
-	for k, b := range l.buckets {
 		if b.tokens+now.Sub(b.last).Seconds()*rate >= float64(burst) {
 			delete(l.buckets, k)
 			n++
