@@ -343,7 +343,7 @@ func (s *Scheduler) effective(ctx context.Context, resKeys []string) ([]model.Ro
 		if p, ok := patches["rule:"+r.ID]; ok {
 			used["rule:"+r.ID] = true
 			secretPlain := r.Secret // 草稿里不会有密钥，合并不能把它弄丢
-			merged, err := mergeInto(r, p)
+			merged, err := mergeRuleDraft(r, p)
 			if err != nil {
 				return nil, nil, pol, nil, fmt.Errorf("合并规则 %s 的草稿: %w", r.ID, err)
 			}
@@ -407,6 +407,27 @@ func sortedKeys(m map[string]json.RawMessage) []string {
 //
 // 走一次 JSON 往返而不是逐字段 if：字段会增加，逐字段合并的那个函数
 // 每次都要跟着改，而漏掉一个字段的症状是「改了没生效」——最难排查的一类。
+//
+// # 嵌套对象要逐键叠加，不能整个替换
+//
+// **这一条是灰度上撞出来的。** 原先是浅合并（`m[k] = v`），于是草稿里的
+// `spec` **整个替换掉**库里那份：
+//
+//	库里    spec = {requests: 300}
+//	草稿    spec = {rate_key: "ip", window_s: 60}
+//	合并后  spec = {rate_key: "ip", window_s: 60}   ← requests 没了
+//
+// 结果是「每窗口允许的请求数要大于 0」——而人在界面上从没碰过那个字段。
+// **在工作台改一个字段，其余的会被静默丢掉**，任何有多个 spec 字段的
+// 规则类型都中招。
+//
+// 而它同一个 bug 会报出不同的字段名（取决于草稿里当时缺哪个），
+// 于是两轮排查都指向了「某个值被改成 0」，而真相是「字段整个消失了」。
+//
+// # 数组整体替换，不逐元素合并
+//
+// `ips: ["a"]` 覆盖 `ips: ["a","b"]` 必须是替换 —— 逐元素合并的话
+// **删掉一个 IP 这件事永远表达不出来**。
 func mergeInto[T any](base T, patch json.RawMessage) (T, error) {
 	b, err := json.Marshal(base)
 	if err != nil {
@@ -420,9 +441,7 @@ func mergeInto[T any](base T, patch json.RawMessage) (T, error) {
 	if err := json.Unmarshal(patch, &p); err != nil {
 		return base, err
 	}
-	for k, v := range p {
-		m[k] = v
-	}
+	deepMerge(m, p)
 	merged, err := json.Marshal(m)
 	if err != nil {
 		return base, err
@@ -432,6 +451,49 @@ func mergeInto[T any](base T, patch json.RawMessage) (T, error) {
 		return base, err
 	}
 	return out, nil
+}
+
+// deepMerge 把 src 叠加进 dst：两边都是对象时递归，否则整体覆盖。
+func deepMerge(dst, src map[string]json.RawMessage) {
+	for k, v := range src {
+		cur, ok := dst[k]
+		if !ok {
+			dst[k] = v
+			continue
+		}
+		var curObj, newObj map[string]json.RawMessage
+		if json.Unmarshal(cur, &curObj) == nil && json.Unmarshal(v, &newObj) == nil {
+			deepMerge(curObj, newObj)
+			if b, err := json.Marshal(curObj); err == nil {
+				dst[k] = b
+				continue
+			}
+		}
+		dst[k] = v
+	}
+}
+
+// mergeRuleDraft 合并一条规则的草稿。
+//
+// **换规则类型时 spec 整体替换，不叠加。**
+//
+// 不这么做的话，把 ip_whitelist 改成 rate_limit 之后，深合并会让旧的 `ips`
+// 留在新 spec 里 —— 渲染读不到它（spec 是判别联合），而它会出现在
+// `GET /rules` 的响应里。界面照 type 决定显示哪些框，所以人看不见它，
+// **而它会一直跟着这条规则走**，直到有人在某个响应里发现一个不该存在的字段。
+func mergeRuleDraft(base model.Rule, patch json.RawMessage) (model.Rule, error) {
+	var head struct {
+		Type *string `json:"type"`
+	}
+	if err := json.Unmarshal(patch, &head); err != nil {
+		return base, err
+	}
+	if head.Type != nil && *head.Type != base.Type {
+		// 清空之后 base 的 spec 序列化成 {}，patch 的 spec 逐键落进去
+		// —— 效果等同整体替换。
+		base.Spec = model.RuleSpec{}
+	}
+	return mergeInto(base, patch)
 }
 
 // countEffectiveRules 只数真正生效的规则：未绑定域名的、停用的都不算。

@@ -474,3 +474,110 @@ func TestTunnelOverHTTPCarriesEverything(t *testing.T) {
 		t.Errorf("拒绝的理由要说清是什么请求才对，实际 msg=%q", e.Msg)
 	}
 }
+
+// TestDraftMergeKeepsUntouchedSpecFields 钉的是**改一个字段不能把其余的丢掉**。
+//
+// 灰度上撞到的，原样搬过来：
+//
+//	库里    spec = {requests: 300}
+//	草稿    spec = {rate_key: "ip", window_s: 60}
+//	合并后  spec = {rate_key: "ip", window_s: 60}   ← requests 没了
+//
+// 报出来的是「每窗口允许的请求数要大于 0」—— 而人在界面上从没碰过那个字段。
+// **任何有多个 spec 字段的规则类型都中招。**
+//
+// 而同一个 bug 会报出不同的字段名（取决于草稿里当时缺哪个），
+// 于是两轮排查都指向「某个值被改成 0」，而真相是「字段整个消失了」。
+func TestDraftMergeKeepsUntouchedSpecFields(t *testing.T) {
+	r := newRig(t)
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "dm.example.com", "upstream": r.upstream, "block_mode": "abort",
+	})
+	r.mustDo("PUT", "/rules/dm", map[string]any{
+		"name": "限流", "type": "rate_limit", "enabled": false,
+		"apply_to": []string{"dm.example.com"},
+		"spec":     map[string]any{"requests": 300},
+	})
+	// 草稿只带另外两个字段 —— 工作台按字段路径改，草稿自然只累积碰过的那些。
+	r.mustDo("PUT", "/drafts/rule:dm", map[string]any{
+		"enabled": true,
+		"spec":    map[string]any{"rate_key": "ip", "window_s": 60},
+	})
+
+	e := r.mustDo("POST", "/deploys/preview", map[string]any{"res_keys": []string{"rule:dm"}})
+	var d struct {
+		Validation struct {
+			OK     bool `json:"ok"`
+			Errors []struct {
+				Field  string `json:"field"`
+				Reason string `json:"reason"`
+			} `json:"errors"`
+		} `json:"validation"`
+	}
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if !d.Validation.OK {
+		t.Fatalf("三个字段合起来是完整的，不该被拒：%+v —— "+
+			"草稿里没碰过的字段被丢掉了", d.Validation.Errors)
+	}
+}
+
+// TestDraftMergeReplacesSpecWhenTypeChanges 是上一条的反面。
+//
+// **换规则类型时 spec 整体替换，不叠加。** 不这么做的话，把 ip_whitelist
+// 改成 rate_limit 之后，深合并会让旧的 `ips` 留在新 spec 里 ——
+// 渲染读不到它（spec 是判别联合），而它会出现在响应里。
+// 界面照 type 决定显示哪些框，所以**人看不见它，而它会一直跟着这条规则走**。
+func TestDraftMergeReplacesSpecWhenTypeChanges(t *testing.T) {
+	r := newRig(t)
+	// **要一个在线节点**：这一条的判据是「下发之后存回库里的 spec」，
+	// 而下发要有节点收。预览看不到它 —— 残留的 ips 在渲染时被 type 分派
+	// 挡掉了，配置里根本不出现。
+	//
+	// 第一版就是拿预览验的，于是「不清空 spec」那个探针**不红** ——
+	// 它验的不是它以为的那件事。
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "tc.example.com", "upstream": r.upstream, "block_mode": "abort",
+	})
+	r.mustDo("PUT", "/rules/tc", map[string]any{
+		"name": "白名单", "type": "ip_whitelist", "enabled": true,
+		"apply_to": []string{"tc.example.com"},
+		"spec":     map[string]any{"ips": []string{"198.51.100.7"}},
+	})
+	// 草稿把它改成限流。
+	r.mustDo("PUT", "/drafts/rule:tc", map[string]any{
+		"type": "rate_limit",
+		"spec": map[string]any{"requests": 100, "window_s": 60, "rate_key": "ip"},
+	})
+	// 下发把合并结果写回库，然后读 spec 看残留。
+	r.deployNow("rule:tc")
+
+	list := r.mustDo("GET", "/rules", nil)
+	var d struct {
+		Items []struct {
+			ID   string                     `json:"id"`
+			Type string                     `json:"type"`
+			Spec map[string]json.RawMessage `json:"spec"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(list.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Items) != 1 || d.Items[0].Type != "rate_limit" {
+		t.Fatalf("装置坏了：该有一条 rate_limit 规则，实际 %+v", d.Items)
+	}
+	if _, ok := d.Items[0].Spec["ips"]; ok {
+		t.Errorf("换了类型之后旧的 ips 还留着：%v —— "+
+			"渲染读不到它（spec 是判别联合），界面按 type 决定显示哪些框，"+
+			"**所以人看不见它，而它会一直跟着这条规则走**", d.Items[0].Spec)
+	}
+	// 反面：新类型的字段要在。没有这一条，一个「换类型就清空整个 spec」
+	// 的实现也能让上面通过，而那会把人刚填的东西一起抹掉。
+	if _, ok := d.Items[0].Spec["requests"]; !ok {
+		t.Errorf("新类型的字段没了：%v", d.Items[0].Spec)
+	}
+}
