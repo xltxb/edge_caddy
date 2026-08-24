@@ -166,6 +166,11 @@ const (
 //
 // query 只有 equals 的理由：Caddy 的 query 匹配器只比精确值。
 // 悄悄当成 equals 的话，一条 contains 规则会变成精确匹配——拦不到它该拦的。
+//
+// **这是一条关于 Caddy 行为的断言，守着它的是测试不是文档**：
+// TestFilterFieldsAreServedFromTheSameTableAsValidation（internal/e2e）
+// 的反面那一半——query 配 contains 必须被拒。哪天 Caddy 的 query 匹配器
+// 支持了别的比法，放开这里之后那条会红，那时才该改这张表。
 var FilterFieldOps = map[string][]string{
 	"path":       {"contains", "prefix", "suffix", "equals", "regex"},
 	"user_agent": {"contains", "prefix", "suffix", "equals", "regex"},
