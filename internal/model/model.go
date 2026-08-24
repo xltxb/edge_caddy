@@ -149,6 +149,44 @@ const (
 	RuleGeoBlock = "geo_block"
 )
 
+// FilterFieldOps 是**每个 field 允许哪些 op**。
+//
+// # 为什么是一张表，而不是「全局 op 集合 + 特例」
+//
+// 第一版是那样写的：所有 op 都放行，再加一个
+// `if f.Field == "query" && f.Op != "equals"` 的特例。
+//
+// 那种形状的问题是**特例不会提醒下一个人**：加第八种 field 时，
+// 没有任何东西会让他想起「要不要也给它收窄」。而界面那边如果按
+// 「随 field 变的下拉」实现，两边就在加第八种时分叉——
+// 界面给出一个后端会拒的选项，或者藏起一个后端接受的。
+//
+// 表还有第二个作用：**它报得出去**（GET /rules 的 filter_fields），
+// 于是界面的下拉是数据驱动的，而不是抄一份。抄的那份不会有人去校对。
+//
+// query 只有 equals 的理由：Caddy 的 query 匹配器只比精确值。
+// 悄悄当成 equals 的话，一条 contains 规则会变成精确匹配——拦不到它该拦的。
+var FilterFieldOps = map[string][]string{
+	"path":       {"contains", "prefix", "suffix", "equals", "regex"},
+	"user_agent": {"contains", "prefix", "suffix", "equals", "regex"},
+	"referer":    {"contains", "prefix", "suffix", "equals", "regex"},
+	"header":     {"contains", "prefix", "suffix", "equals", "regex"},
+	"query":      {"equals"},
+}
+
+// FilterFieldsNeedingName 是那些还要指明「看哪一个」的 field。
+var FilterFieldsNeedingName = map[string]bool{"header": true, "query": true}
+
+// FilterOpAllowed 说这个 field 收不收这个 op。
+func FilterOpAllowed(field, op string) bool {
+	for _, x := range FilterFieldOps[field] {
+		if x == op {
+			return true
+		}
+	}
+	return false
+}
+
 // Policy 是全局策略。spec 的字段清单以高保真设计稿为准，
 // 因此这里保持为原始 JSON —— 写死在 Go 结构体里只会让两边同时改。
 type Policy struct {

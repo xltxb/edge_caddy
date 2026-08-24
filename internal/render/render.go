@@ -706,20 +706,31 @@ func validateRules(rules []model.Rule, domains map[string]bool) []Issue {
 			}
 			for i, f := range rule.Spec.Filters {
 				fk := fmt.Sprintf("spec.filters[%d]", i)
-				switch f.Field {
-				case "path", "user_agent", "referer":
-				case "header", "query":
-					if f.Name == "" {
+
+				// **判据是那张表，不是一串 case。**
+				//
+				// 第一版是「全局 op 集合 + 一个 query 的特例 if」，
+				// 而特例不会提醒下一个人：加第八种 field 时，没有任何东西
+				// 会让他想起要不要也收窄。表还报得出去（filter_fields），
+				// 于是界面的下拉是数据驱动的，而不是抄一份。
+				ops, known := model.FilterFieldOps[f.Field]
+				if !known {
+					issues = append(issues, Issue{key, fk + ".field",
+						fmt.Sprintf("%q 不是可以匹配的部分（%s）",
+							f.Field, strings.Join(filterFieldNames(), " / "))})
+				} else {
+					if model.FilterFieldsNeedingName[f.Field] && f.Name == "" {
 						issues = append(issues, Issue{key, fk + ".name",
 							"要说清看哪个请求头 / 哪个参数"})
 					}
-				default:
-					issues = append(issues, Issue{key, fk + ".field",
-						fmt.Sprintf("%q 不是可以匹配的部分（path / user_agent / referer / header / query）", f.Field)})
+					if !model.FilterOpAllowed(f.Field, f.Op) {
+						issues = append(issues, Issue{key, fk + ".op",
+							fmt.Sprintf("%s 只支持 %s（当前是 %q）",
+								f.Field, strings.Join(ops, " / "), f.Op)})
+					}
 				}
-				switch f.Op {
-				case "contains", "prefix", "suffix", "equals":
-				case "regex":
+
+				if f.Op == "regex" {
 					// **正则要当场编译。**
 					//
 					// 不编译的话，一条写错的正则会被原样下发到节点上，
@@ -729,18 +740,9 @@ func validateRules(rules []model.Rule, domains map[string]bool) []Issue {
 						issues = append(issues, Issue{key, fk + ".value",
 							fmt.Sprintf("正则编译不过：%v —— 它会让整份配置被节点拒绝", err)})
 					}
-				default:
-					issues = append(issues, Issue{key, fk + ".op",
-						fmt.Sprintf("%q 不是可用的比法（contains / prefix / suffix / equals / regex）", f.Op)})
 				}
 				if f.Value == "" {
 					issues = append(issues, Issue{key, fk + ".value", "要比什么不能为空"})
-				}
-				if f.Field == "query" && f.Op != "equals" {
-					// query 匹配器只做精确值。悄悄当成 equals 的话，
-					// 一条 contains 规则会变成精确匹配 —— 拦不到它该拦的东西。
-					issues = append(issues, Issue{key, fk + ".op",
-						"查询参数只支持 equals（Caddy 的 query 匹配器只比精确值）"})
 				}
 			}
 
@@ -887,4 +889,14 @@ func parseBodyMax(s string) (int64, bool) {
 		mult = 1 << 40
 	}
 	return int64(v * float64(mult)), true
+}
+
+// filterFieldNames 是那张表里的 field，排序后给人看。
+func filterFieldNames() []string {
+	out := make([]string, 0, len(model.FilterFieldOps))
+	for k := range model.FilterFieldOps {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

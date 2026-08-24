@@ -1239,6 +1239,24 @@ Agent 断了就重连，只断开是个假动作：三秒后隧道又开了，�
 | `header`（要 `name`） | 同上 |
 | `query`（要 `name`） | **只有 `equals`** —— Caddy 的 query 匹配器只比精确值 |
 
+**这张表由 `GET /rules` 报出来**，界面照它渲染 op 下拉，不要抄：
+
+```json
+"filter_fields": {"path": ["contains","prefix","suffix","equals","regex"], "query": ["equals"], …},
+"filter_fields_need_name": {"header": true, "query": true}
+```
+
+> 它与校验**共用同一张表**（`model.FilterFieldOps`），不是抄本。
+>
+> 后端此前是「全局 op 集合 + 一个 `query` 的特例 `if`」，而**特例不会提醒下一个人**：
+> 加第八种 `field` 时没有任何东西会让他想起要不要也收窄。
+>
+> 界面抄一份的代价是两边在那时分叉：**给出一个后端会拒的选项**（人配完被拒，
+> 还算看得见），或者**藏起一个后端接受的**——而后者从界面上完全看不出来。
+>
+> `TestFilterFieldsAreServedFromTheSameTableAsValidation` 逆着验：
+> 对报出来的每一对 `(field, op)` 都去存一条规则，报了而存不进去就红。
+
 **`regex` 在保存时就编译。** 一条写错的正则原样下发到节点上，
 Caddy 会**拒绝整份配置**——症状是「所有站点一起下发失败」，
 而根因是某一条规则里的一个括号。

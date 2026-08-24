@@ -219,7 +219,20 @@ func (s *Server) handleListRules(c *gin.Context) {
 	if rules == nil {
 		rules = []model.Rule{}
 	}
-	OK(c, gin.H{"items": rules})
+	// filter_fields 是 request_filter 里**每个 field 允许哪些 op**。
+	//
+	// **报出去是为了让界面的下拉由数据驱动，而不是抄一份。**
+	// 抄的那份不会有人去校对：加第八种 field 时两边分叉，
+	// 症状是界面给出一个后端会拒的选项，或者藏起一个后端接受的
+	// ——而后者从界面上完全看不出来。
+	//
+	// 与校验共用同一张表（model.FilterFieldOps），不是它的抄本。
+	OK(c, gin.H{
+		"items":         rules,
+		"filter_fields": model.FilterFieldOps,
+		// 哪些 field 还要指明「看哪一个」（请求头名 / 参数名）。
+		"filter_fields_need_name": model.FilterFieldsNeedingName,
+	})
 }
 
 type ruleReq struct {

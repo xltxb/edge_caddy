@@ -413,3 +413,67 @@ func boolPtrStr(b *bool) string {
 	}
 	return "false"
 }
+
+// TestFilterFieldsAreServedFromTheSameTableAsValidation 钉的是**下拉与校验同源**。
+//
+// 界面按报出来的这张表渲染 op 下拉。抄一份的话，加第八种 field 时两边分叉：
+// 界面给出一个后端会拒的选项（人配完被拒，还算看得见），
+// 或者**藏起一个后端接受的**——而那从界面上完全看不出来。
+//
+// 判法是逆着来：对报出来的每一对 (field, op)，构造一条规则去存 ——
+// 报了而存不进去，说明表和校验对不上账。
+func TestFilterFieldsAreServedFromTheSameTableAsValidation(t *testing.T) {
+	r := newRig(t)
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "ff.example.com", "upstream": r.upstream, "block_mode": "abort",
+	})
+
+	e := r.mustDo("GET", "/rules", nil)
+	var d struct {
+		FilterFields map[string][]string `json:"filter_fields"`
+		NeedName     map[string]bool     `json:"filter_fields_need_name"`
+	}
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.FilterFields) < 3 {
+		t.Fatalf("装置坏了：只报了 %d 个 field，下面的循环没有意义", len(d.FilterFields))
+	}
+
+	checked := 0
+	for field, ops := range d.FilterFields {
+		for _, op := range ops {
+			f := map[string]any{"field": field, "op": op, "value": "x"}
+			if d.NeedName[field] {
+				f["name"] = "X-Test"
+			}
+			_, res := r.do("PUT", "/rules/ff-"+field+"-"+op, map[string]any{
+				"name": "特征", "type": "request_filter", "enabled": true,
+				"apply_to": []string{"ff.example.com"},
+				"spec":     map[string]any{"filters": []map[string]any{f}},
+			})
+			if res.Code != api.CodeOK {
+				t.Errorf("报了 %s/%s 而存不进去（code=%d msg=%q）—— "+
+					"界面照这张表渲染下拉，人会配一个必然被拒的组合",
+					field, op, res.Code, res.Msg)
+			}
+			checked++
+		}
+	}
+	if checked < 10 {
+		t.Fatalf("只试了 %d 对 —— 这条测试此刻几乎什么也没验", checked)
+	}
+
+	// 反面：表里没报的组合要被拒。没有这一条，一张「什么都报」的表
+	// 也能让上面全绿，而那等于没有收窄。
+	_, res := r.do("PUT", "/rules/ff-bad", map[string]any{
+		"name": "特征", "type": "request_filter", "enabled": true,
+		"apply_to": []string{"ff.example.com"},
+		"spec": map[string]any{"filters": []map[string]any{
+			{"field": "query", "name": "q", "op": "contains", "value": "x"},
+		}},
+	})
+	if res.Code != api.CodeValidation {
+		t.Errorf("query 只报了 equals，contains 该被拒，实际 code=%d", res.Code)
+	}
+}
