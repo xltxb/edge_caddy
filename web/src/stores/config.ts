@@ -9,6 +9,7 @@ import type {
   ResKind,
   RouteWire,
   RuleWire,
+  RuleIssue,
   RulesWire,
 } from '@/api/types'
 import { applyEdit, changeCount as countPatch, merge, type Patch } from '@/workbench/draft'
@@ -47,6 +48,14 @@ export const useConfigStore = defineStore('config', () => {
   const filterFields = ref<Record<string, string[]> | null>(null)
   /** 哪些 field 还要指明「看哪一个」。同样从表里读，不再判一次 field 名。 */
   const filterNeedsName = ref<Record<string, boolean> | null>(null)
+
+  /**
+   * 每条规则还差什么（契约 §6.2）。`ruleId → 问题清单`。
+   *
+   * **`null` 有两个来源，处置相同**：主控太旧（整个字段没有），
+   * 或者某一条这次算不出来。两者都不能显示成「这条是完整的」。
+   */
+  const ruleIssues = ref<Record<string, RuleIssue[] | null> | null>(null)
   const policies = ref<PolicyWire[]>([])
   const patches = ref<Record<string, Patch>>({})
   /**
@@ -210,6 +219,7 @@ export const useConfigStore = defineStore('config', () => {
        */
       filterFields.value = rl.value.filter_fields ?? null
       filterNeedsName.value = rl.value.filter_fields_need_name ?? null
+      ruleIssues.value = rl.value.incomplete ?? null
     } else failed.push('访问规则')
 
     const pols: PolicyWire[] = []
@@ -428,6 +438,7 @@ export const useConfigStore = defineStore('config', () => {
     rules,
     filterFields,
     filterNeedsName,
+    ruleIssues,
     policies,
     patches,
     updated,

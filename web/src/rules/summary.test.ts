@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { TYPE_LABEL, ruleStatus, ruleSummary } from './summary'
+import { TYPE_LABEL, completenessOf, ruleStatus, ruleSummary } from './summary'
 import type { RuleWire } from '@/api/types'
 
 const rule = (over: Partial<RuleWire> = {}): RuleWire => ({
@@ -161,5 +161,69 @@ describe('ruleStatus', () => {
   it('缺库不影响别的类型的规则', () => {
     expect(ruleStatus(rule({ type: 'ip_whitelist' }), 3).tone).toBe('ok')
     expect(ruleStatus(rule({ type: 'rate_limit' }), 3).tone).toBe('ok')
+  })
+})
+
+/**
+ * **「还差什么」三档。**
+ *
+ * 它存在的理由是：灰度上一条限流规则下发被拒（`spec.window_s` 要大于 0），
+ * 而那条规则可能是几天前建的 —— **校验拦住的地方，离出错的地方隔了很远**。
+ *
+ * 更硬的一条：那条规则根本不是从界面建的（当时那一版没有新建入口）。
+ * 所以「建它的那个界面会拦住」指望不上 —— 任何途径进来的半成品，
+ * 都得在列表这一层被看见。
+ */
+describe('completenessOf 三档', () => {
+  const issue = (field: string, reason: string) => ({ res_key: 'rule:x', field, reason })
+
+  it('空数组：算过了，它是完整的 —— 什么都不标', () => {
+    expect(completenessOf([]).flag).toBe(false)
+  })
+
+  it('有问题：标出来，并原样带上每一条原因', () => {
+    const c = completenessOf([
+      issue('spec.window_s', '时间窗口要大于 0 秒'),
+      issue('apply_to', '还没绑定任何域名'),
+    ])
+    expect(c.flag).toBe(true)
+    expect(c.reasons, '原因丢了 —— 人只会看到「不完整」而不知道差什么').toEqual([
+      '时间窗口要大于 0 秒',
+      '还没绑定任何域名',
+    ])
+  })
+
+  /*
+   * **`null` 是「这次算不出来」，不是「它是完整的」。**
+   *
+   * 这一条跟 `geo_db_ok` 的 `null`、`reconnects_1h` 的 `null` 是同一族，
+   * 而这个仓库里那三个 `null` 的处置各不相同 —— 照着别处的模式写这一条
+   * 会错：这里既不能闭嘴（那等于说「没问题」），也不能说「差 N 样」。
+   */
+  it('null：标出来，但说的是「说不了」，不是「没问题」', () => {
+    const c = completenessOf(null)
+    expect(c.flag, 'null 被当成了完整 —— 一条算不出来的规则显示成没问题').toBe(true)
+    expect(c.text).toContain('说不了')
+    expect(c.reasons, '算不出来时没有原因可列，不能编').toEqual([])
+  })
+
+  /*
+   * `undefined` = 表在、而这条没被算到。对看界面的人来说跟 `null` 一样：
+   * 这条的完整性拿不到。**「拿不到」和「没问题」必须分开。**
+   */
+  it('undefined（表里没这条）：跟 null 同一档', () => {
+    expect(completenessOf(undefined).flag).toBe(true)
+  })
+
+  /*
+   * **不过滤 `apply_to`。**
+   *
+   * 列表上「未绑定域名」已经有一个标签了，看起来重复 —— 但这份清单与下发
+   * 那次的校验共用同一段代码，前端自己挑掉一条，就等于在这里另做了一份判断，
+   * 而那份判断迟早跟后端分叉。
+   */
+  it('apply_to 那条也照样列 —— 不在前端做二次判断', () => {
+    const c = completenessOf([issue('apply_to', '还没绑定任何域名')])
+    expect(c.reasons).toHaveLength(1)
   })
 })

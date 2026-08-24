@@ -495,6 +495,20 @@ export interface RuleWire {
  * （这已经是第三次了）。所以这两个字段的位置是**照契约写的，不是观测到的**。
  * 可选，正是为了兜住「主控太旧」那一档：那时下拉退回到只有 items 能给的东西。
  */
+/**
+ * 一条规则「还差什么」。与下发那次的校验**共用同一段代码**
+ * （后端的 `render.RuleSpecIssues`），不是抄本 —— 分叉的症状相反：
+ * 列表说它完整而下发被拒，或者列表标红而它其实能下发。
+ */
+export interface RuleIssue {
+  /** `rule:<id>`，与下发校验回的 `validation.errors[].res_key` 同构。 */
+  res_key: string
+  /** 点号路径，`spec.window_s` / `apply_to`。 */
+  field: string
+  /** 原样显示，不要自己编 —— 它说的是这一条为什么不完整。 */
+  reason: string
+}
+
 export interface RulesWire extends Paged<RuleWire> {
   /** field → 允许的 op 列表。缺失 = 主控太旧，见上。 */
   filter_fields?: Record<string, string[]>
@@ -503,6 +517,34 @@ export interface RulesWire extends Paged<RuleWire> {
    * **从表里读，不要再判一次 field 名** —— 那就是又一份会分叉的知识。
    */
   filter_fields_need_name?: Record<string, boolean>
+  /**
+   * **每条规则还差什么** —— `ruleId → 问题清单`（契约 §6.2）。
+   *
+   * ## 三档，而它们说的是不同的事
+   *
+   * | 值 | 意思 | 界面 |
+   * |---|---|---|
+   * | `[]` | 算过了，它是完整的 | 不显示 |
+   * | 非空数组 | 差这几样，下发会被拒 | 标出来，原样列出 reason |
+   * | `null` | **这次算不出来** | 不能显示成「没问题」 |
+   *
+   * 整个字段缺失 = 主控太旧，还没有这个能力 —— 同样不能当成「都完整」。
+   *
+   * ## 它为什么存在
+   *
+   * 灰度上一条限流规则下发被拒（`spec.window_s` 要大于 0），而那条规则
+   * 可能是几天前建的 —— **校验拦住的地方，离出错的地方隔了很远**。
+   *
+   * 更硬的一条：那条规则**根本不是从界面建的**（当时那一版没有新建入口）。
+   * 所以「建它的那个界面会拦住」指望不上 —— **任何途径进来的半成品，
+   * 都得在列表这一层被看见**。
+   *
+   * ## 「已停用」和「还不完整」不能合成一句
+   *
+   * 停用的规则也照实列（后端确认过这个判据）。两者是意图与事实：
+   * 合成一句「不生效」会让人以为**启用它就能用了**。
+   */
+  incomplete?: Record<string, RuleIssue[] | null> | null
 }
 
 export interface PolicyWire {

@@ -157,6 +157,53 @@ export async function handleConfig(req: IncomingMessage, res: ServerResponse): P
           user_agent: ['contains', 'prefix', 'suffix', 'equals', 'regex'],
         },
         filter_fields_need_name: { header: true, query: true },
+        /*
+         * **每条规则还差什么**（契约 §6.2）。真主控用 `render.RuleSpecIssues`
+         * 算，与下发那次的校验共用同一段代码 —— mock 这边只能挑几档造出来。
+         *
+         * 三档都要在 dev 里走得到：
+         *   `[]`      算过了、完整      不显示
+         *   非空数组   差这几样          标出来 + 列原因
+         *   `null`    这一条算不出来     标出来，但说的是「说不了」
+         *
+         * 判据照抄不了（那是后端的渲染器），所以这里造的是**形状**：
+         * 没绑域名的、和 spec 缺字段的，各一条。
+         */
+        incomplete: Object.fromEntries(
+          state.rules.map((r) => {
+            const issues: Record<string, unknown>[] = []
+            if (!(r.apply_to as unknown[])?.length) {
+              issues.push({
+                res_key: `rule:${r.id}`,
+                field: 'apply_to',
+                reason: '还没绑定任何域名 —— 它不会对任何请求生效',
+              })
+            }
+            const sp = (r.spec ?? {}) as Rec
+            if (r.type === 'rate_limit' && !Number(sp.window_s)) {
+              issues.push({
+                res_key: `rule:${r.id}`,
+                field: 'spec.window_s',
+                reason: '时间窗口要大于 0 秒',
+              })
+            }
+            if (r.type === 'geo_block' && !(sp.geo_countries as unknown[])?.length) {
+              issues.push({
+                res_key: `rule:${r.id}`,
+                field: 'spec.geo_countries',
+                reason: '一个国家都没填 —— 这条规则不会做任何事',
+              })
+            }
+            if (r.type === 'ip_blacklist' && !(sp.ips as unknown[])?.length) {
+              issues.push({
+                res_key: `rule:${r.id}`,
+                field: 'spec.ips',
+                reason: '名单是空的 —— 这条规则谁也拦不到',
+              })
+            }
+            return [r.id, issues]
+          }),
+        ),
       }),
       true
     )

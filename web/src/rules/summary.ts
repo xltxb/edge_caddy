@@ -8,7 +8,7 @@
  * 跟 `@/nodes/flags` 同一条路子，理由见那里。
  */
 
-import type { RuleWire } from '@/api/types'
+import type { RuleIssue, RuleWire } from '@/api/types'
 
 export const TYPE_LABEL: Record<string, string> = {
   ip_whitelist: 'IP 白名单',
@@ -114,4 +114,54 @@ export function ruleStatus(r: RuleWire, staleGeoNodes: number): RuleStatus {
     return { text: `${staleGeoNodes} 台节点上不生效`, tone: 'warn' }
   }
   return { text: '生效中', tone: 'ok' }
+}
+
+/** 一条规则的「完整性」在界面上该怎么表现。 */
+export interface Completeness {
+  /** 要不要标出来。 */
+  flag: boolean
+  /** 标签文案。 */
+  text: string
+  /** 原样列出的原因 —— 不改写、不截断。它说的是这一条为什么不完整。 */
+  reasons: string[]
+}
+
+/**
+ * 这条规则还差什么（契约 §6.2）。
+ *
+ * ## 三档，而只有两档该说话
+ *
+ * | `issues` | 意思 | 结果 |
+ * |---|---|---|
+ * | 非空数组 | 差这几样，下发会被拒 | 标出来 + 原样列 reason |
+ * | `[]` | 算过了，它是完整的 | 不显示 |
+ * | `null` | **这一条这次算不出来** | 标出来，但说的是「说不了」 |
+ *
+ * ## 整张表缺失是第四档，而它由调用方处理
+ *
+ * 主控太旧时 `GET /rules` 根本没有 `incomplete` —— 那时**这个功能不可用**，
+ * 界面上一条都不该标。跟 `geo_db_ok` 的 `null` 同一条：一套没有这个能力的
+ * 系统，每条规则都挂一个「说不了」，是在报告一个不存在的问题，
+ * 而人两天就学会忽略它。
+ *
+ * 所以这个函数只在**表在**的时候被调用，`undefined` 与 `null` 的区别
+ * 留给调用方 —— 这里把 `undefined` 当成「表在而这条没被算到」，
+ * 那与 `null` 是同一件事。
+ *
+ * ## 不过滤 `apply_to` 那条
+ *
+ * 「未绑定域名」在列表上已经有一个标签了，看起来重复。**但不去重**：
+ * 这份清单与下发那次的校验共用同一段代码，界面把它原样呈现 ——
+ * 前端自己挑掉一条，就等于在这里另做了一份判断，而那份判断迟早跟后端分叉。
+ */
+export function completenessOf(issues: RuleIssue[] | null | undefined): Completeness {
+  if (issues === null || issues === undefined) {
+    return { flag: true, text: '完整性说不了', reasons: [] }
+  }
+  if (issues.length === 0) return { flag: false, text: '', reasons: [] }
+  return {
+    flag: true,
+    text: '还不完整',
+    reasons: issues.map((i) => i.reason),
+  }
 }

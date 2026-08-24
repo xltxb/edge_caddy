@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useConfigStore } from '@/stores/config'
 import { useNodesStore } from '@/stores/nodes'
-import { TYPE_LABEL, ruleStatus, ruleSummary } from '@/rules/summary'
+import { TYPE_LABEL, completenessOf, ruleStatus, ruleSummary } from '@/rules/summary'
 import NewRuleModal from '@/components/rules/NewRuleModal.vue'
 import { errorText } from '@/api/http'
 
@@ -46,6 +46,19 @@ onMounted(() => {
  * 不拉的话这一页会用「还不知道」去回答那个问题，而答案长得像「没问题」。
  */
 const staleGeoNodes = computed(() => nodes.items.filter((n) => n.geoDbOk === false).length)
+
+/**
+ * **这个主控报不报「还差什么」。**
+ *
+ * 整张表缺失 = 主控太旧，这个能力不存在 —— 那时一条都不该标。
+ * 每条规则都挂一个「说不了」，是在报告一个不存在的问题，
+ * 而人两天就学会忽略它（跟 `geo_db_ok` 的 `null` 同一条）。
+ */
+const hasIssueTable = computed(() => config.ruleIssues !== null)
+
+function completeness(id: string) {
+  return completenessOf(config.ruleIssues?.[id])
+}
 
 const creating = ref(false)
 
@@ -166,6 +179,19 @@ function edit(id: string): void {
           <td class="mono muted">{{ ruleSummary(r) }}</td>
           <td>
             <span class="tag" :class="ruleStatus(r, staleGeoNodes).tone">{{ ruleStatus(r, staleGeoNodes).text }}</span>
+            <!--
+              **「已停用」是意图，「还不完整」是事实** —— 两个标签，不合成一句。
+
+              合起来说「不生效」会让人以为**启用它就能用了**，而它下发时会被拒。
+              一条几天前建的半成品，从前只有在有人点下发的那一刻才会暴露。
+            -->
+            <span
+              v-if="hasIssueTable && completeness(r.id).flag"
+              class="tag warn incomplete"
+              :title="completeness(r.id).reasons.join('\n')"
+            >
+              {{ completeness(r.id).text }}
+            </span>
           </td>
           <td>
             <!-- 空绑定必须显示成「未绑定」，不能留白让人以为是全局生效 -->
@@ -185,6 +211,23 @@ function edit(id: string): void {
             <button class="mini" type="button" @click="edit(r.id)">在工作台编辑</button>
             <button class="mini danger" type="button" @click="removing = r.id">删除</button>
           </td>
+          </tr>
+
+          <!--
+            **原因要显示出来，不能只放在悬停的 title 里。**
+
+            这一整条的诉求是「人建完就看得见」—— 而 title 要鼠标停在那个标签上，
+            那等于要求人先怀疑它有问题，再去确认。**顺序反了。**
+
+            reason 原样列，不改写不截断：它与下发那次的校验共用同一段代码，
+            人在这里看到的那句话，就是下发被拒时会看到的那一句。
+          -->
+          <tr v-if="hasIssueTable && completeness(r.id).reasons.length" class="issue-row">
+            <td colspan="7">
+              <ul class="issues">
+                <li v-for="(why, i) in completeness(r.id).reasons" :key="i">{{ why }}</li>
+              </ul>
+            </td>
           </tr>
 
           <tr v-if="editingSecret === r.id" class="secret-row">
@@ -246,6 +289,32 @@ function edit(id: string): void {
 
 <style scoped>
 @import './catalog.css';
+
+/*
+ * 不完整那一行。**贴着它所属的规则**，而不是浮在表格外 ——
+ * 一条说「谁不完整」的提示如果离那一行远了，人得自己对行号。
+ *
+ * **这几条必须在 `@import` 之后。** CSS 规范要求 `@import` 出现在所有其它
+ * 规则之前，否则整条被忽略 —— 我第一次把它们插在了 style 块开头，
+ * `catalog.css` 就整个没加载：卡片背景、圆角、表格分隔线全没了，
+ * 按钮变成粗黑框。
+ *
+ * 而**功能是对的**：标记在、原因在、九步检查全绿。只有眼睛看得出来。
+ */
+.issue-row td {
+  padding-top: 0;
+  border-top: 0;
+}
+.issues {
+  margin: 0;
+  padding-left: var(--space-5);
+  font-size: var(--fs-2xs);
+  line-height: 1.7;
+  color: var(--warning-text, var(--text-muted));
+}
+.tag.incomplete {
+  margin-left: var(--space-1);
+}
 .mask {
   position: fixed;
   inset: 0;

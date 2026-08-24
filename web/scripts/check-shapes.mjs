@@ -102,12 +102,35 @@ let nullables = new Set()
  *
  * **这是个已知的、说出来的缺口**：spec 的形状目前没有任何一处在比。
  * 要补的话得按 type 分组各比一次，那要脚本理解规则的结构 —— 还没做。
+ *
+ * ## `$.data.incomplete` 是另一种：**键就是数据**
+ *
+ * 它是 `ruleId → 问题清单` 的 map，而两边的规则本来就不是同一批
+ * （mock 有 `scanner-block`，真主控有 `svc-key-1`）。这个脚本把对象的键
+ * 当字段名比 —— 在这里它比的是**哪些规则 id 恰好两边都有**，那是巧合不是形状。
+ *
+ * 代价说在明处：`{res_key, field, reason}` 这个形状**目前没有任何一处在比**。
+ * 真要比得按「取任意一条非空的 issue」来，而那要脚本知道哪一层是 map、
+ * 哪一层是记录 —— 还没做。
  */
-const SKIP_PATHS = new Set(['$.data.items[].spec'])
+const SKIP_PATHS = new Map([
+  ['$.data.items[].spec', '按 type 变形'],
+  ['$.data.incomplete', '键就是规则 id，两边不是同一批规则'],
+])
 
 function diffShape(a, b, path = '$', out = []) {
   if (SKIP_PATHS.has(path)) {
-    skipped.push(path)
+    /*
+     * **理由跟着路径走，不共用一句。**
+     *
+     * 这两条跳过的性质不同：一条是「同一个键在不同 type 下装着不同东西」，
+     * 另一条是「键本身就是数据」。共用一句「按 type 变形」，
+     * 套在后一条上**是一句假话** —— 而它正好出现在一个说「这里没比到」
+     * 的位置上，读的人没有理由怀疑它。
+     *
+     * 同样的错我在这个脚本里一小时前刚犯过一次（`empties` 那两个来源）。
+     */
+    skipped.push({ path, why: SKIP_PATHS.get(path) })
     return out
   }
   if (a === b) return out
@@ -551,7 +574,7 @@ for (const row of rows) {
    * 因为「有意跳过」会随时间变成「忘了还有这么一块」。
    */
   const skipNote = row.skipped?.length
-    ? `　⚠ ${row.skipped.join('、')} 按 type 变形，没比（见 SKIP_PATHS）`
+    ? row.skipped.map((k) => `　⚠ ${k.path} ${k.why}，没比（见 SKIP_PATHS）`).join('')
     : ''
 
   if (!hard.length && !statusDiff) {
