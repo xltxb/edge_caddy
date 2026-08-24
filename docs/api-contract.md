@@ -1799,6 +1799,66 @@ cursor 分页（§0.5），可选 `?operator=abiu`。倒序。
 > 「拼进 URL 的值必须被要求填」（`TestEveryConfigValueInAURLPathIsRequired`），
 > 界面那侧保证「被要求填的必须填得进去」。
 
+### 一份配置管多个域名
+
+`dns_provider.targets` 是**要管的全部主机名**：
+
+```json
+"targets": [
+  {"domain": "webjump.top", "sub": "cdn",  "zone_id": "abc123"},
+  {"domain": "webjump.top", "sub": "edge", "zone_id": "abc123"},
+  {"domain": "other.com",   "sub": "",     "zone_id": "def456"}
+]
+```
+
+- **凭证与 `kind` 只有一份**（同一个服务商账号），变的是每条记录写到哪儿。
+- **`zone_id` 是每条各填**（仅 Cloudflare）：同一 zone 下的多个子域填同一个，
+  不同顶级域各填各的。DNSPod 不需要它。
+- **轮换是共享的**：所有域名指向同一组边缘节点，权重表不分域名。
+  分域名配不同节点是另一件事，没做。
+
+**`PUT` 给了 `targets` 就整个替换，不是逐条合并。** 合并的话「删掉一个域名」
+没法表达：给一个少一条的列表会被读成「这几条不变」，
+而那个域名会永远留在配置里继续被同步。
+
+> **`domain` / `sub` / `zone_id` 那三个顶层字段是旧形态**，只剩兼容用途。
+> 读出来时若 `targets` 为空而 `domain` 非空，主控合成一条。
+> **不直接删掉是因为库里已有旧数据**，而一次读不出来的配置会表现成
+> 「解析突然不同步了」，且没有任何一处说得出为什么。
+
+**同步结果按域名分开记**（`dns_sync.targets`）：
+
+```json
+"dns_sync": {
+  "ok": false,
+  "at": "…",
+  "detail": "3 个域名里 2 个同步成功；失败的：other.com（10000 Authentication error）",
+  "targets": [
+    {"hostname": "cdn.webjump.top",  "ok": true,  "detail": "已同步"},
+    {"hostname": "edge.webjump.top", "ok": true,  "detail": "已同步"},
+    {"hostname": "other.com",        "ok": false, "detail": "…"}
+  ]
+}
+```
+
+> **一个布尔说不出「三个里哪一个没上」**，而人会按那个布尔决定要不要去查。
+> 三个坏一个时 `ok` 是 `false`——而**另外两个是好的这件事，只有 `targets` 说得出来**。
+>
+> 一个域名失败**不中断其余的**：停下来的话，一个域名的凭证问题会连带让另外
+> 两个也不同步，而它们本来没有任何问题。
+>
+> `targets` 为 `null` 是旧数据（写于只支持单域名的版本），**不是「一个目标都没有」**。
+
+**`GET /dns/weights` 多回一个 `domains`**（这份安排会被写到哪几个名字上）。
+`lines` 不分域名——轮换是共享的。`domain`（单数）留着只为旧界面，
+**多域名时它是不全的**，别拿它当权威。
+
+**`PUT /settings` 会逐个检查目标是否撞上控制台自己的域名**，撞上就拒
+（`dns_provider.targets`）。**每一个都查，不是只查第一个**：
+改成多域名时这道守卫差点被架空——它原先读的是 `dns.domain` 那个旧字段，
+而域名搬进 `targets` 之后它看不见任何东西，**一道读不到输入的守卫恒为放行，
+而它长得跟生效时一模一样**。
+
 **`PUT` 时 `dns_provider` 的字段**（两家不同，界面按 `kind` 切换）：
 
 **`kind` 有三种**，其中两种都是 Cloudflare：

@@ -786,7 +786,7 @@ func TestRefusesDNSHostnameThatCollidesWithTheConsole(t *testing.T) {
 		t.Fatalf("解析域名撞上控制台域名时应当以 1002 拒绝，实际 code=%d msg=%q",
 			e.Code, e.Msg)
 	}
-	if !strings.Contains(string(e.Data), "dns_provider.sub") {
+	if !strings.Contains(string(e.Data), "dns_provider.targets") {
 		t.Errorf("要点名是哪个字段：%s", e.Data)
 	}
 	if !strings.Contains(string(e.Data), "控制台") {
@@ -803,5 +803,95 @@ func TestRefusesDNSHostnameThatCollidesWithTheConsole(t *testing.T) {
 	})
 	if ok.Code != api.CodeOK {
 		t.Fatalf("换了子域名之后不该再拒：%v", ok)
+	}
+}
+
+// TestCollisionGuardChecksEveryTarget 钉的是**守卫要看每一个目标**。
+//
+// 改成多域名时这里差点漏掉：守卫原先读的是 `dns.Domain` 那个旧字段，
+// 而域名搬进 `targets` 之后它看不见任何东西 ——
+// **一道读不到输入的守卫恒为放行，而它长得跟生效时一模一样。**
+//
+// 这一条把撞上的那个放在**第二位**：只查第一条的实现会放行它。
+func TestCollisionGuardChecksEveryTarget(t *testing.T) {
+	r := newRig(t)
+	host, _, _ := net.SplitHostPort(r.tunnelAddr)
+
+	_, e := r.do("PUT", "/settings", map[string]any{
+		"dns_provider": map[string]any{
+			"kind": "dnspod", "credential": "fake-token",
+			"targets": []map[string]any{
+				{"domain": "safe.example.com"},
+				{"domain": host}, // 第二个才撞上
+			},
+		},
+	})
+	if e.Code != api.CodeValidation {
+		t.Fatalf("第二个目标撞上控制台域名时应当拒绝，实际 code=%d msg=%q", e.Code, e.Msg)
+	}
+	if !strings.Contains(string(e.Data), host) {
+		t.Errorf("要说出撞上的是哪一个：%s", e.Data)
+	}
+}
+
+// TestMultipleTargetsAllGetPushed 钉的是**每个域名都真的推了**。
+//
+// 判据是假服务商收到的请求里出现了每一个主机名 —— 不是「接口回了 200」。
+// 少推一个的症状是那个域名静默地不被管：其余的照常同步、界面一片正常，
+// **而人是按「同步成功了」去看的**。
+func TestMultipleTargetsAllGetPushed(t *testing.T) {
+	r := newRig(t)
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	e := r.mustDo("PUT", "/settings", map[string]any{
+		"dns_provider": map[string]any{
+			"kind": "dnspod", "credential": "fake-token",
+			"targets": []map[string]any{
+				{"domain": "a.example.com", "sub": "cdn"},
+				{"domain": "b.example.com"},
+			},
+		},
+	})
+
+	var d struct {
+		Synced bool   `json:"dns_synced"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if !d.Synced {
+		t.Fatalf("两个域名都该推成功：%q", d.Detail)
+	}
+	for _, want := range []string{"cdn.a.example.com", "b.example.com"} {
+		if !strings.Contains(d.Detail, want) {
+			t.Errorf("说明里没有 %s —— 少推一个的症状是那个域名静默不被管：%q",
+				want, d.Detail)
+		}
+	}
+
+	// 每个目标各自的结果也要在 dns_sync 里。
+	w := r.mustDo("GET", "/dns/weights", nil)
+	var g struct {
+		Sync struct {
+			Targets []struct {
+				Hostname string `json:"hostname"`
+				OK       bool   `json:"ok"`
+			} `json:"targets"`
+		} `json:"dns_sync"`
+	}
+	if err := json.Unmarshal(w.Data, &g); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.Sync.Targets) != 2 {
+		t.Fatalf("dns_sync 里该有两个目标各自的结果，实际 %d 个：%s",
+			len(g.Sync.Targets), w.Data)
+	}
+	for _, tg := range g.Sync.Targets {
+		if !tg.OK {
+			t.Errorf("%s 没同步上", tg.Hostname)
+		}
 	}
 }

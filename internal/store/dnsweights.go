@@ -28,12 +28,63 @@ type DNSProviderSettings struct {
 	Credential   string `json:"-"`
 	CredentialOK bool   `json:"-"`
 
+	// Targets 是这套系统要管的**全部**主机名。
+	//
+	// **一份配置管多个域名**：客户的域名各自要有 A 记录（根域名 CNAME 不了），
+	// 而它们可能分属不同的 zone。凭证与 kind 只有一份（同一个服务商账号），
+	// 变的是每条记录写到哪儿。
+	//
+	// 轮换是**共享**的：所有域名指向同一组边缘节点，权重表不分域名。
+	// 那是 CDN 的常规形态——分域名配不同节点是另一件事，没做。
+	//
+	// **Domain / SubName / ZoneID 那三个字段是旧形态**，只剩兼容用途：
+	// 读出来时若 Targets 为空而 Domain 非空，合成一条。写入时以 Targets 为准。
+	// 不直接删掉它们是因为库里已经有旧数据，而一次读不出来的配置
+	// 会表现成「解析突然不同步了」，且没有任何一处说得出为什么。
+	Targets []DNSTarget `json:"targets,omitempty"`
+
 	// ClearCredential 是删除凭证的信号，**不落库**。
 	//
 	// 需要一个独立字段是因为空串已经被占用了：它表示「不改动」
 	// （凭证不回显，前端带不出原值）。用空串表示删除的话，
 	// 一次「只改域名」的保存会顺手把凭证清掉。
 	ClearCredential bool `json:"-"`
+}
+
+// DNSTarget 是一个要管的主机名。
+//
+// ZoneID 只有 Cloudflare 用：**同一个 zone 下的多个子域填同一个 zone_id**，
+// 不同顶级域各填各的。DNSPod 不需要它（它按 domain 自己找）。
+type DNSTarget struct {
+	Domain string `json:"domain"`
+	Sub    string `json:"sub,omitempty"`
+	ZoneID string `json:"zone_id,omitempty"`
+}
+
+// Hostname 是这条目标实际写入的名字。
+func (t DNSTarget) Hostname() string {
+	if t.Domain == "" {
+		return ""
+	}
+	if t.Sub == "" || t.Sub == "@" {
+		return t.Domain
+	}
+	return t.Sub + "." + t.Domain
+}
+
+// EffectiveTargets 是「这份配置实际要管哪些主机名」。
+//
+// **旧形态在这里被合成一条**，而不是在读库那一层改写：改写会把旧数据
+// 静默升级，于是「它原本是什么样」这件事永远消失了——而排查一次
+// 「解析写到了奇怪的地方」时，那正是要问的第一个问题。
+func (c DNSProviderSettings) EffectiveTargets() []DNSTarget {
+	if len(c.Targets) > 0 {
+		return c.Targets
+	}
+	if c.Domain == "" {
+		return nil
+	}
+	return []DNSTarget{{Domain: c.Domain, Sub: c.SubName, ZoneID: c.ZoneID}}
 }
 
 // MissingFields 列出这份服务商配置还差什么才**能用**。
@@ -55,7 +106,7 @@ func (c DNSProviderSettings) MissingFields() []string {
 	if c.Kind == "" {
 		missing = append(missing, "kind")
 	}
-	if c.Domain == "" {
+	if len(c.EffectiveTargets()) == 0 {
 		missing = append(missing, "domain")
 	}
 	// 凭证不回显，所以判据是「库里有没有」而不是「这次请求带没带」。
@@ -83,8 +134,10 @@ func (c DNSProviderSettings) MissingFields() []string {
 		if c.AccountID == "" {
 			missing = append(missing, "account_id") // 加权调度用的 pool 是账号级的
 		}
-		if c.ZoneID == "" {
-			missing = append(missing, "zone_id") // load balancer 挂在 zone 上
+		// **每个目标各要一个 zone_id**：load balancer 挂在 zone 上，
+		// 而不同顶级域是不同的 zone。少任何一个，那个域名就静默地不被管。
+		if c.targetMissingZone() {
+			missing = append(missing, "zone_id")
 		}
 		// Global API Key 模式要 email 配对；API Token 模式不要。
 		if c.CredentialMode == "global_key" && c.Email == "" {
@@ -94,7 +147,7 @@ func (c DNSProviderSettings) MissingFields() []string {
 		// **不要 account_id。** 普通 DNS 记录挂在 zone 上，
 		// 账号级的 Load Balancing 权限根本用不上——这正是这条路的好处之一：
 		// 少一个要人去 Cloudflare 后台翻的值，也少一类权限不足。
-		if c.ZoneID == "" {
+		if c.targetMissingZone() {
 			missing = append(missing, "zone_id")
 		}
 		if c.CredentialMode == "global_key" && c.Email == "" {
@@ -152,6 +205,33 @@ func ProviderRequirements() map[string]map[string][]string {
 		out[kind] = byMode
 	}
 	return out
+}
+
+// targetMissingZone 说有没有哪个目标缺 zone_id。
+//
+// **判据是「有没有一个缺」，不是「第一个缺不缺」。** 缺一个的后果是那一个
+// 域名静默地不被管：其余的照常同步，界面上一片正常，而那个域名的记录
+// 永远不会出现——**而人是按「解析同步成功了」去看的**。
+func (c DNSProviderSettings) targetMissingZone() bool {
+	targets := c.EffectiveTargets()
+	// **一个目标都没有时也算缺。**
+	//
+	// 空切片遍历下来会返回 false —— 「没有任何一个缺」，
+	// 而那读起来像「都齐了」。第一版就是这么写的，两条测试当场红：
+	// ProviderRequirements 拿一份空配置求值，于是 zone_id 从必填清单里消失了，
+	// 而前端那条「每个必填字段都得有输入框」的检查会跟着放行。
+	//
+	// **「一个都没有」和「都齐了」在遍历里长得一模一样**，
+	// 而这一整天数的就是这个形状。
+	if len(targets) == 0 {
+		return true
+	}
+	for _, t := range targets {
+		if t.ZoneID == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // Usable 说这份配置装配得出一个能用的服务商客户端。
@@ -290,6 +370,23 @@ type DNSSyncState struct {
 	// 危险**：空白会让人去查，一个像模像样的时间不会。
 	At     *time.Time `json:"at"`
 	Detail string     `json:"detail"`
+
+	// Targets 是**每个域名各自**的结果。
+	//
+	// 一个布尔说不出「三个域名里哪一个没同步上」，而人会按那个布尔决定
+	// 要不要去查。三个里坏一个时，OK 是 false、Detail 说第一条错——
+	// **而另外两个是好的这件事，只有这一列说得出来**。
+	//
+	// 旧数据里没有它，那时它是 nil：**不是「一个目标都没有」**，
+	// 是「这条记录写于只支持单域名的版本」。界面据此退回只显示 Detail。
+	Targets []DNSTargetSync `json:"targets,omitempty"`
+}
+
+// DNSTargetSync 是一个域名这一次的同步结果。
+type DNSTargetSync struct {
+	Hostname string `json:"hostname"`
+	OK       bool   `json:"ok"`
+	Detail   string `json:"detail"`
 }
 
 func (s *Store) GetDNSSync(ctx context.Context) (DNSSyncState, error) {

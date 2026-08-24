@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -66,15 +67,30 @@ func (o *Orchestrator) Provider(ctx context.Context) (dnsctl.Provider, store.DNS
 		return nil, cfg, ErrNoProvider
 	}
 
+	targets := cfg.EffectiveTargets()
+	if len(targets) == 0 {
+		return nil, cfg, ErrNoProvider
+	}
+	p, err := o.providerFor(cfg, targets[0])
+	return p, cfg, err
+}
+
+// providerFor 为**一个目标**装配一个服务商客户端。
+//
+// **一个目标一个实例**：Cloudflare 的 zone_id 与要写的主机名都在实例上，
+// 而不同顶级域是不同的 zone。共用一个实例的话，第二个域名会被写进
+// 第一个域名的 zone —— 那不会报错，Cloudflare 会老老实实建一条
+// `b.other.com` 记录在 `webjump.top` 的 zone 里，而它永远不会被解析到。
+func (o *Orchestrator) providerFor(cfg store.DNSProviderSettings, t store.DNSTarget) (dnsctl.Provider, error) {
 	switch cfg.Kind {
 	case "dnspod":
-		p := dnsctl.NewDNSPod(cfg.Credential, cfg.Domain, cfg.SubName)
+		p := dnsctl.NewDNSPod(cfg.Credential, t.Domain, t.Sub)
 		if o.BaseOverride != "" {
 			p.Base = o.BaseOverride
 		}
-		return p, cfg, nil
+		return p, nil
 	case "cloudflare_dns":
-		cf := dnsctl.NewCloudflareDNS(cfg.ZoneID, hostname(cfg))
+		cf := dnsctl.NewCloudflareDNS(t.ZoneID, t.Hostname())
 		if cfg.CredentialMode == "global_key" {
 			cf.Email, cf.GlobalKey = cfg.Email, cfg.Credential
 		} else {
@@ -83,9 +99,9 @@ func (o *Orchestrator) Provider(ctx context.Context) (dnsctl.Provider, store.DNS
 		if o.BaseOverride != "" {
 			cf.Base = o.BaseOverride
 		}
-		return cf, cfg, nil
+		return cf, nil
 	case "cloudflare":
-		cf := dnsctl.NewCloudflare(cfg.AccountID, cfg.ZoneID, hostname(cfg))
+		cf := dnsctl.NewCloudflare(cfg.AccountID, t.ZoneID, t.Hostname())
 		if cfg.CredentialMode == "global_key" {
 			cf.Email, cf.GlobalKey = cfg.Email, cfg.Credential
 		} else {
@@ -94,9 +110,9 @@ func (o *Orchestrator) Provider(ctx context.Context) (dnsctl.Provider, store.DNS
 		if o.BaseOverride != "" {
 			cf.Base = o.BaseOverride
 		}
-		return cf, cfg, nil
+		return cf, nil
 	default:
-		return nil, cfg, fmt.Errorf("未知的 DNS 服务商 %q", cfg.Kind)
+		return nil, fmt.Errorf("未知的 DNS 服务商 %q", cfg.Kind)
 	}
 }
 
@@ -146,9 +162,26 @@ func (o *Orchestrator) CurrentPlan(ctx context.Context, weights dnssched.Weights
 		}
 		weights = dnssched.Weights(w)
 	}
-	nodes, err := o.Store.ListNodes(ctx)
+	states, err := o.nodeStates(ctx)
 	if err != nil {
 		return dnssched.Plan{}, err
+	}
+	// 计划里的 Domain 用第一个目标：这一页展示的是**轮换**（所有域名共用），
+	// 而域名清单由 GET /dns/weights 的 domains 单独给。
+	var first string
+	if ts := cfg.EffectiveTargets(); len(ts) > 0 {
+		first = ts[0].Hostname()
+	}
+	return dnssched.Build(first, weights, states), nil
+}
+
+// nodeStates 把库里的节点转成归一化需要的形状。**两处共用**：
+// CurrentPlan 与 syncOnce 都要它，而分开写的话，
+// 「哪些节点算候选」这件事会有两份答案。
+func (o *Orchestrator) nodeStates(ctx context.Context) ([]dnssched.NodeState, error) {
+	nodes, err := o.Store.ListNodes(ctx)
+	if err != nil {
+		return nil, err
 	}
 	states := make([]dnssched.NodeState, 0, len(nodes))
 	for _, n := range nodes {
@@ -157,7 +190,7 @@ func (o *Orchestrator) CurrentPlan(ctx context.Context, weights dnssched.Weights
 			Drained: n.DrainedAt != nil,
 		})
 	}
-	return dnssched.Build(hostname(cfg), weights, states), nil
+	return states, nil
 }
 
 // Sync 把当前应有的安排推到服务商。weights 为 nil 时用库里的。
@@ -167,31 +200,53 @@ func (o *Orchestrator) Sync(ctx context.Context, weights dnssched.Weights) error
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	note, err := o.syncOnce(ctx, weights)
+	results, err := o.syncOnce(ctx, weights)
 
 	// **每次同步都记下结果**，无论成败。界面上那个「已退出解析」徽标是常驻的，
 	// 而一次请求的响应会消失——不落库的话，一次失败的同步会留下一个一直撒谎
 	// 到下次有人再点开关为止的说法。
 	now := time.Now()
-	st := store.DNSSyncState{OK: err == nil, At: &now, Detail: "解析安排已同步到服务商"}
-	if err != nil {
-		st.Detail = err.Error()
-	} else if h := o.Hostname(ctx); h != "" {
-		// 服务商可以留一句「做了但值得说」的附注（比如把五条线合并成了并集）。
-		// **不接上的话它就是个没人读的字段** —— 这个仓库里数过很多次了。
+	st := store.DNSSyncState{OK: err == nil, At: &now, Targets: results}
 
-		// **成功时把写入的名字也记下来。**
+	switch {
+	case err != nil && len(results) == 0:
+		// 连目标都没算出来（没配服务商 / 读库失败）。
+		st.Detail = err.Error()
+	case err != nil:
+		// **部分失败要说出「几个里的几个」。**
+		//
+		// 只报第一条错的话，人看到一句 Cloudflare 的报错，不知道那是
+		// 三个域名里的一个还是全部 —— 而这两种情况的紧急程度差很远。
+		ok := 0
+		for _, r := range results {
+			if r.OK {
+				ok++
+			}
+		}
+		st.Detail = fmt.Sprintf("%d 个域名里 %d 个同步成功；失败的：%s",
+			len(results), ok, firstFailure(results))
+	default:
+		// **成功时把写入的名字都记下来。**
 		//
 		// domain 与 sub 拼重复（`cdn.example.com` + `cdn`）时记录会建到
 		// `cdn.cdn.example.com`：同步成功、ok=true、服务商也不会拦，
 		// **而人在面板上永远看不到它**——他看的是另一个名字。
 		//
 		// 这个 detail 是常驻的（界面上那个徽标读它），所以它比一次性的响应
-		// 更该带上这个名字：人来查「为什么服务商上没有」时，第一眼就该看到
+		// 更该带上这些名字：人来查「为什么服务商上没有」时，第一眼就该看到
 		// 我们写到了哪儿。
-		st.Detail = "解析安排已同步到服务商（写入 " + h + "）"
-		if note != "" {
-			st.Detail += "。" + note
+		names := make([]string, 0, len(results))
+		for _, r := range results {
+			names = append(names, r.Hostname)
+		}
+		st.Detail = "解析安排已同步到服务商（写入 " + strings.Join(names, "、") + "）"
+		// 服务商留的附注（比如把五条线合并成了并集）跟在各自的目标上，
+		// 挑第一条非空的放进总说明——**不接上的话它就是个没人读的字段**。
+		for _, r := range results {
+			if i := strings.Index(r.Detail, "。"); i >= 0 && len(r.Detail) > i+len("。") {
+				st.Detail += "。" + r.Detail[i+len("。"):]
+				break
+			}
 		}
 	}
 	if perr := o.Store.PutDNSSync(context.WithoutCancel(ctx), st); perr != nil {
@@ -205,22 +260,68 @@ func (o *Orchestrator) Sync(ctx context.Context, weights dnssched.Weights) error
 // **附注必须从这个实例上取。** 我第一版写的是在外面重新 o.Provider(ctx)
 // 再读 Note()，而那会新造一个实例——上面那次同步设的附注在另一个对象上，
 // 于是它恒为空串。**又一个「什么都没发生」装成「没什么可说」。**
-func (o *Orchestrator) syncOnce(ctx context.Context, weights dnssched.Weights) (string, error) {
-	provider, _, err := o.Provider(ctx)
+// syncOnce 把每个目标各推一次，并把每个目标的结果分别带出来。
+//
+// **一个域名失败不能被淹在「整体成功」里。** 三个域名两个成功一个失败时，
+// 一个布尔说不出该去看哪一个 —— 而人会按那个布尔决定要不要去查。
+//
+// 也不在第一个失败时就停：**剩下的域名该推还得推**。停下来的话，
+// 一个域名的凭证问题会连带让另外两个也不同步，而它们本来没有任何问题。
+func (o *Orchestrator) syncOnce(ctx context.Context, weights dnssched.Weights) ([]store.DNSTargetSync, error) {
+	cfg, err := o.Store.GetDNSProvider(ctx, o.Sealer)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	plan, err := o.CurrentPlan(ctx, weights)
+	if !cfg.Usable() {
+		return nil, ErrNoProvider
+	}
+	targets := cfg.EffectiveTargets()
+	if len(targets) == 0 {
+		return nil, ErrNoProvider
+	}
+
+	weightsForPlan := weights
+	if weightsForPlan == nil {
+		if w, werr := o.Store.GetDNSWeights(ctx); werr == nil {
+			weightsForPlan = dnssched.Weights(w)
+		} else {
+			return nil, werr
+		}
+	}
+	nodes, err := o.nodeStates(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	if err := provider.Sync(ctx, plan); err != nil {
-		return "", err
+
+	out := make([]store.DNSTargetSync, 0, len(targets))
+	var firstErr error
+	for _, t := range targets {
+		st := store.DNSTargetSync{Hostname: t.Hostname()}
+		provider, perr := o.providerFor(cfg, t)
+		if perr != nil {
+			st.Detail = perr.Error()
+			out = append(out, st)
+			if firstErr == nil {
+				firstErr = perr
+			}
+			continue
+		}
+		plan := dnssched.Build(t.Hostname(), weightsForPlan, nodes)
+		if serr := provider.Sync(ctx, plan); serr != nil {
+			st.Detail = serr.Error()
+			if firstErr == nil {
+				firstErr = serr
+			}
+		} else {
+			st.OK = true
+			st.Detail = "已同步"
+			if n, ok := provider.(Noter); ok && n.Note() != "" {
+				st.Detail += "。" + n.Note()
+			}
+		}
+		out = append(out, st)
 	}
-	if n, ok := provider.(Noter); ok {
-		return n.Note(), nil
-	}
-	return "", nil
+	return out, firstErr
 }
 
 // Detach 把一个节点摘出解析。实现 health.DNSDetacher。
@@ -253,3 +354,16 @@ func (o *Orchestrator) Caps(ctx context.Context) dnsctl.Caps {
 // 加方法会逼 DNSPod 和 Cloudflare 各写一个空实现，而空实现最容易在
 // 后来真需要说点什么时被忘掉。
 type Noter interface{ Note() string }
+
+// firstFailure 是第一条失败的目标，给「部分失败」那句话用。
+//
+// 只给第一条是有意的：全部列出来会把一句给人扫一眼的摘要撑成一段，
+// 而完整清单在 Targets 里，界面展开就能看。
+func firstFailure(results []store.DNSTargetSync) string {
+	for _, r := range results {
+		if !r.OK {
+			return r.Hostname + "（" + r.Detail + "）"
+		}
+	}
+	return ""
+}

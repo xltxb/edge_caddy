@@ -53,7 +53,11 @@ func (s *Server) handleGetSettings(c *gin.Context) {
 		"warn_cpu_pct":             sys.WarnCPUPct,
 		"warn_mem_pct":             sys.WarnMemPct,
 		"dns_provider": gin.H{
-			"kind":            dns.Kind,
+			"kind": dns.Kind,
+			// **targets 是权威的那一份**，domain / sub 只为旧界面留着。
+			// 旧配置读出来时 EffectiveTargets 会合成一条，所以这一列
+			// 永远非空（配过的话）——界面照它渲染就行，不必再判空。
+			"targets":         dns.EffectiveTargets(),
 			"domain":          dns.Domain,
 			"sub":             dns.SubName,
 			"credential_mode": dns.CredentialMode,
@@ -77,13 +81,18 @@ func (s *Server) handleGetSettings(c *gin.Context) {
 }
 
 type dnsProviderReq struct {
-	Kind           *string `json:"kind"`
-	Domain         *string `json:"domain"`
-	Sub            *string `json:"sub"`
-	AccountID      *string `json:"account_id"`
-	ZoneID         *string `json:"zone_id"`
-	Email          *string `json:"email"`
-	CredentialMode *string `json:"credential_mode"`
+	Kind   *string `json:"kind"`
+	Domain *string `json:"domain"`
+	Sub    *string `json:"sub"`
+	// Targets 给了就**整个替换**，不是逐条合并。
+	//
+	// 合并的话「删掉一个域名」没法表达：给一个少一条的列表会被读成
+	// 「这几条不变」，而那个域名会永远留在配置里继续被同步。
+	Targets        *[]store.DNSTarget `json:"targets"`
+	AccountID      *string            `json:"account_id"`
+	ZoneID         *string            `json:"zone_id"`
+	Email          *string            `json:"email"`
+	CredentialMode *string            `json:"credential_mode"`
 	// Credential 空串表示保持不变——凭证不回显，前端也带不出原值（PRD §7）。
 	Credential *string `json:"credential"`
 
@@ -192,7 +201,7 @@ func (s *Server) handlePutSettings(c *gin.Context) {
 			//
 			// `{"clear":true,"kind":"dnspod"}` 有两种合理读法（先清再设 /
 			// 清掉一切），而挑一种执行等于替人做了他没做的决定。
-			if p.Kind != nil || p.Domain != nil || p.Sub != nil ||
+			if p.Kind != nil || p.Domain != nil || p.Sub != nil || p.Targets != nil ||
 				p.AccountID != nil || p.ZoneID != nil || p.Email != nil ||
 				p.CredentialMode != nil || p.Credential != nil {
 				FailValidation(c, "系统设置未通过校验", []FieldError{
@@ -210,6 +219,14 @@ func (s *Server) handlePutSettings(c *gin.Context) {
 			return
 		}
 		assign(&dns.Kind, p.Kind)
+		if p.Targets != nil {
+			dns.Targets = *p.Targets
+			// **旧的三个字段一起清掉。** 留着的话它们会在
+			// EffectiveTargets 的兼容分支里复活 —— 而那个分支只在
+			// Targets 为空时才走，所以真正的风险是别处直接读了 dns.Domain
+			// 拿到一个早就不该存在的值。
+			dns.Domain, dns.SubName, dns.ZoneID = "", "", ""
+		}
 		assign(&dns.Domain, p.Domain)
 		assign(&dns.SubName, p.Sub)
 		assign(&dns.AccountID, p.AccountID)
@@ -262,14 +279,23 @@ func (s *Server) handlePutSettings(c *gin.Context) {
 		//
 		// 所以这里硬拒，不给 force：一个「按下去就再也按不了第二次」的开关，
 		// 逃生口给了也没用——人是在它已经生效之后才知道自己需要它的。
-		if h := dnsops.HostnameOf(dns); h != "" && s.masterAddr != "" {
-			if strings.EqualFold(h, config.AdvertiseHost(s.masterAddr)) {
+		// **每一个目标都要查，不是只查第一个。**
+		//
+		// 改成多域名时我差点漏掉这里：守卫原先读的是 dns.Domain 那个旧字段，
+		// 而域名搬进 targets 之后它看不见任何东西 —— **一道读不到输入的守卫
+		// 恒为放行，而它长得跟生效时一模一样**。
+		if s.masterAddr != "" {
+			self := config.AdvertiseHost(s.masterAddr)
+			for _, t := range dns.EffectiveTargets() {
+				h := t.Hostname()
+				if h == "" || !strings.EqualFold(h, self) {
+					continue
+				}
 				FailValidation(c, "系统设置未通过校验", []FieldError{
-					{ResKey: "settings", Field: "dns_provider.sub",
-						Reason: "解析要管的域名（" + h + "）和控制台自己的域名是同一个。" +
+					{ResKey: "settings", Field: "dns_provider.targets",
+						Reason: "要管的域名里有一个（" + h + "）和控制台自己的域名是同一个。" +
 							"同步会把这个名字的记录换成边缘节点的 IP，控制台当场打不开，" +
-							"而改回来要用控制台 —— 给边缘轮换换一个名字，比如 edge." +
-							config.AdvertiseHost(s.masterAddr)},
+							"而改回来要用控制台 —— 给边缘轮换换一个名字，比如 edge." + self},
 				})
 				return
 			}
@@ -328,8 +354,12 @@ func (s *Server) syncAfterProviderChange(ctx context.Context) (bool, string) {
 		// 永远看不到它。服务商也不会拦：那是它 zone 里一个合法的子域名。
 		//
 		// **一次成功里唯一能揭穿这件事的，就是把那个名字印出来。**
-		if h := s.dns.Hostname(ctx); h != "" {
-			return true, "服务商设置已保存，当前解析已推到服务商（写入 " + h + "）"
+		// 多域名之后更要紧：少推一个的症状是那个域名静默不被管。
+		//
+		// 名字从落库的同步结果里读，**与解析页那个徽标同源** ——
+		// 自己再拼一遍的话，两处迟早对不上账，而那时人会先怀疑没推上去。
+		if sync, err := s.store.GetDNSSync(ctx); err == nil && sync.Detail != "" {
+			return true, "服务商设置已保存，" + sync.Detail
 		}
 		return true, "服务商设置已保存，当前解析已推到服务商"
 	}

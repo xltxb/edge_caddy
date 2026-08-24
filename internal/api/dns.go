@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 
 	"github.com/gin-gonic/gin"
@@ -29,9 +30,23 @@ func (s *Server) handleGetDNSWeights(c *gin.Context) {
 		Fail(c, CodeDownstream, "读取解析安排失败")
 		return
 	}
+	// domains 是**这套系统在管的全部主机名**。
+	//
+	// 轮换是共享的（所有域名指向同一组节点），所以 lines 不分域名——
+	// 这一页展示的是那一组节点怎么分流量，而 domains 说的是「这份安排
+	// 会被写到哪几个名字上」。
+	//
+	// domain（单数）留着只为旧界面：它是第一个目标。**多域名时它是不全的**，
+	// 别拿它当权威。
+	var domains []string
+	for _, t := range s.dnsTargets(ctx) {
+		domains = append(domains, t.Hostname())
+	}
+
 	OK(c, gin.H{
-		"domain": plan.Domain,
-		"lines":  plan.Lines,
+		"domain":  plan.Domain,
+		"domains": domains,
+		"lines":   plan.Lines,
 		// 最近一次同步的结果。它与 lines 里的 share 是两件事：
 		// share 是**我们打算**怎么分，dns_sync 说的是**服务商那边真的这样了没有**。
 		"dns_sync": sync,
@@ -162,4 +177,15 @@ func itoaN(n int) string {
 		n /= 10
 	}
 	return string(out)
+}
+
+// dnsTargets 读出当前配置里的目标清单。读不到时回 nil ——
+// 这一页的主体（轮换）与它无关，为一列附加信息把整页变成错误页不成比例。
+func (s *Server) dnsTargets(ctx context.Context) []store.DNSTarget {
+	cfg, err := s.store.GetDNSProvider(ctx, nil)
+	if err != nil {
+		s.log.Error("读取 DNS 服务商设置失败，域名清单给不出", "err", err)
+		return nil
+	}
+	return cfg.EffectiveTargets()
 }
