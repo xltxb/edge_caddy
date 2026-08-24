@@ -54,6 +54,10 @@ type Scheduler struct {
 
 	retryOnce sync.Once
 	retrier   *Retrier
+
+	// commitFault 仅供测试注入「合入基线失败」（export_test.go）。
+	// 生产装配永远不设它。
+	commitFault error
 }
 
 func (s *Scheduler) baseBackoff() time.Duration {
@@ -229,7 +233,25 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 		// 下一次下发会把旧值推回去。而现象是「我明明改过、也下发成功了，
 		// 怎么又变回去了」——中间没有任何报错。
 		if err := s.commit(ctx, resKeys, routes, rules); err != nil {
+			// **失败就停在这里，下面一步都不走。**
+			//
+			// 走下去的话：基线前进（宣称「live 渲染出来就是这一版」——假的）、
+			// 草稿被删（用户的改动从此哪儿都不在）。节点上跑着新配置、
+			// live 表还是旧值、界面说成功 —— 下一次任何下发把旧值推回去，
+			// 「成功的假象里最贵的一种：它同时是数据丢失」（issue #31）。
+			//
+			// 停下来之后的状态是真话：草稿还在（人能重新下发）、基线没动
+			// （节点比基线新，漂移检测会把这件事标出来）。事件必须写 ——
+			// 只进 Error 日志的话，没人会在出事前发现。
 			log.Error("把下发内容合入基线失败", "err", err)
+			s.event(ctx, "", "crit", fmt.Sprintf(
+				"配置 %s 已推到 %d 个节点，但合入基线失败：%v —— "+
+					"草稿保留、基线未前进，请重新下发；在那之前节点上跑的是新配置，"+
+					"而库里还是旧值", cfgVersion, okCount, err))
+			return Result{
+				DeployID: deployID, CfgVersion: cfgVersion, Targets: targets,
+				OKCount: okCount, FailCount: failCount,
+			}, nil, nil
 		}
 
 		// 至少有一台真的应用了，基线才前进。全部失败时什么都没变，
@@ -761,6 +783,9 @@ func (s *Scheduler) certsForRender(ctx context.Context) ([]render.Cert, error) {
 // 而这个函数只做其中一件；一个只读到这里的人容易以为「合入 live」
 // 顺带把另外两件也办了。
 func (s *Scheduler) commit(ctx context.Context, resKeys []string, routes []model.Route, rules []model.Rule) error {
+	if s.commitFault != nil {
+		return s.commitFault
+	}
 	selected := map[string]bool{}
 	for _, k := range resKeys {
 		selected[k] = true
