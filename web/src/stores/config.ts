@@ -364,6 +364,33 @@ export const useConfigStore = defineStore('config', () => {
    * 「有几处未下发改动」算上一个再也下发不出去的东西。后端那边真变了，
    * 这里也只是多清一次。
    */
+  /**
+   * 新建一条访问规则。
+   *
+   * **走 `PUT /rules/:id`，不是 POST** —— 契约 §6.2 没有 `POST /rules`，
+   * 那一句写在草稿那一节：「要新建资源，先把资源本身建出来
+   * （`POST /routes`、`PUT /rules/:id`），再改它的草稿」。
+   *
+   * ## 建出来的是一条停用、未绑定的规则
+   *
+   * 后端的校验**只跑在启用且已绑定的规则上**，所以一条 `enabled: false` +
+   * `apply_to: []` 的骨架存得进去，哪怕 spec 还是空的。人接着去工作台把它配好、
+   * 绑上域名、再启用 —— 那是这三步该有的顺序。
+   *
+   * 反过来做（建的时候就要求填全）会把一个多字段表单塞进新建弹层，
+   * 而工作台里已经有一份更好的了。
+   *
+   * ## `PUT` 是 upsert，所以重名会**覆盖**
+   *
+   * 这跟路由不同：`POST /routes` 遇到重名回 `1004`，而这里后端不会拒 ——
+   * 它会把已有的那条整个换掉，**而且回 `code: 0`**。
+   * 所以重名必须在调用这里之前拦住（见 `NewRuleModal`）。
+   */
+  async function createRule(id: string, body: Record<string, unknown>): Promise<void> {
+    await http.put(`/rules/${id}`, body)
+    await fetchAll().catch(() => {})
+  }
+
   async function deleteRule(id: string): Promise<void> {
     await http.del(`/rules/${id}`)
     const copy = { ...patches.value }
@@ -395,6 +422,7 @@ export const useConfigStore = defineStore('config', () => {
 
   return {
     setRuleSecret,
+    createRule,
     deleteRule,
     routes,
     rules,

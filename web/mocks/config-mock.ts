@@ -163,6 +163,47 @@ export async function handleConfig(req: IncomingMessage, res: ServerResponse): P
   }
 
   const rule = /^\/api\/v1\/rules\/([^/]+)$/.exec(path)
+  /*
+   * **`PUT` 是 upsert：id 不存在就新建**（契约 §6.2）。
+   *
+   * 没有 `POST /rules` —— 契约那句写在草稿一节：「要新建资源，先把资源本身
+   * 建出来（`POST /routes`、`PUT /rules/:id`），再改它的草稿」。
+   *
+   * ## 这个分支从前不存在，而两个功能因此在 dev 里从来没成功过
+   *
+   * 「更换密钥」（`setRuleSecret`）和「新建规则」都走这个端点。
+   * 少了它，请求落到 SPA 的 HTML fallback —— **而界面上那两个按钮看起来
+   * 完全正常**：点下去、转一下、然后什么也没发生。
+   *
+   * `check:shapes` 抓不到：写端点它只比 `PUT /settings` 与 `PUT /alerts`
+   * 两个（其余写明了不比的理由 —— 会改真主控状态）。
+   * 而**「不比形状」不等于「mock 里有它」**，那是两件事。
+   */
+  if (m === 'PUT' && rule) {
+    const id = decodeURIComponent(rule[1]!)
+    const b = await readBody(req)
+    /*
+     * **`secret` 是顶层字段，不进 spec**（契约 §6.2）——
+     * spec 会被 `GET /rules` 原样返回，密钥放进去就等于回显了。
+     * 空串 = 不改动，跟 DNS 凭据、Lark webhook 一致。
+     */
+    const secret = b.secret
+    delete b.secret
+    const i = state.rules.findIndex((r) => r.id === id)
+    const spec = { ...((b.spec as Rec) ?? {}) }
+    if (i >= 0) {
+      // 已有：整个替换，但 secret_configured 只在真给了新密钥时才翻成 true
+      const was = state.rules[i]!
+      const wasCfg = (was.spec as Rec)?.secret_configured
+      if (wasCfg !== undefined) spec.secret_configured = secret ? true : wasCfg
+      state.rules[i] = { ...b, id, spec }
+    } else {
+      // 新建：version 0 = 尚未下发到任何节点，与新建路由一致
+      if (b.type === 'service_secret') spec.secret_configured = !!secret
+      state.rules.push({ ...b, id, spec, version: 0 })
+    }
+    return ok(res, { id }), true
+  }
   if (m === 'DELETE' && rule) {
     const id = decodeURIComponent(rule[1]!)
     const i = state.rules.findIndex((r) => r.id === id)

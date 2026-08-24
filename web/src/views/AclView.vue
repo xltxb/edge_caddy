@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useConfigStore } from '@/stores/config'
 import { useNodesStore } from '@/stores/nodes'
 import { TYPE_LABEL, ruleStatus, ruleSummary } from '@/rules/summary'
+import NewRuleModal from '@/components/rules/NewRuleModal.vue'
 import { errorText } from '@/api/http'
 
 /**
@@ -45,6 +46,8 @@ onMounted(() => {
  * 不拉的话这一页会用「还不知道」去回答那个问题，而答案长得像「没问题」。
  */
 const staleGeoNodes = computed(() => nodes.items.filter((n) => n.geoDbOk === false).length)
+
+const creating = ref(false)
 
 const removing = ref<string | null>(null)
 const removeBusy = ref(false)
@@ -112,6 +115,7 @@ function edit(id: string): void {
     <header class="head">
       <div class="title">访问控制</div>
       <div class="sub">共 {{ config.rules.length }} 条 · 启停与编辑在配置工作台</div>
+      <button class="primary" type="button" @click="creating = true">新建规则</button>
     </header>
 
     <!--
@@ -129,7 +133,15 @@ function edit(id: string): void {
       {{ config.error }}
       <button class="mini" type="button" @click="config.fetchAll()">重试</button>
     </div>
-    <div v-else-if="!config.rules.length" class="hint">还没有访问规则。</div>
+    <!--
+      **空态是最需要那个按钮的一屏**，而它从前只有一句「还没有访问规则」。
+      头部那个按钮在，但一个刚打开这一页的人眼睛在中间 ——
+      一句陈述句读起来像「这里没有东西」，不像「这里可以有东西」。
+    -->
+    <div v-else-if="!config.rules.length" class="hint">
+      还没有访问规则。
+      <button class="mini" type="button" @click="creating = true">建第一条</button>
+    </div>
 
     <table v-else class="table">
       <thead>
@@ -228,6 +240,8 @@ function edit(id: string): void {
       </div>
     </div>
   </div>
+
+  <NewRuleModal v-if="creating" @close="creating = false" />
 </template>
 
 <style scoped>
