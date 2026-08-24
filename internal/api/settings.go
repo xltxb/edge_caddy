@@ -335,8 +335,17 @@ func (s *Server) syncAfterProviderChange(ctx context.Context) (bool, string) {
 	}
 	switch err := s.dns.Sync(ctx, nil); {
 	case errors.Is(err, dnsops.ErrNoProvider):
-		// 配到一半（缺必填项）在上面就被拦下了，走到这里说明是清空了配置。
-		return false, ""
+		// 配到一半（缺必填项）在上面就被拦下了，走到这里说明配置是空的
+		// ——刚清空，或者从来没配过而这次只改了别的。
+		//
+		// **这一档原先回空串，而契约那张表说 false 时会给出理由。**
+		// 前端因此在 mock 里替我编了一句，然后照着它写界面——
+		// **一个契约承诺了、而实现不给的字段，会被下游用想象补上**，
+		// 而那份想象不会有任何东西去校对。
+		//
+		// 说一句是对的：这次确实动了 dns_provider（没动的话根本走不到这里），
+		// 而结果是「什么也没推」——那是个值得说的结果，不是「无事发生」。
+		return false, "服务商设置已保存，而当前没有可用的 DNS 服务商配置，解析未变动"
 	case err != nil:
 		var capErr *dnsctl.ErrCapability
 		if errors.As(err, &capErr) {

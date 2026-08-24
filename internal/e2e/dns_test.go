@@ -895,3 +895,34 @@ func TestMultipleTargetsAllGetPushed(t *testing.T) {
 		}
 	}
 }
+
+// TestSettingsWithoutProviderStillSaysSomething 钉的是**带了 dns_provider 就一定有话说**。
+//
+// 这一档此前回空串，而契约那张表说 `dns_synced: false` 时会给出理由。
+// 前端因此在自己的 mock 里**替我编了一句**，然后照着它写界面 ——
+// **一个契约承诺了、而实现不给的字段，会被下游用想象补上**，
+// 而那份想象不会有任何东西去校对：形状检查也抓不到，两边都是
+// `{dns_synced: boolean, detail: string}`，形状一样、值不同。
+func TestSettingsWithoutProviderStillSaysSomething(t *testing.T) {
+	r := newRig(t)
+
+	// 空的 dns_provider：合法（每个字段独立判断，不给 = 不动），
+	// 而它确实动了这一块 —— 所以要有话说。
+	e := r.mustDo("PUT", "/settings", map[string]any{
+		"dns_provider": map[string]any{},
+	})
+	var d struct {
+		Synced bool   `json:"dns_synced"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Synced {
+		t.Fatalf("没有服务商却说同步成功了：%q", d.Detail)
+	}
+	if d.Detail == "" {
+		t.Error("带了 dns_provider 就该有话说 —— 空串会让下游自己编一句，" +
+			"而那份想象没有任何东西去校对")
+	}
+}
