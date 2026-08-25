@@ -260,6 +260,129 @@ func TestBareIPIsNormalizedToCIDR(t *testing.T) {
 	}
 }
 
+// loggedConfig 是日志相关断言用的局部视图。
+type loggedConfig struct {
+	Logging struct {
+		Logs map[string]struct {
+			Level   string   `json:"level"`
+			Include []string `json:"include"`
+			Exclude []string `json:"exclude"`
+			Writer  struct {
+				Output     string `json:"output"`
+				Filename   string `json:"filename"`
+				RollSizeMB int    `json:"roll_size_mb"`
+				RollKeep   int    `json:"roll_keep"`
+			} `json:"writer"`
+		} `json:"logs"`
+	} `json:"logging"`
+	Apps struct {
+		HTTP struct {
+			Servers map[string]struct {
+				Logs json.RawMessage `json:"logs"`
+			} `json:"servers"`
+		} `json:"http"`
+	} `json:"apps"`
+}
+
+func parseLogged(t *testing.T, b []byte) loggedConfig {
+	t.Helper()
+	var cfg loggedConfig
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+// roll_size / roll_keep 在契约 §6.3 里承诺的是**文件轮转**，前端还按它算
+// 「每个节点最多占用多少 MB 磁盘」。所以渲染必须给 Caddy 配 file writer——
+// 不配的话 Caddy 的日志落 stderr（journald），/var/log/caddy 里什么都不会有，
+// 而这两个可编辑字段就成了改了没效果的摆设。
+func TestLogPolicyRendersFileWritersWithRotation(t *testing.T) {
+	pol := render.Policies{Log: render.LogPolicy{Format: "json", Level: "WARN", RollSize: 10, RollKeep: 3}}
+	b, issues := render.Render([]model.Route{ok("t.example.com", "127.0.0.1:1")}, nil, nil, pol,
+		render.Options{LogDir: "/data/caddy-logs"})
+	if len(issues) > 0 {
+		t.Fatalf("不该有校验问题: %v", issues)
+	}
+	cfg := parseLogged(t, b)
+
+	def, okDef := cfg.Logging.Logs["default"]
+	if !okDef {
+		t.Fatalf("没有 default log:\n%s", b)
+	}
+	if def.Writer.Output != "file" || def.Writer.Filename != "/data/caddy-logs/caddy.log" {
+		t.Fatalf("运行日志应当写 /data/caddy-logs/caddy.log，实际 writer=%+v", def.Writer)
+	}
+	if def.Writer.RollSizeMB != 10 || def.Writer.RollKeep != 3 {
+		t.Fatalf("roll_size/roll_keep 应当渲染成轮转参数 10/3，实际 %+v", def.Writer)
+	}
+
+	acc, okAcc := cfg.Logging.Logs["access"]
+	if !okAcc {
+		t.Fatalf("没有 access log:\n%s", b)
+	}
+	if acc.Writer.Output != "file" || acc.Writer.Filename != "/data/caddy-logs/access.log" {
+		t.Fatalf("访问日志应当写 /data/caddy-logs/access.log，实际 writer=%+v", acc.Writer)
+	}
+	if acc.Writer.RollSizeMB != 10 || acc.Writer.RollKeep != 3 {
+		t.Fatalf("access log 的轮转参数应当同为 10/3，实际 %+v", acc.Writer)
+	}
+
+	// access 行只进 access.log：default 不排除它的话，同一行会在 caddy.log
+	// 里再出现一遍，轮转预算等于翻倍。
+	if len(acc.Include) != 1 || acc.Include[0] != "http.log.access" {
+		t.Fatalf("access log 应当只收 http.log.access，实际 include=%v", acc.Include)
+	}
+	excluded := false
+	for _, e := range def.Exclude {
+		if e == "http.log.access" {
+			excluded = true
+		}
+	}
+	if !excluded {
+		t.Fatalf("default 应当排除 http.log.access，实际 exclude=%v", def.Exclude)
+	}
+}
+
+// LogDir 不传时用节点上的约定路径 /var/log/caddy，轮转用策略默认值（50MB × 5）。
+func TestLogDirDefaultsToVarLogCaddy(t *testing.T) {
+	b, issues := render.Render([]model.Route{ok("t.example.com", "127.0.0.1:1")}, nil, nil,
+		render.Policies{}, render.Options{})
+	if len(issues) > 0 {
+		t.Fatalf("不该有校验问题: %v", issues)
+	}
+	cfg := parseLogged(t, b)
+	def := cfg.Logging.Logs["default"]
+	if def.Writer.Filename != "/var/log/caddy/caddy.log" {
+		t.Fatalf("默认应当写 /var/log/caddy/caddy.log，实际 %q", def.Writer.Filename)
+	}
+	if def.Writer.RollSizeMB != 50 || def.Writer.RollKeep != 5 {
+		t.Fatalf("轮转应当回退到默认 50/5，实际 %+v", def.Writer)
+	}
+}
+
+// access log 要在 **server 上**显式开启（Caddy 的规矩），只配 logging app
+// 是收不到任何访问日志的。两台 server（:80 与 :443）都得开。
+func TestAccessLogsAreEnabledOnBothServers(t *testing.T) {
+	certs := []render.Cert{{
+		Domain:  "t.example.com",
+		CertPEM: []byte("-----BEGIN CERTIFICATE-----\nAAA\n-----END CERTIFICATE-----\n"),
+		KeyPEM:  []byte("-----BEGIN EC PRIVATE KEY-----\nBBB\n-----END EC PRIVATE KEY-----\n"),
+	}}
+	b, _ := render.Render([]model.Route{ok("t.example.com", "127.0.0.1:1")}, nil, certs,
+		render.Policies{}, render.Options{HTTPSListen: ":8443"})
+	cfg := parseLogged(t, b)
+	for _, name := range []string{"edge", "edge_tls"} {
+		srv, okSrv := cfg.Apps.HTTP.Servers[name]
+		if !okSrv {
+			t.Fatalf("没有 %s 这台 server:\n%s", name, b)
+		}
+		if srv.Logs == nil {
+			t.Errorf("server %s 没有开启 access log（缺 logs 键）", name)
+		}
+	}
+}
+
 // 渲染产出必须与输入顺序无关，否则 diff 会因为「谁先谁后」而虚报变更。
 func TestRenderIsOrderIndependent(t *testing.T) {
 	a := []model.Route{ok("b.example.com", "127.0.0.1:1"), ok("a.example.com", "127.0.0.1:2")}

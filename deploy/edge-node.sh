@@ -34,6 +34,7 @@ readonly AGENT_HOME=/var/lib/edge-agent
 readonly AGENT_ENV=/etc/edge-agent.env
 readonly AGENT_UNIT=/etc/systemd/system/edge-agent.service
 readonly CADDY_DROPIN_DIR=/etc/systemd/system/caddy.service.d
+readonly CADDY_LOG_DIR=/var/log/caddy
 readonly CADDY_ADMIN_PORT=2019
 readonly VERIFY_PORT=2020
 
@@ -350,6 +351,12 @@ do_install() {
   install -d -m 0755 "$CADDY_DROPIN_DIR"
   caddy_admin_dropin > "$CADDY_DROPIN_DIR/admin-loopback.conf"
 
+  # 日志目录必须在这里建：主控下发的配置把日志写到 $CADDY_LOG_DIR
+  # （file writer，roll_size/roll_keep 轮转），而 Caddy 以 caddy 用户跑，
+  # 自己在 /var/log 底下建目录会被拒——那时的症状是**整份配置被拒绝、
+  # 下发失败**，跟「少建了一个目录」毫无表面关联。
+  install -d -o caddy -g caddy -m 0755 "$CADDY_LOG_DIR"
+
   systemctl daemon-reload
   systemctl enable --now caddy
   systemctl enable --now edge-agent
@@ -411,6 +418,16 @@ do_verify() {
     printf '  ✓ 已取得隧道证书（接入完成）\n'
   else
     printf '  ✘ 还没有隧道证书 —— 接入没完成，看 journalctl -u edge-agent\n'
+    rc=1
+  fi
+
+  # 查的是「caddy 用户写得进去」，不是「目录存在」——root 建了目录但没
+  # chown 的话，目录在、日志照样一个字节都写不出来，而且下一次下发会被
+  # file writer 打开失败整份拒绝。
+  if sudo -u caddy test -w "$CADDY_LOG_DIR" 2>/dev/null; then
+    printf '  ✓ 日志目录 %s 可被 caddy 用户写入\n' "$CADDY_LOG_DIR"
+  else
+    printf '  ✘ 日志目录 %s 不存在或 caddy 用户写不进去 —— 下发会整份被拒\n' "$CADDY_LOG_DIR"
     rc=1
   fi
 

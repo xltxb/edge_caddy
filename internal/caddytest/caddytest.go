@@ -81,6 +81,15 @@ func (c *Caddy) VerifyDial() string { return "unix/" + c.verifySock }
 // VerifySocketPath 是校验端点应当监听的 socket 路径。
 func (c *Caddy) VerifySocketPath() string { return c.verifySock }
 
+// LogDir 是渲染时传给 render.Options.LogDir 的目录。
+//
+// **凡是把渲染产出喂给真 Caddy 的测试都必须传它。** 渲染的默认值是
+// /var/log/caddy（生产约定，部署脚本建目录），而 file writer 在 provision
+// 时就要打开文件——开发机上那个目录写不进去，Caddy 会整份拒绝配置。
+// 子目录而不是 c.dir 本身：fixture 自己用 c.dir/caddy.log 存 Caddy 的
+// stderr 诊断，重名会互相覆盖。
+func (c *Caddy) LogDir() string { return filepath.Join(c.dir, "logs") }
+
 // EdgeTCP 让边缘 HTTP 监听在回环 TCP 上，而不是 unix socket。
 //
 // **只有这样 remote_ip 才有东西可匹配。** 默认不这么做是因为 TCP 要占端口，
@@ -153,6 +162,11 @@ func New(t *testing.T, opts ...Option) *Caddy {
 
 	home := filepath.Join(dir, "h")
 	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// 日志目录先建好：file writer 不替你建父目录，等到 ApplyConfig 才发现
+	// 的话，报错是「配置被拒」，跟目录毫无表面关联。
+	if err := os.MkdirAll(c.LogDir(), 0o700); err != nil {
 		t.Fatal(err)
 	}
 

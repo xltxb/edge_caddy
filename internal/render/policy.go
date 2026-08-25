@@ -184,7 +184,13 @@ func responseHeaderHandler(p Policies, tls bool) map[string]any {
 }
 
 // loggingApp 渲染 Caddy 的 logging app。
-func loggingApp(p Policies) map[string]any {
+//
+// **两个 log 都必须带 file writer。** Caddy 的 writer 缺省是 stderr——
+// 只配 encoder 和 level 的话，日志全进 journald，/var/log/caddy 一个字节
+// 都不会有，而 roll_size / roll_keep（契约 §6.3 承诺的文件轮转，前端按它算
+// 磁盘占用）就成了改了没效果的摆设。TLS 策略的 ca/email/key_type 与
+// rate_limit 都是死在这个模式上的，见各自的注释。
+func loggingApp(p Policies, logDir string) map[string]any {
 	encoder := "json"
 	if p.Log.Format == "console" {
 		encoder = "console"
@@ -193,11 +199,43 @@ func loggingApp(p Policies) map[string]any {
 	if level == "" {
 		level = DefaultLogPolicy.Level
 	}
+	rollSize := p.Log.RollSize
+	if rollSize <= 0 {
+		rollSize = DefaultLogPolicy.RollSize
+	}
+	rollKeep := p.Log.RollKeep
+	if rollKeep <= 0 {
+		rollKeep = DefaultLogPolicy.RollKeep
+	}
+	writer := func(name string) map[string]any {
+		return map[string]any{
+			"output":       "file",
+			"filename":     logDir + "/" + name,
+			"roll_size_mb": rollSize,
+			"roll_keep":    rollKeep,
+		}
+	}
 	return map[string]any{
 		"logs": map[string]any{
 			"default": map[string]any{
 				"encoder": map[string]any{"format": encoder},
 				"level":   level,
+				"writer":  writer("caddy.log"),
+				// access 行只进 access.log：不排除的话同一行会在
+				// caddy.log 里再出现一遍，轮转预算等于翻倍。
+				"exclude": []string{"http.log.access"},
+			},
+			// access log 单独一个文件、单独轮转——它的量级跟着流量走，
+			// 远超运行日志，混在一起会把「配置应用/证书/报错」那些
+			// 真正要人看的行冲掉。
+			//
+			// **level 不跟策略走**：访问日志的行固定是 INFO 级，
+			// 人把 level 调到 ERROR 想安静的是运行日志，
+			// 不是想让访问记录整个消失。
+			"access": map[string]any{
+				"include": []string{"http.log.access"},
+				"encoder": map[string]any{"format": encoder},
+				"writer":  writer("access.log"),
 			},
 		},
 	}

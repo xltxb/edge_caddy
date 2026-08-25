@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -36,7 +38,7 @@ func TestRenderedConfigIsAcceptedAndActuallyProxies(t *testing.T) {
 	cfg, issues := render.Render([]model.Route{{
 		Domain: "api.example.com", Upstream: up,
 		BlockMode: model.BlockAbort, Compress: true, BodyMax: "5MB",
-	}}, nil, nil, render.Policies{}, render.Options{HTTPListen: c.EdgeListen()})
+	}}, nil, nil, render.Policies{}, render.Options{HTTPListen: c.EdgeListen(), LogDir: c.LogDir()})
 	if len(issues) > 0 {
 		t.Fatalf("渲染报了校验问题: %v", issues)
 	}
@@ -52,6 +54,46 @@ func TestRenderedConfigIsAcceptedAndActuallyProxies(t *testing.T) {
 	code, body := c.Get("api.example.com", "/", nil)
 	if code != 200 || body != "UPSTREAM OK" {
 		t.Fatalf("经 Caddy 回源得到 %d %q，想要 200 \"UPSTREAM OK\"", code, body)
+	}
+}
+
+// 「Caddy 的日志落到 /var/log/caddy」整条链路用真 Caddy 验：
+// 带 file writer 的配置被接受，请求过后 access.log 里真的多出那一行，
+// 运行日志进 caddy.log。golden 断言只能证明「渲染出了 writer」，
+// 证明不了 Caddy 认这个 writer、也证明不了行真的写到了盘上。
+func TestCaddyWritesLogFilesToLogDir(t *testing.T) {
+	up := upstream(t, "LOGGED")
+	c := caddytest.New(t)
+
+	cfg, issues := render.Render([]model.Route{{
+		Domain: "l.example.com", Upstream: up, BlockMode: model.BlockAbort,
+	}}, nil, nil, render.Policies{}, render.Options{HTTPListen: c.EdgeListen(), LogDir: c.LogDir()})
+	if len(issues) > 0 {
+		t.Fatalf("渲染报了校验问题: %v", issues)
+	}
+	if _, err := agent.NewCaddyClient(c.AdminURL()).ApplyConfig(context.Background(), cfg); err != nil {
+		t.Fatalf("Caddy 拒绝了带 file writer 的配置: %v", err)
+	}
+
+	if code, _ := c.Get("l.example.com", "/", nil); code != 200 {
+		t.Fatalf("请求得到 %d", code)
+	}
+
+	access, err := os.ReadFile(filepath.Join(c.LogDir(), "access.log"))
+	if err != nil {
+		t.Fatalf("请求过后应当有 access.log: %v", err)
+	}
+	if !strings.Contains(string(access), "l.example.com") {
+		t.Fatalf("access.log 里没有刚才那个请求:\n%s", access)
+	}
+
+	// 运行日志：ApplyConfig 会让 Caddy 打出 INFO 级的加载信息。
+	caddyLog, err := os.ReadFile(filepath.Join(c.LogDir(), "caddy.log"))
+	if err != nil {
+		t.Fatalf("应用配置过后应当有 caddy.log: %v", err)
+	}
+	if strings.Contains(string(caddyLog), "http.log.access") {
+		t.Fatalf("访问行不该混进运行日志（default 要排除 http.log.access）:\n%s", caddyLog)
 	}
 }
 
@@ -80,7 +122,7 @@ func TestApplySucceedsOnFreshCaddyWithoutAppsKey(t *testing.T) {
 
 	cfg, _ := render.Render([]model.Route{{
 		Domain: "a.example.com", Upstream: up, BlockMode: model.BlockAbort,
-	}}, nil, nil, render.Policies{}, render.Options{HTTPListen: c.EdgeListen()})
+	}}, nil, nil, render.Policies{}, render.Options{HTTPListen: c.EdgeListen(), LogDir: c.LogDir()})
 
 	if _, err := agent.NewCaddyClient(c.AdminURL()).ApplyConfig(context.Background(), cfg); err != nil {
 		t.Fatalf("在没有 apps 键的机器上应用失败: %v", err)
@@ -100,7 +142,7 @@ func TestBadConfigIsRejectedAndRunningConfigSurvives(t *testing.T) {
 
 	good, _ := render.Render([]model.Route{{
 		Domain: "live.example.com", Upstream: up, BlockMode: model.BlockAbort,
-	}}, nil, nil, render.Policies{}, render.Options{HTTPListen: c.EdgeListen()})
+	}}, nil, nil, render.Policies{}, render.Options{HTTPListen: c.EdgeListen(), LogDir: c.LogDir()})
 	if _, err := cli.ApplyConfig(ctx, good); err != nil {
 		t.Fatalf("基线配置应当被接受: %v", err)
 	}
@@ -144,7 +186,7 @@ func TestWhitelistDeniesWithAbort(t *testing.T) {
 	cfg, issues := render.Render([]model.Route{{
 		Domain: "wl.example.com", Upstream: up, BlockMode: model.BlockAbort,
 		Whitelist: []string{"203.0.113.7"}, // 不含 127.0.0.1
-	}}, nil, nil, render.Policies{}, render.Options{HTTPListen: c.EdgeListen()})
+	}}, nil, nil, render.Policies{}, render.Options{HTTPListen: c.EdgeListen(), LogDir: c.LogDir()})
 	if len(issues) > 0 {
 		t.Fatalf("渲染报了问题: %v", issues)
 	}
@@ -169,7 +211,7 @@ func TestWhitelistDenyWith403IsDistinguishableFromAbort(t *testing.T) {
 	cfg, _ := render.Render([]model.Route{{
 		Domain: "wl403.example.com", Upstream: up, BlockMode: model.Block403,
 		Whitelist: []string{"203.0.113.7"},
-	}}, nil, nil, render.Policies{}, render.Options{HTTPListen: c.EdgeListen()})
+	}}, nil, nil, render.Policies{}, render.Options{HTTPListen: c.EdgeListen(), LogDir: c.LogDir()})
 	if _, err := agent.NewCaddyClient(c.AdminURL()).ApplyConfig(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +248,7 @@ func TestSchemaErrorIsRejectedConsistently(t *testing.T) {
 
 	good, _ := render.Render([]model.Route{{
 		Domain: "live.example.com", Upstream: up, BlockMode: model.BlockAbort,
-	}}, nil, nil, render.Policies{}, render.Options{HTTPListen: c.EdgeListen()})
+	}}, nil, nil, render.Policies{}, render.Options{HTTPListen: c.EdgeListen(), LogDir: c.LogDir()})
 	if _, err := cli.ApplyConfig(ctx, good); err != nil {
 		t.Fatalf("基线配置应当被接受: %v", err)
 	}

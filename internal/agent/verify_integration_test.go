@@ -67,7 +67,7 @@ func serveVerify(t *testing.T, c *caddytest.Caddy, rules []model.VerifyRule) fun
 func applyWithRules(t *testing.T, c *caddytest.Caddy, routes []model.Route, rules []model.Rule) {
 	t.Helper()
 	cfg, issues := render.Render(routes, rules, nil, render.Policies{}, render.Options{
-		HTTPListen: c.EdgeListen(), VerifyAddr: c.VerifyDial(),
+		HTTPListen: c.EdgeListen(), VerifyAddr: c.VerifyDial(), LogDir: c.LogDir(),
 	})
 	if len(issues) > 0 {
 		t.Fatalf("渲染报了校验问题: %v", issues)
@@ -376,7 +376,7 @@ func TestSecretNeverEntersCaddyConfig(t *testing.T) {
 	cfg, issues := render.Render(
 		[]model.Route{{Domain: "api.example.com", Upstream: up, BlockMode: model.BlockAbort}},
 		[]model.Rule{rule}, nil, render.Policies{},
-		render.Options{HTTPListen: c.EdgeListen(), VerifyAddr: c.VerifyDial()})
+		render.Options{HTTPListen: c.EdgeListen(), VerifyAddr: c.VerifyDial(), LogDir: c.LogDir()})
 	if len(issues) > 0 {
 		t.Fatal(issues)
 	}
@@ -420,7 +420,7 @@ func TestVerifyAddrMismatchIsRefusedNotApplied(t *testing.T) {
 	cfg, issues := render.Render(
 		[]model.Route{{Domain: "api.example.com", Upstream: up, BlockMode: model.BlockAbort}},
 		[]model.Rule{rule}, nil, render.Policies{},
-		render.Options{HTTPListen: c.EdgeListen(), VerifyAddr: "127.0.0.1:2020"})
+		render.Options{HTTPListen: c.EdgeListen(), VerifyAddr: "127.0.0.1:2020", LogDir: c.LogDir()})
 	if len(issues) > 0 {
 		t.Fatal(issues)
 	}
@@ -443,7 +443,7 @@ func TestVerifyAddrMismatchIsRefusedNotApplied(t *testing.T) {
 	plain, _ := render.Render(
 		[]model.Route{{Domain: "open.example.com", Upstream: up, BlockMode: model.BlockAbort}},
 		nil, nil, render.Policies{},
-		render.Options{HTTPListen: c.EdgeListen(), VerifyAddr: "127.0.0.1:2020"})
+		render.Options{HTTPListen: c.EdgeListen(), VerifyAddr: "127.0.0.1:2020", LogDir: c.LogDir()})
 	if err := agent.CheckVerifyAddr(plain, "127.0.0.1:9999"); err != nil {
 		t.Errorf("没有受保护域名时不该管校验端点在哪: %v", err)
 	}

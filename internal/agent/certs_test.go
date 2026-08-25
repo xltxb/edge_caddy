@@ -47,7 +47,7 @@ func TestInlinedCertIsActuallyServedOverTLS(t *testing.T) {
 	cfg, issues := render.Render(
 		[]model.Route{{Domain: "secure.example.com", Upstream: up, BlockMode: model.BlockAbort}},
 		nil, []render.Cert{cert}, render.Policies{},
-		render.Options{HTTPListen: c.EdgeListen(), HTTPSListen: c.TLSListen()})
+		render.Options{HTTPListen: c.EdgeListen(), HTTPSListen: c.TLSListen(), LogDir: c.LogDir()})
 	if len(issues) > 0 {
 		t.Fatalf("渲染报了问题: %v", issues)
 	}
@@ -74,7 +74,7 @@ func TestHTTPSRequestReachesUpstream(t *testing.T) {
 	cfg, _ := render.Render(
 		[]model.Route{{Domain: "secure.example.com", Upstream: up, BlockMode: model.BlockAbort}},
 		nil, []render.Cert{cert}, render.Policies{},
-		render.Options{HTTPListen: c.EdgeListen(), HTTPSListen: c.TLSListen()})
+		render.Options{HTTPListen: c.EdgeListen(), HTTPSListen: c.TLSListen(), LogDir: c.LogDir()})
 	if _, err := agent.NewCaddyClient(c.AdminURL()).ApplyConfig(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestPlainHTTPServerStillWorksWhenCertsPresent(t *testing.T) {
 		{Domain: "secure.example.com", Upstream: up, BlockMode: model.BlockAbort},
 		{Domain: "plain.example.com", Upstream: up, BlockMode: model.BlockAbort},
 	}, nil, []render.Cert{selfSigned(t, "secure.example.com")}, render.Policies{},
-		render.Options{HTTPListen: c.EdgeListen(), HTTPSListen: c.TLSListen()})
+		render.Options{HTTPListen: c.EdgeListen(), HTTPSListen: c.TLSListen(), LogDir: c.LogDir()})
 	if _, err := agent.NewCaddyClient(c.AdminURL()).ApplyConfig(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestNoCertsLeavesExistingTLSAppUntouched(t *testing.T) {
 	// 先模拟「节点上已经有别人写的 tls 配置」。
 	first, _ := render.Render([]model.Route{{Domain: "a.example.com", Upstream: up, BlockMode: model.BlockAbort}},
 		nil, []render.Cert{selfSigned(t, "a.example.com")}, render.Policies{},
-		render.Options{HTTPListen: c.EdgeListen(), HTTPSListen: c.TLSListen()})
+		render.Options{HTTPListen: c.EdgeListen(), HTTPSListen: c.TLSListen(), LogDir: c.LogDir()})
 	if _, err := cli.ApplyConfig(ctx, first); err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestNoCertsLeavesExistingTLSAppUntouched(t *testing.T) {
 
 	// 再下发一份没有证书的配置。
 	second, _ := render.Render([]model.Route{{Domain: "a.example.com", Upstream: up, BlockMode: model.BlockAbort}},
-		nil, nil, render.Policies{}, render.Options{HTTPListen: c.EdgeListen(), HTTPSListen: c.TLSListen()})
+		nil, nil, render.Policies{}, render.Options{HTTPListen: c.EdgeListen(), HTTPSListen: c.TLSListen(), LogDir: c.LogDir()})
 	if strings.Contains(string(second), `"tls"`) {
 		t.Fatal("没有证书时不该渲染 apps/tls")
 	}
@@ -198,7 +198,7 @@ func TestGlobalPoliciesActuallyTakeEffect(t *testing.T) {
 	cfg, issues := render.Render(
 		[]model.Route{{Domain: "p.example.com", Upstream: up, BlockMode: model.BlockAbort}},
 		nil, []render.Cert{cert}, pol,
-		render.Options{HTTPListen: c.EdgeListen(), HTTPSListen: c.TLSListen()})
+		render.Options{HTTPListen: c.EdgeListen(), HTTPSListen: c.TLSListen(), LogDir: c.LogDir()})
 	if len(issues) > 0 {
 		t.Fatalf("渲染报了问题: %v", issues)
 	}

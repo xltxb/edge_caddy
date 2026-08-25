@@ -92,10 +92,18 @@ func (c *CaddyClient) Apply(ctx context.Context, app string, body []byte) (time.
 		}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.Admin+"/config/apps/"+app, bytes.NewReader(body))
-	if err != nil {
+	if err := c.postConfig(ctx, "apps/"+app, body); err != nil {
 		return 0, err
+	}
+	return time.Since(start), nil
+}
+
+// postConfig 把一段配置 POST 到 /config/ 下的某个路径。
+func (c *CaddyClient) postConfig(ctx context.Context, path string, body []byte) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.Admin+"/config/"+path, bytes.NewReader(body))
+	if err != nil {
+		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
@@ -103,7 +111,7 @@ func (c *CaddyClient) Apply(ctx context.Context, app string, body []byte) (time.
 	if err != nil {
 		// 连不上 Admin —— Caddy 挂了或还没起来。这与「Caddy 拒绝了配置」
 		// 是两种完全不同的故障，调用方据此决定要不要重试（ADR-0005）。
-		return 0, fmt.Errorf("连接 Caddy Admin: %w", err)
+		return fmt.Errorf("连接 Caddy Admin: %w", err)
 	}
 	defer resp.Body.Close()
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -111,9 +119,9 @@ func (c *CaddyClient) Apply(ctx context.Context, app string, body []byte) (time.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// 原文回报，不做归类。Caddy 对各种坏配置一律返回 500，措辞才是有信息的
 		// 那部分；把它翻译成我们自己的话只会丢掉排查线索（ADR-0005）。
-		return 0, &RejectedError{Status: resp.StatusCode, Body: trimJSONError(msg)}
+		return &RejectedError{Status: resp.StatusCode, Body: trimJSONError(msg)}
 	}
-	return time.Since(start), nil
+	return nil
 }
 
 // RejectedError 表示节点回应了，但 Caddy 拒绝了这份配置。
@@ -183,13 +191,20 @@ func trimJSONError(b []byte) string {
 	return string(bytes.TrimSpace(b))
 }
 
-// ApplyConfig 应用主控渲染的**整份**配置，逐个 app POST 下去，返回总耗时。
+// ApplyConfig 应用主控渲染的**整份**配置，逐段 POST 下去，返回总耗时。
 //
-// 逐 app 而不是 POST /config/ 整体替换：整体替换会连 admin 段一起换掉，
+// 逐段而不是 POST /config/ 整体替换：整体替换会连 admin 段一起换掉，
 // 而 admin 的监听地址是节点本地的事，不该由主控的渲染结果决定。
+//
+// **顶层的 logging 键也要应用。** 它是 apps 的兄弟，不在 apps 底下——
+// 只遍历 apps 会把它静默丢掉，于是日志策略（格式、级别、file writer）
+// 在控制台上能改、能下发、显示成功，而节点上什么也没变。
+// 这正是「/var/log/caddy 永远是空的」的第二半根因：第一半是渲染器
+// 没配 writer，配上之后还得真的送到节点才算数。
 func (c *CaddyClient) ApplyConfig(ctx context.Context, full []byte) (time.Duration, error) {
 	var cfg struct {
-		Apps map[string]json.RawMessage `json:"apps"`
+		Apps    map[string]json.RawMessage `json:"apps"`
+		Logging json.RawMessage            `json:"logging"`
 	}
 	if err := json.Unmarshal(full, &cfg); err != nil {
 		return 0, fmt.Errorf("主控下发的配置不是合法 JSON: %w", err)
@@ -199,6 +214,14 @@ func (c *CaddyClient) ApplyConfig(ctx context.Context, full []byte) (time.Durati
 	}
 
 	start := time.Now()
+	// logging 先于 apps：server 一起来，访问行就该进文件，
+	// 反过来的话头几行会落在旧的出口（stderr）里。
+	// logging 是根下的直接子键，不需要像 apps/<name> 那样先补父键。
+	if len(cfg.Logging) > 0 {
+		if err := c.postConfig(ctx, "logging", cfg.Logging); err != nil {
+			return 0, err
+		}
+	}
 	// 排序后应用，让同一份配置每次的应用顺序一致——顺序不定会让偶发失败难以复现。
 	for _, name := range sortedKeys(cfg.Apps) {
 		if _, err := c.Apply(ctx, name, cfg.Apps[name]); err != nil {

@@ -1538,6 +1538,15 @@ Caddy 会**拒绝整份配置**——症状是「所有站点一起下发失败�
 | `rate_rps` | int | **条件字段**，见下 | 不适用 |
 | `rate_burst` | int | **条件字段**，见下 | 不适用 |
 
+> `format` / `level` / `roll_size` / `roll_keep` 真正渲染进节点 Caddy 的
+> logging app：运行日志写 `/var/log/caddy/caddy.log`，访问日志写
+> `/var/log/caddy/access.log`，**两个文件各自**按 `roll_size`（MB）×
+> `roll_keep` 轮转——所以「每个节点最多占用」是 2 × roll_size × roll_keep MB，
+> 不是一份。`level` 只作用于运行日志：访问日志的行固定是 INFO 级，
+> 人把 level 调到 ERROR 是想让运行日志安静，不是想让访问记录整个消失。
+> 目录由部署脚本建好并给 caddy 用户写权限（`deploy/edge-node.sh`）；
+> 目录不在或写不进去时 file writer 打不开，**整份配置会被节点 Caddy 拒绝**。
+>
 > `rate_rps` / `rate_burst` 只在 `rate_limit = true` 时出现在表单里，因此
 > `rate_limit = false` 时这两个键**可能根本不存在**。渲染器不要假定它们一定在，
 > 也不要在关闭限流时给它们填默认值再渲染——那会让 diff 里凭空多出两行。

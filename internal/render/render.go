@@ -46,6 +46,11 @@ type Options struct {
 	// VerifyAddr 是 Agent 校验端点在节点回环上的地址。
 	// JWT 与服务密钥由它验签，Caddy 只做 forward_auth 委托（ADR-0003）。
 	VerifyAddr string
+
+	// LogDir 是节点上 Caddy 日志文件的目录，生产是 /var/log/caddy
+	// （部署脚本负责建目录、给 caddy 用户写权限）。
+	// 做成参数只为让真 Caddy 的测试能写进临时目录——理由同 HTTPListen。
+	LogDir string
 }
 
 func (o Options) withDefaults() Options {
@@ -57,6 +62,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.VerifyAddr == "" {
 		o.VerifyAddr = "127.0.0.1:2020"
+	}
+	if o.LogDir == "" {
+		o.LogDir = "/var/log/caddy"
 	}
 	return o
 }
@@ -113,6 +121,9 @@ func Render(routes []model.Route, rules []model.Rule, certs []Cert, pol Policies
 			// upstream 的请求数，其余 handler 的是被边缘拦下的
 			// （api-contract §3）。不开这个就只能编一个数字。
 			"metrics": map[string]any{},
+			// access log 要在 server 上显式开启，只配 logging app 收不到
+			// 任何访问行。它落到哪个文件由 loggingApp 的 include 决定。
+			"logs": map[string]any{},
 			// 关掉自动 HTTPS：证书由主控集中签发并内联下发（ADR-0001 / ADR-0010），
 			// 开着会让节点自己去 ACME 申请——而它既没有 DNS 凭据，
 			// 也不该有。
@@ -126,7 +137,7 @@ func Render(routes []model.Route, rules []model.Rule, certs []Cert, pol Policies
 		},
 		// 日志与响应头由全局策略决定。**渲染它是必需的**——一条能改、能进
 		// 资源树、有版本号却对节点毫无影响的设置，比没有这个设置更糟。
-		"logging": loggingApp(pol),
+		"logging": loggingApp(pol, opt.LogDir),
 	}
 
 	// **只在主控持有证书时才渲染 apps/tls 与 :443**（ADR-0010）。
@@ -140,6 +151,7 @@ func Render(routes []model.Route, rules []model.Rule, certs []Cert, pol Policies
 			"listen":          []string{opt.HTTPSListen},
 			"routes":          caddyRoutes,
 			"metrics":         map[string]any{},
+			"logs":            map[string]any{},
 			"automatic_https": map[string]any{"disable": true},
 			// 空的连接策略让**这台 server** 转 TLS。它只加在 :443 那台上——
 			// 加到 :80 那台会让所有没有服务端证书的域名立即失联（ADR-0010 实测）。

@@ -142,6 +142,7 @@ func newRig(t *testing.T, opts ...caddytest.Option) *rig {
 		Render: render.Options{
 			HTTPListen: cad.EdgeListen(), HTTPSListen: cad.TLSListen(),
 			VerifyAddr:         cad.VerifyDial(),
+			LogDir:             cad.LogDir(),
 			UpstreamClientCert: filepath.Join(certDir, "edge-mtls.crt"),
 			UpstreamClientKey:  filepath.Join(certDir, "edge-mtls.key"),
 		},
