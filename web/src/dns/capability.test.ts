@@ -241,3 +241,44 @@ describe('computeShares', () => {
     expect(m.get('a')).toBe(0)
   })
 })
+
+/**
+ * **占比的分母是「在解析里的」，而那个判据只有后端有。**
+ *
+ * 灰度上撞出来的：一台 `dns_enabled: true`、`status: ok`、权重 0 的机器，
+ * 后端说 `in_rotation: false`（它真的不在解析里），而这一页给它画了 50.0%。
+ *
+ * 这一组钉的是 `computeShares` 拿到的 `enabled` 就是它该用的那个值 ——
+ * 调用方传 `in_rotation` 还是 `dns_enabled`，这里分不出来，
+ * 所以这几条守的是**给定入参下的算法**，钉不到「调用方传对了」。
+ *
+ * 那一半由 `DnsView` 里那一行注释和这条说明一起承担 —— **写出来，
+ * 不假装它有**。
+ */
+describe('不在解析里的不进分母', () => {
+  it('权重表达不了时：只在「在解析里的」之间均分', () => {
+    const m = computeShares(
+      [
+        { node: 'a', enabled: true, weight: 100 },
+        { node: 'b', enabled: false, weight: 0 },
+      ],
+      false,
+    )
+    expect(m.get('a'), '只有一台在解析里，它就是 100%').toBe(100)
+    expect(m.get('b'), '不在解析里的画成了 50% —— 界面说它承载一半流量').toBe(0)
+  })
+
+  it('权重表达得了时：不在解析里的既不进分子也不进分母', () => {
+    const m = computeShares(
+      [
+        { node: 'a', enabled: true, weight: 60 },
+        { node: 'b', enabled: true, weight: 40 },
+        { node: 'c', enabled: false, weight: 100 },
+      ],
+      true,
+    )
+    expect(m.get('a')).toBe(60)
+    expect(m.get('b')).toBe(40)
+    expect(m.get('c'), '不在解析里而权重很大 —— 它不该稀释另外两台').toBe(0)
+  })
+})

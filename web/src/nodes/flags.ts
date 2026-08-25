@@ -73,7 +73,25 @@ export function nodeFlags(n: EdgeNode, dnsSyncOk: boolean | null): NodeFlag[] {
    * 而 `status: down` 照样标：那是故障不是意图，机器恢复之后
    * 它仍然需要一个权重。
    */
-  if (!n.weightSet && !n.drainedAt) {
+  /*
+   * **判据里加上 `inRotation === false`，而不是去查服务商支不支持权重。**
+   *
+   * 后端改了 `in_rotation` 的算法：表达不了权重的服务商下（Cloudflare 纯 DNS），
+   * 它只看 `dns_enabled && status != down` —— 那道 `weight > 0` 的闸在那种模式下
+   * **不是一道更严的闸，是一道永远关着的闸**（新机器永远进不了解析）。
+   *
+   * 于是这句提示在那种模式下就错了：那台机器现在本来就在轮换里，
+   * 而「未分配权重」指向一个不存在的动作 —— 那一页根本没有权重可填。
+   *
+   * ## 用 `inRotation` 而不是 `caps.weights`
+   *
+   * 服务商能力在 `/dns/weights` 里，这一页拿不到 —— 要么再拉一次那个接口，
+   * 要么从 `/settings` 的 kind 反推。**两条都是在重推一个后端已经算过的结论。**
+   *
+   * 而这句话说的本来就是「当前不承载流量」，`in_rotation` 正是那件事。
+   * 判据跟着结论走，不跟着结论的成因走。
+   */
+  if (!n.weightSet && n.inRotation === false && !n.drainedAt) {
     out.push({
       text: '未分配权重，不承载流量',
       tone: 'warn',

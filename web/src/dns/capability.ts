@@ -124,7 +124,22 @@ export function isIdle(
 /** 一个节点在某条（或某个合并组）线路上的现状，`computeShares` 只需要这些。 */
 export interface ShareInput {
   node: string
-  /** 它在不在解析里（手动暂停 / 心跳超时自动摘除的都是 false）。 */
+  /**
+   * **它在不在解析里 —— 直接用后端的 `in_rotation`，不要自己推。**
+   *
+   * 这里原先传的是 `dns_enabled`，而后端的判据是
+   * `dns_enabled && status != down && weight > 0`（`dnssched.Build`）。
+   *
+   * 灰度上撞出来的：一台 `dns_enabled: true`、`status: ok`、权重 0 的机器，
+   * 后端说 `in_rotation: false`（它真的不在解析里），
+   * **而这一页给它画了 50.0%**。
+   *
+   * 两边各自都对 —— 而界面说的和服务商上的不是一回事。
+   * 判据只该有一处，那一处在后端。
+   *
+   * `null`（算不出来）按 false 处理：一条画不出来的占比条，
+   * 比一条画错的好。
+   */
   enabled: boolean
   /** 库里配的权重值。**表达不了权重的服务商下这个字段会被忽略。** */
   weight: number

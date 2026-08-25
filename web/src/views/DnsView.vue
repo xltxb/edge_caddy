@@ -168,7 +168,8 @@ function shares(g: LineInput): Map<string, number> {
   return computeShares(
     nodesOf(g).map((n) => ({
       node: n,
-      enabled: entryOf(g, n)?.dns_enabled === true,
+      // 后端算的「在不在解析里」—— 不自己按 dns_enabled / status / weight 推一份
+      enabled: entryOf(g, n)?.in_rotation === true,
       weight: weightOf(g, n),
     })),
     supportsWeights.value,

@@ -88,8 +88,11 @@ function buildLines() {
       ...nodeState.nodes.filter((n) => !n.drained_at).map((n) => n.id),
     ])
 
-    const total = [...candidates]
-      .filter((id) => nodeState.nodes.find((x) => x.id === id)?.dns_enabled === true)
+    const rotTotal = [...candidates]
+      .filter((id) => {
+        const n = nodeState.nodes.find((x) => x.id === id)
+        return n?.dns_enabled === true && n.status !== 'down' && (weights[id] ?? 0) > 0
+      })
       .reduce((s, id) => s + (weights[id] ?? 0), 0)
 
     return {
@@ -99,10 +102,19 @@ function buildLines() {
         const n = nodeState.nodes.find((x) => x.id === id)
         const on = n?.dns_enabled === true
         const weight = weights[id] ?? 0
+        // 与后端 dnssched.Build 同一条判据
+        const inRot = on && n?.status !== 'down' && weight > 0
         return {
           node: id,
           weight,
-          share: on && total > 0 ? Math.round((weight / total) * 1000) / 10 : 0,
+          /*
+           * **分母按 `in_rotation` 算，不按 `dns_enabled`。**
+           *
+           * 灰度上撞的那个 bug 的形状：一台 dns_enabled=true、权重 0 的机器
+           * 后端说它不在解析里，而界面给它画了 50%。
+           * mock 这边跟着后端的判据走，dev 里才看得到同一个形状。
+           */
+          share: inRot && rotTotal > 0 ? Math.round((weight / rotTotal) * 1000) / 10 : 0,
           dns_enabled: on,
           status: n?.status ?? 'down',
           /*

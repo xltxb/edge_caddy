@@ -323,8 +323,36 @@ describe('blockedNote 三档', () => {
 describe('未分配权重', () => {
   const has = (n: EdgeNode) => nodeFlags(n, true).some((f) => f.text.includes('未分配权重'))
 
-  it('从没有人配过：标出来', () => {
-    expect(has(node({ weightSet: false }))).toBe(true)
+  it('从没有人配过、而且确实不在解析里：标出来', () => {
+    expect(has(node({ weightSet: false, inRotation: false }))).toBe(true)
+  })
+
+  /**
+   * **表达不了权重的服务商下不标** —— 那台机器现在本来就在轮换里。
+   *
+   * Cloudflare 纯 DNS 用普通 A 记录等概率轮询，没有权重概念。后端在那种模式下
+   * 的 `in_rotation` 只看 `dns_enabled && status != down`，所以一台
+   * `weight_set=false` 的新机器照样在解析里。
+   *
+   * 这时说「未分配权重，当前不承载流量」是**两句话都错**：它在承载流量，
+   * 而且那一页根本没有权重可分配 —— **指向一个不存在的动作**。
+   *
+   * 判据用 `inRotation` 而不是去查服务商能力：这句话说的本来就是
+   * 「当前不承载流量」，跟着结论走，不跟着结论的成因走。
+   */
+  it('没配过、但已经在解析里（纯 DNS 模式）：不标', () => {
+    expect(
+      has(node({ weightSet: false, inRotation: true })),
+      '指向了一个不存在的动作 —— 那一页没有权重可分配，而它在承载流量',
+    ).toBe(false)
+  })
+
+  /*
+   * `null` = 算不出来（没配服务商）。那时既不能说它在承载流量，
+   * 也不能说它不在 —— 而这句提示是一个断言，所以不说。
+   */
+  it('in_rotation 算不出来时：不标', () => {
+    expect(has(node({ weightSet: false, inRotation: null }))).toBe(false)
   })
 
   /**
@@ -346,7 +374,9 @@ describe('未分配权重', () => {
    * 标上去等于把一件已经处理好的事重新摆到人面前。
    */
   it('已下线（人为）：不标', () => {
-    expect(has(node({ weightSet: false, drainedAt: '2026-08-25T00:00:00+08:00' }))).toBe(false)
+    expect(
+      has(node({ weightSet: false, inRotation: false, drainedAt: '2026-08-25T00:00:00+08:00' })),
+    ).toBe(false)
   })
 
   /*
@@ -354,6 +384,8 @@ describe('未分配权重', () => {
    * 这一条挡的是「顺手把 status down 也一起排除掉」。
    */
   it('故障离线：照标 —— 那是故障不是意图', () => {
-    expect(has(node({ weightSet: false, status: 'down', online: false }))).toBe(true)
+    expect(has(node({ weightSet: false, inRotation: false, status: 'down', online: false }))).toBe(
+      true,
+    )
   })
 })
