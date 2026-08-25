@@ -30,6 +30,8 @@ const wire = (id: string, cfg: string, over: Partial<NodeWire> = {}): NodeWire =
   online: true,
   geo_db_ok: null,
   blocked_1h: null,
+  in_rotation: true,
+  weight_set: true,
   reconnects_1h: 0,
   cpu: 10,
   mem: 20,

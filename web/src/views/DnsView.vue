@@ -387,6 +387,20 @@ async function save(): Promise<void> {
               @input="setWeight(g, n, ($event.target as HTMLInputElement).value)"
             />
             <span v-else class="w-off" title="这家服务商只做轮换，权重表达不了">轮换</span>
+            <!--
+              **从没有人给这台配过权重** —— 用户拍板了不自动配（哪台机器接哪条线
+              的流量是调度决定），但界面必须提示这个决定还没做。
+
+              判据是 `weight_set`，**不是权重值是 0**：后者分不出「从没有人过目」
+              和「人看过、给了 0」，而后者是一个已经做过的决定 ——
+              按权重值判的话，一台人已经决定过的机器会常年挂着这个标记。
+
+              存一次这一页，页面上每个节点都会被写行（含填 0 的），
+              所以这个标记自己会消失。
+            -->
+            <span v-if="entryOf(g, n)?.weight_set === false" class="fresh" title="这台机器还没有人给它配过权重 —— 填一个数并保存，这个标记就没了">
+              新接入
+            </span>
             <span class="bar">
               <span
                 class="fill"
@@ -424,6 +438,22 @@ async function save(): Promise<void> {
 
 <style scoped>
 @import './catalog.css';
+
+/*
+ * 「新接入」标记。**跟权重框贴在一起** —— 它说的是这一格的事，
+ * 离远了人得自己对行。
+ *
+ * 放在 `@import` 之后：CSS 规范要求 `@import` 在所有其它规则之前，
+ * 否则整条被忽略。今天在 AclView 上撞过一次，整页样式塌了而九步检查全绿。
+ */
+.fresh {
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--warning-bg, var(--surface-sunken));
+  color: var(--warning-text, var(--text-muted));
+  font-size: var(--fs-micro);
+  white-space: nowrap;
+}
 .head .sub {
   margin-right: auto;
 }

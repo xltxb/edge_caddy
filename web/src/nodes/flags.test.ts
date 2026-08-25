@@ -13,6 +13,8 @@ const node = (over: Partial<EdgeNode> = {}): EdgeNode => ({
   reconnects1h: 0,
   geoDbOk: null,
   blocked1h: null,
+  inRotation: true,
+  weightSet: true,
   cpu: 10,
   mem: 20,
   conns: 100,
@@ -307,5 +309,51 @@ describe('blockedNote 三档', () => {
     const b = blockedNote(node({ blocked1h: 0 }))
     const c = blockedNote(node({ blocked1h: null }))
     expect(new Set([a, b, c]).size, '有两档共用了一句话').toBe(3)
+  })
+})
+
+/**
+ * **「未分配权重」：判据是 `weightSet`，不是权重值。**
+ *
+ * 用户拍板了不自动配权重（哪台机器接哪条线的流量是调度决定 —— 一台只想跑
+ * 境外的机器不该默认接电信访问者），**但界面必须提示还没做这个决定**。
+ *
+ * 而「还没做决定」与「决定是 0」在权重值上一模一样，只有 `weightSet` 分得开。
+ */
+describe('未分配权重', () => {
+  const has = (n: EdgeNode) => nodeFlags(n, true).some((f) => f.text.includes('未分配权重'))
+
+  it('从没有人配过：标出来', () => {
+    expect(has(node({ weightSet: false }))).toBe(true)
+  })
+
+  /**
+   * **人看过、给了 0：什么都不标。**
+   *
+   * 这一条是这一组里唯一不显然的 —— 也是这个字段存在的全部理由。
+   * 按 `weight === 0` 判的话它会亮，而那是一台**人已经决定过**的机器：
+   * 一条天天亮着的警告，人两天就学会忽略它，连带着忽略掉真该看的那一条。
+   */
+  it('人配过（哪怕给的是 0）：什么都不标', () => {
+    expect(
+      has(node({ weightSet: true })),
+      '按权重值判了 —— 人已经决定过的机器会常年挂着这条警告',
+    ).toBe(false)
+  })
+
+  /*
+   * **人为下线的不标**：那台机器现在本来就不该接流量，权重不是此刻要处理的事。
+   * 标上去等于把一件已经处理好的事重新摆到人面前。
+   */
+  it('已下线（人为）：不标', () => {
+    expect(has(node({ weightSet: false, drainedAt: '2026-08-25T00:00:00+08:00' }))).toBe(false)
+  })
+
+  /*
+   * 而**故障离线照标** —— 那是故障不是意图，机器恢复之后它仍然需要一个权重。
+   * 这一条挡的是「顺手把 status down 也一起排除掉」。
+   */
+  it('故障离线：照标 —— 那是故障不是意图', () => {
+    expect(has(node({ weightSet: false, status: 'down', online: false }))).toBe(true)
   })
 })

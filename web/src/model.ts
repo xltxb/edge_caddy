@@ -74,6 +74,19 @@ export interface EdgeNode {
    * 三个 null 在这个类型里挨着，处置各不相同。
    */
   blocked1h: number | null
+  /**
+   * 此刻在不在解析里（契约 §2）。**后端算的，前端直接用** ——
+   * 判据在 `dnssched.Build` 里，这边重推一遍就是两处知识。
+   *
+   * `null` = 算不出来（没配服务商），不是 false。
+   */
+  inRotation: boolean | null
+  /**
+   * 有没有人给它配过权重（契约 §2）。**它区分的是两种权重 0**：
+   * `false` 是「从没有人过目」（新接入），`true` 是「人看过、给了 0」。
+   * 只看权重值分不出来，而后者是一个已经做过的决定。
+   */
+  weightSet: boolean
   cpu: number
   mem: number
   conns: number
@@ -134,6 +147,13 @@ export function fromNodeWire(w: NodeWire, stampedAt = Date.now()): EdgeNode {
      * 这一行兜成 null 是为了开口。**不能兜成 0**：0 是「没被打」。
      */
     blocked1h: w.blocked_1h ?? null,
+    inRotation: w.in_rotation ?? null,
+    /*
+     * `?? false` 兜「主控太旧」—— 那时按「没人配过」处理，界面会标一句
+     * 「未分配权重」。**宁可多说一句，也不要在一台真的没人配过的机器上闭嘴**：
+     * 前者人看一眼就知道不对，后者是一台常年不承载流量而看起来正常的机器。
+     */
+    weightSet: w.weight_set ?? false,
     cpu: w.cpu,
     mem: w.mem,
     conns: w.conns,

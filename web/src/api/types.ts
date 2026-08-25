@@ -272,6 +272,37 @@ export interface NodeWire {
    * **三、每节点各算各的**，跟限流额度一样。
    */
   blocked_1h: number | null
+  /**
+   * **这台机器此刻在不在解析里**（契约 §2）。
+   *
+   * `null` = 算不出来（没配服务商 / 读失败），**不是 false** ——
+   * 「不在解析里」是一个断言，「不知道在不在」不是。
+   *
+   * ## 直接用，不要自己推
+   *
+   * 判据在后端的 `dnssched.Build`（`dns_enabled && status != down && weight > 0`）。
+   * 前端照着那三个字段重推一遍就是**两处知识** —— 判据哪天变了只会改一处，
+   * 而症状是界面说「在解析里」而服务商上没有它，**两边各自都对**。
+   */
+  in_rotation: boolean | null
+  /**
+   * **有没有人给这台配过权重**（契约 §2）。判据是 `dns_weights` 里有没有这一行。
+   *
+   * 它存在的理由是**区分两种权重为 0**：
+   *
+   * | | 意思 | 界面 |
+   * |---|---|---|
+   * | `false` | 从没有人过目 —— 新接入 | 标出来：未分配权重，不承载流量 |
+   * | `true` + `weight: 0` | 人看过，给了 0 | **什么都别标** |
+   *
+   * 少了它只能按「权重是 0」判，而那**分不出这两种** ——
+   * 一台人已经决定过的机器会常年挂着「新接入」的警告，
+   * 而一条天天亮着的警告，人两天就学会忽略它。
+   *
+   * 保存解析页时页面上每个节点都会被写行（含填 0 的），所以「没有行」精确地
+   * 等于「从没有人在那一页上存过它」—— **人只要存过一次，这个警告自己会消失**。
+   */
+  weight_set: boolean
   cpu: number
   mem: number
   conns: number
@@ -1042,6 +1073,22 @@ export interface DnsEntryWire {
   share: number
   dns_enabled: boolean
   status: NodeStatus
+  /**
+   * **这台此刻在不在解析里**（契约 §2）。与 `NodeWire.in_rotation` 同一个判据、
+   * 同一份来源 —— 后端算，前端直接用。
+   *
+   * `null` = 算不出来（没配服务商），不是 false。
+   */
+  in_rotation: boolean | null
+  /**
+   * **有没有人给它配过权重**（契约 §2）。
+   *
+   * `false` + `weight: 0` = 新接入，从没有人过目 —— 解析页上标「新接入」。
+   * `true` + `weight: 0` = 人看过、给了 0 —— **什么都别标**。
+   *
+   * 只看 `weight === 0` 分不出这两种，而后者是一个**已经做过的决定**。
+   */
+  weight_set: boolean
 }
 
 export interface DnsLineWire {

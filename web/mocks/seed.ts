@@ -110,6 +110,17 @@ const node = (
    *   null  还不知道（刚接入 / 主控刚重启）
    */
   blocked_1h: 0,
+  /*
+   * 默认：在解析里、有人配过权重。**「新接入」那一档得 override** ——
+   * 见下面 node-tw-01（`weight_set: false`）。
+   *
+   * 三种组合在 dev 里都要走得到，而它们说的是不同的事：
+   *   weight_set=false            从没有人过目 —— 标「新接入」
+   *   weight_set=true, weight=0   人看过、给了 0 —— 什么都不标
+   *   in_rotation=false           此刻不在解析里（后端算的，不自己推）
+   */
+  in_rotation: true,
+  weight_set: true,
   cpu,
   mem,
   conns,
@@ -153,7 +164,8 @@ export const nodes: NodeWire[] = [
   { ...node('node-jp-01', '东京', 'V.PS Tokyo', 'CMIN2 · SoftBank', '45.32.108.7', 'ok', 28.6, 41.3, 18900, 0.9, BASELINE, 4, 3, true, [30, 34, 28, 31, 38, 42, 36, 29, 33, 30, 26, 29]), reconnects_1h: 4, geo_db_ok: false },
   { ...node('node-kr-01', '首尔', 'Kdatacenter', 'KT · SK Direct', '158.247.220.94', 'warn', 81.4, 74.2, 31200, 2.1, BASELINE, 4, 3, true, [48, 55, 61, 58, 66, 72, 69, 75, 79, 83, 80, 81]), blocked_1h: 12480 },
   // 漂移节点：routes/rules 停在旧配置的数字上，这正是它有用的地方
-  node('node-tw-01', '台北', 'MoonVM', 'HiNet 直连', '103.40.16.203', 'warn', 12.0, 22.5, 2100, 14, PREV, 2, 3, true, [18, 16, 20, 17, 19, 15, 18, 0, 0, 0, 12, 12]),
+  // 刚接进来、还没有人给它配权重 —— 「未分配权重」那一档在这台上走得到
+  { ...node('node-tw-01', '台北', 'MoonVM', 'HiNet 直连', '103.40.16.203', 'warn', 12.0, 22.5, 2100, 14, PREV, 2, 3, true, [18, 16, 20, 17, 19, 15, 18, 0, 0, 0, 12, 12]), weight_set: false, in_rotation: false },
   node('node-de-01', '法兰克福', 'Hetzner CX42', '国际 BGP', '116.202.75.31', 'ok', 9.7, 28.1, 6700, 1.5, BASELINE, 4, 3, false, [12, 10, 14, 11, 9, 13, 10, 8, 11, 9, 10, 10], '2026-08-21T09:40:00+08:00'),
   { ...node('node-us-01', '洛杉矶', 'Contabo', '国际 BGP', '194.238.19.62', 'down', 0, 0, 0, 372, PREV, 2, 3, false, [14, 12, 15, 13, 11, 14, 9, 0, 0, 0, 0, 0]), blocked_1h: null },
 ]
