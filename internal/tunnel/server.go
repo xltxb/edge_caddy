@@ -23,8 +23,27 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
+)
+
+// gRPC keepalive。
+//
+// **主控主动 ping 是给存量节点的修复。** 心跳只走节点→主控方向，主控对它
+// 不回任何应用层消息，于是主控→节点可以安静几个小时——而前置 nginx 的
+// proxy_read_timeout（1h，deploy/nginx-console.conf）只被那个方向的字节
+// 重置，安静满一小时连接就被掐断（节点侧表现为 close 1006 unexpected EOF）。
+// gRPC 服务端默认的 ping 间隔是 2 小时，永远赶不上那条线。
+// 服务端 ping 不需要节点升级，改完主控，所有已部署的节点立即受益。
+//
+// KeepaliveMinPing 是对客户端 ping 的容忍下限：低于它的会吃 GOAWAY
+// ENHANCE_YOUR_CALM。Agent 侧的间隔（agent.KeepalivePing）必须不低于它，
+// 这条关系由 TestKeepaliveIntervalsAreCompatible 守着。
+const (
+	KeepaliveServerPing    = 5 * time.Minute
+	KeepaliveMinPing       = time.Minute
+	keepaliveServerTimeout = 20 * time.Second
 )
 
 // Heartbeat 是一次心跳上报，转给主控的其它部分。
@@ -177,6 +196,15 @@ func New(o Options) (*Server, error) {
 		// 而另一端连一条日志都不会有。
 		grpc.MaxRecvMsgSize(maxTunnelMsgBytes),
 		grpc.MaxSendMsgSize(maxTunnelMsgBytes),
+		// 理由见文件顶部 Keepalive 常量的注释。
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			Time:    KeepaliveServerPing,
+			Timeout: keepaliveServerTimeout,
+		}),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             KeepaliveMinPing,
+			PermitWithoutStream: true,
+		}),
 	)
 	edgev1.RegisterEdgeTunnelServer(s.grpc, s)
 	return s, nil

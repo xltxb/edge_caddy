@@ -14,10 +14,31 @@ import (
 	"github.com/xltxb/edge_caddy/internal/wsconn"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/keepalive"
 )
 
 // tunnelPath 是隧道挂在 HTTP 面上的路径（契约 §2）。
 const tunnelPath = "/api/v1/tunnel"
+
+// KeepalivePing 是 Agent 侧 gRPC keepalive 的 ping 间隔。
+//
+// **它的对象是路径上的中间设施，不只是探活。** 心跳只走节点→主控方向，
+// 主控对它不回任何应用层消息；主控→节点可以安静几个小时。而 nginx 的
+// proxy_read_timeout（1h，deploy/nginx-console.conf）只被主控→节点的字节
+// 重置——于是安静超过一小时，连接就被 nginx 掐断，Agent 看到的是
+// close 1006 unexpected EOF，跟网络抖动长得一模一样（真实发生过，
+// 三次断开间隔 1h27m/1h42m/4h36m，全部 ≥1h）。
+// ping 的 ACK 是主控→节点方向的字节，每 5 分钟一来一回，两个方向都不再空闲。
+//
+// 不能低于主控的容忍下限（tunnel.KeepaliveMinPing），否则主控回 GOAWAY
+// ENHANCE_YOUR_CALM 直接断连——这条关系由 internal/tunnel 的
+// TestKeepaliveIntervalsAreCompatible 守着。
+const KeepalivePing = 5 * time.Minute
+
+// keepaliveTimeout 是 ping 发出后等 ACK 的时长，超时判连接已死。
+// 它同时是「隧道悄悄死掉」的最大发现延迟——没有它，一条被中间设施
+// 静默丢弃的连接要等 TCP 自己超时，那是分钟到小时级的。
+const keepaliveTimeout = 20 * time.Second
 
 // dialOptions 把「主控地址」翻成一组 gRPC 拨号选项。
 //
@@ -44,6 +65,13 @@ func dialOptions(master string, creds credentials.TransportCredentials) (string,
 			grpc.MaxCallRecvMsgSize(32<<20),
 			grpc.MaxCallSendMsgSize(32<<20),
 		),
+		// 理由见 KeepalivePing 的注释。PermitWithoutStream 开着：
+		// 隧道的那条流断了但连接还在的间隙里，照样要探。
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                KeepalivePing,
+			Timeout:             keepaliveTimeout,
+			PermitWithoutStream: true,
+		}),
 	}
 
 	if !strings.Contains(master, "://") {
