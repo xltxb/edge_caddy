@@ -19,9 +19,10 @@ type weightsResp struct {
 		Code    string `json:"code"`
 		Name    string `json:"name"`
 		Entries []struct {
-			Node   string  `json:"node"`
-			Weight int     `json:"weight"`
-			Share  float64 `json:"share"`
+			Node       string  `json:"node"`
+			Weight     int     `json:"weight"`
+			Share      float64 `json:"share"`
+			InRotation bool    `json:"in_rotation"`
 		} `json:"entries"`
 	} `json:"lines"`
 	Capabilities struct {
@@ -1025,6 +1026,50 @@ func TestNewNodeTriggersDNSSync(t *testing.T) {
 		t.Fatalf("新节点接入后一次都没推解析（服务商侧请求数停在 %d）—— "+
 			"它在库里参与解析，而服务商那边没有它", before)
 	}
+
+	// **推了不等于它进去了。** 一台没有权重的机器不在轮换里
+	// （`in = dns_enabled && status != down && w > 0`），同步照推，
+	// 推的还是原来那组 IP —— **触发是真的，效果是空的**。
+	//
+	// 只断言「同步被触发」是不够的：那是主控这一侧的事，
+	// 而结论落在服务商那一侧。
+	//
+	// 所以这里钉的是：新机器出现在权重页上、而且**明说它还不在解析里**。
+	// 让它真的进解析要人分配权重 —— 那是个调度决定（哪台机器接哪条线的
+	// 流量），产品要做的是让这个决定做得出来，不是替人做。
+	// 只解 entries：weightsResp 那个 Capabilities.Lines 是 []string，
+	// 而真实响应里它是对象数组 —— 那份夹具与契约对不上（另说），
+	// 这条测试不该被它带垮。
+	var w struct {
+		Lines []struct {
+			Code    string `json:"code"`
+			Entries []struct {
+				Node       string `json:"node"`
+				Weight     int    `json:"weight"`
+				InRotation bool   `json:"in_rotation"`
+			} `json:"entries"`
+		} `json:"lines"`
+	}
+	if err := json.Unmarshal(r.mustDo("GET", "/dns/weights", nil).Data, &w); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, l := range w.Lines {
+		for _, e := range l.Entries {
+			if e.Node != "node-sg-01" {
+				continue
+			}
+			found = true
+			if e.InRotation {
+				t.Errorf("线路 %s：新机器没有权重却说它在解析里 —— "+
+					"服务商那边不会有它，而界面说有", l.Code)
+			}
+		}
+	}
+	if !found {
+		t.Error("新机器没有出现在权重页上 —— 那样人就没有地方给它分配权重，" +
+			"它会永远进不了解析，而页面看起来完全正常")
+	}
 }
 
 // TestFreshNodeGetsTheBaselineConfig：**新接入的节点要拿到基线配置。**
@@ -1119,5 +1164,89 @@ func TestReconnectDoesNotRepushOrResync(t *testing.T) {
 	if got := r.dnsHits(); got != before {
 		t.Errorf("重连推了 %d 次解析 —— 它本来就在解析里，"+
 			"每次抖动打一次服务商 API；掉线恢复那一路 health 已经管了", got-before)
+	}
+}
+
+// TestNodeListSaysWhetherItCarriesTraffic：**节点列表要说得出这台机器拿不拿得到流量。**
+//
+// 「在线 + 配置已下发 + 参与解析」三个都是绿的，而它一份流量也没有 ——
+// 因为没人给它分配过权重。那三个字段各自都对，**合起来给人的印象是假的**。
+//
+// 而这件事**不能让前端自己推**：判据在 dnssched.Build 里
+// （`dns_enabled && status != down && weight > 0`），前端重推一遍就是两处知识，
+// 判据哪天变了只会改一处 —— 症状是界面说「在解析里」而服务商上没有它。
+func TestNodeListSaysWhetherItCarriesTraffic(t *testing.T) {
+	r := newRig(t)
+	r.configureDNSProvider()
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	read := func() (inRot *bool, weightSet *bool) {
+		t.Helper()
+		var d struct {
+			Items []struct {
+				ID         string `json:"id"`
+				InRotation *bool  `json:"in_rotation"`
+				WeightSet  *bool  `json:"weight_set"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(r.mustDo("GET", "/nodes", nil).Data, &d); err != nil {
+			t.Fatal(err)
+		}
+		for _, n := range d.Items {
+			if n.ID == "node-hk-01" {
+				return n.InRotation, n.WeightSet
+			}
+		}
+		t.Fatal("装置坏了：节点不在列表里")
+		return nil, nil
+	}
+
+	inRot, wset := read()
+	if inRot == nil || wset == nil {
+		t.Fatal("配了服务商时这两个字段不该是 null —— null 是「算不出来」")
+	}
+	if *inRot {
+		t.Error("没分配权重的机器说自己在解析里 —— 服务商那边没有它")
+	}
+	if *wset {
+		t.Error("从没有人存过权重，weight_set 却是 true —— " +
+			"那样「新接入」与「人有意设成 0」就分不开了")
+	}
+
+	// 给它分配权重，两个字段都要跟着变。
+	r.mustDo("PUT", "/dns/weights", map[string]any{
+		"lines": []map[string]any{{
+			"code": "ct", "entries": []map[string]any{{"node": "node-hk-01", "weight": 10}},
+		}},
+	})
+	inRot, wset = read()
+	if inRot == nil || !*inRot {
+		t.Error("分配权重之后仍然说不在解析里")
+	}
+	if wset == nil || !*wset {
+		t.Error("存过权重之后 weight_set 仍是 false —— 「新接入」的警告会一直挂着")
+	}
+
+	// **把权重明确存成 0 —— 这是唯一能把 weight_set 与 weight>0 分开的场景。**
+	//
+	// 少了这一段，一个「weight_set = weight > 0」的实现也能让上面全绿
+	// （撞过，全绿）。而那正是前端要防的误伤：一台被人有意设成 0 的机器
+	// 会常年挂着「新接入」的警告，而一条天天亮着的警告，
+	// 人两天就学会忽略它 —— 连带忽略掉真出问题那天的那一条。
+	r.mustDo("PUT", "/dns/weights", map[string]any{
+		"lines": []map[string]any{{
+			"code": "ct", "entries": []map[string]any{{"node": "node-hk-01", "weight": 0}},
+		}},
+	})
+	inRot, wset = read()
+	if inRot == nil || *inRot {
+		t.Error("权重是 0 却说在解析里")
+	}
+	if wset == nil || !*wset {
+		t.Error("人明确把权重存成了 0，weight_set 却是 false —— " +
+			"「从没有人过目」和「人看过、给了 0」是两件事，" +
+			"混成一个的话新接入的警告会挂在一台人已经决定过的机器上")
 	}
 }

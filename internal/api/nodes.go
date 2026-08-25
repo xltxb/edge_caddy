@@ -98,6 +98,26 @@ type nodeResp struct {
 	//
 	// 窗口在主控内存里，**主控重启后从 0 重新攒** —— 与 cpu_series 同一条路。
 	BlockedLastHour *uint64 `json:"blocked_1h"`
+
+	// InRotation 是「**这台机器现在拿不拿得到流量**」，WeightSet 是
+	// 「有没有人给它配过权重」。
+	//
+	// 这两个字段存在的理由是**三个绿的加起来会给人一个假印象**：
+	// 在线 ✓、配置已下发 ✓、参与解析 ✓ —— 而它一份流量也没有，
+	// 因为没人分配过权重。每个字段各自都对。
+	//
+	// 判据在 dnssched.Build 里（`dns_enabled && status != down && weight > 0`），
+	// **由后端算好给出，不让前端自己推**：前端重推一遍就是两处知识，
+	// 判据哪天变了只会改一处，症状是界面说「在解析里」而服务商上没有它。
+	//
+	// **`null` 是「算不出来」**，不是 false：没配 DNS 服务商、或者读解析
+	// 安排失败时是这一档。回 false 会被读成「这台机器不承载流量」——
+	// 那是一句关于机器的断言，而真相是关于我们自己的（我们不知道）。
+	//
+	// weight_set 与 `weight == 0` 不是一回事：从没有人过目（新接入）
+	// 与人有意设成 0 是两件事，界面的警告只该出现在前者上。
+	InRotation *bool `json:"in_rotation"`
+	WeightSet  *bool `json:"weight_set"`
 }
 
 func (s *Server) handleListNodes(c *gin.Context) {
@@ -130,6 +150,40 @@ func (s *Server) handleListNodes(c *gin.Context) {
 		masterGeoSHA = g.SHA256
 	}
 
+	// 谁在解析轮换里、谁被人配过权重。**同一份计划，与解析页读的是同一个来源**
+	// —— 两处各算各的迟早会给出两个答案。
+	//
+	// 算不出来（没配服务商、读库失败）时两张表都留空，下面的字段就是 null
+	// ——「我们不知道」，而不是「这台机器不承载流量」。
+	var inRotation, weightSet map[string]bool
+	if s.dns != nil {
+		if plan, err := s.dns.CurrentPlan(ctx, nil); err == nil {
+			inRotation, weightSet = map[string]bool{}, map[string]bool{}
+			for _, l := range plan.Lines {
+				for _, e := range l.Entries {
+					// **任意一条线上在轮换里，这台机器就在承载流量。**
+					// 按线取或，因为节点页那一行说的是这台机器整体。
+					if e.InRotation {
+						inRotation[e.Node] = true
+					}
+					if e.WeightSet {
+						weightSet[e.Node] = true
+					}
+					// 出现过就要有键 —— 否则「不在轮换里」与「不在这份计划里」
+					// 在下面分不开，而后者根本不该发生。
+					if _, ok := inRotation[e.Node]; !ok {
+						inRotation[e.Node] = false
+					}
+					if _, ok := weightSet[e.Node]; !ok {
+						weightSet[e.Node] = false
+					}
+				}
+			}
+		} else {
+			s.log.Error("读取解析安排失败，节点页的 in_rotation 将是 null", "err", err)
+		}
+	}
+
 	items := make([]nodeResp, 0, len(nodes))
 	for _, n := range nodes {
 		item := nodeResp{
@@ -139,6 +193,14 @@ func (s *Server) handleListNodes(c *gin.Context) {
 			// 配置漂移 = 节点上报的版本 ≠ 基线。**只比对版本号，不检查内容**
 			// （ADR-0002）：有人 SSH 上去手改配置、或节点重启后回退，漂移不会亮。
 			Drift: baseline != "" && n.CfgVersion != baseline,
+		}
+		if inRotation != nil {
+			v := inRotation[n.ID]
+			item.InRotation = &v
+		}
+		if weightSet != nil {
+			v := weightSet[n.ID]
+			item.WeightSet = &v
 		}
 		if s.health != nil {
 			item.CPUSeries = s.health.CPUSeries(n.ID)

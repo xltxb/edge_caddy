@@ -55,8 +55,36 @@ type Entry struct {
 	Share      float64 `json:"share"`
 	DNSEnabled bool    `json:"dns_enabled"`
 	Status     string  `json:"status"`
-	// InRotation 是「这个节点现在在不在解析里」，服务商适配据此决定去留。
-	InRotation bool `json:"-"`
+	// InRotation 是「这个节点现在**在不在解析里**」，服务商适配据此决定去留，
+	// 而它也**报给界面** —— 那是「这台机器拿不拿得到流量」唯一的权威答案。
+	//
+	// 不报的话前端只能拿 weight / dns_enabled / status 自己重推一遍这条规则，
+	// 而那条规则在这里（`known && DNSEnabled && Status != down && w > 0`）。
+	// 两处各写一份，判据哪天变了只会改一处 —— 症状是界面上标着「在解析里」
+	// 而服务商上没有它，两边各自都对。
+	//
+	// **不在解析里的原因由那三个字段自己说**，各自指向不同的动作：
+	//
+	//	dns_enabled=false  人关掉了（dns_reason 说是谁、为什么）
+	//	status=down        离线，自愈会摘掉它
+	//	weight=0           没有分配权重 —— 新接入的机器就是这一档
+	InRotation bool `json:"in_rotation"`
+
+	// WeightSet 说**有没有人给这条线上的这台机器配过权重**。
+	//
+	// 它与 `Weight == 0` 不是一回事，而那个区别正是界面要的：
+	//
+	//	weight_set=false  从没有人过目 —— 新接入的机器就是这一档
+	//	weight_set=true, weight=0  人存过，而给了 0（一个决定，不是遗漏）
+	//
+	// 判据是「dns_weights 里有没有这一行」。保存权重页时页面上**每一个**
+	// 节点都会被写进去（含填 0 的），所以「没有行」精确地等于
+	// 「从没有人在那一页上存过它」—— 人只要存过一次就算过目了。
+	//
+	// **这个区别必须由后端给。** 前端拿 weight==0 去猜的话，
+	// 一台被人有意设成 0 的机器会常年挂着「新接入」的警告 ——
+	// 而一条天天亮着的警告，人两天就学会忽略它。
+	WeightSet bool `json:"weight_set"`
 }
 
 type LinePlan struct {
@@ -126,13 +154,13 @@ func Build(domain string, weights Weights, nodes []NodeState) Plan {
 		entries := make([]Entry, 0, len(ids))
 		for _, id := range ids {
 			n, known := byID[id]
-			w := weights[line.Code][id]
+			w, wset := weights[line.Code][id]
 			in := known && n.DNSEnabled && n.Status != store.StatusDown && w > 0
 			if in {
 				total += w
 			}
 			entries = append(entries, Entry{
-				Node: id, IP: n.IP, Weight: w,
+				Node: id, IP: n.IP, Weight: w, WeightSet: wset,
 				DNSEnabled: n.DNSEnabled, Status: n.Status, InRotation: in,
 			})
 		}
