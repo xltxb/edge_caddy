@@ -75,6 +75,18 @@ func (o *Orchestrator) Provider(ctx context.Context) (dnsctl.Provider, store.DNS
 	return p, cfg, err
 }
 
+// Configured 说现在有没有一个能用的服务商配置。
+//
+// **它存在是为了让背景动作先问后做。** Sync 无论成败都会落一条同步状态
+// （那是有意的：界面上那个徽标是常驻的，一次失败不能只活在响应里）。
+// 而「没配服务商」时那条状态记的是一件没发生过的事 —— 人点开关时
+// 记下来是对的（他问了，这是回答），一台机器接入时记下来就把
+// 「从没同步过」变成了一个像模像样的时间戳。
+func (o *Orchestrator) Configured(ctx context.Context) bool {
+	_, _, err := o.Provider(ctx)
+	return err == nil
+}
+
 // providerFor 为**一个目标**装配一个服务商客户端。
 //
 // **一个目标一个实例**：Cloudflare 的 zone_id 与要写的主机名都在实例上，

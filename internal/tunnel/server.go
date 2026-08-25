@@ -99,6 +99,19 @@ type Options struct {
 	Advertise []string // 服务端证书的 SAN
 	// OnHeartbeat 返回这次心跳代表的健康分档（ok / warn）。
 	OnHeartbeat func(Heartbeat) string
+
+	// OnNodeUp 在一条隧道建立、且**这条会话已经可以收发**之后调用。
+	// fresh 为真表示这是凭 Token 的首次接入。
+	//
+	// **它存在的理由是「接入」此前不是一个完整的操作。** 接入只回一个
+	// cfg_version，不推配置、也不动解析；而 Agent 拿到那个版本号就记成
+	// 自己的当前版本，心跳照它上报，主控又把它写回库 —— 新机器在界面上
+	// 显示「与基线一致、无漂移」，而它的 Caddy 是空的，解析里也没有它。
+	// 三方各自自洽，合起来是假的。
+	//
+	// 回调而不是让 tunnel 直接调 deploy / dnsops：deploy 依赖 tunnel，
+	// 反过来引就成环了。装配在 cmd/master。
+	OnNodeUp func(nodeID string, fresh bool)
 }
 
 type Server struct {
@@ -298,6 +311,16 @@ func (s *Server) Channel(stream edgev1.EdgeTunnel_ChannelServer) error {
 	}
 
 	go sess.writeLoop()
+
+	// **必须在 writeLoop 起来之后，而且必须另起一条 goroutine。**
+	//
+	// 之前：推配置要经这条会话发出去，writeLoop 没起来时发不出。
+	// 另起：readLoop 在下面阻塞着，在这里同步跑等于这条隧道在补配置
+	// 期间收不到任何东西 —— 包括那次推送自己的回执，直接死锁。
+	if s.opt.OnNodeUp != nil {
+		go s.opt.OnNodeUp(nodeID, fresh)
+	}
+
 	return sess.readLoop(ctx, s)
 }
 

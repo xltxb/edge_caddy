@@ -987,3 +987,137 @@ func TestDNSSyncTargetsKeyAlwaysPresent(t *testing.T) {
 		t.Error("同步过之后 targets 该有内容，而不是恒为 null")
 	}
 }
+
+// TestNewNodeTriggersDNSSync：**一台新接入的节点要自己进解析。**
+//
+// 解析同步此前只有五个触发点：人点解析开关、改公网 IP、存服务商配置、
+// 存权重、以及健康监控的摘/恢复。**接入不在其中** —— 而 Attach 只在
+// recover() 里调，recover() 只在节点此前被标记过 down 时才跑，
+// 一台新机器从没 down 过。
+//
+// 于是新加的节点在库里 dns_enabled=true、界面上「参与解析」，
+// 而服务商那边一条记录都没多 —— 两句都对，合起来不成立。人要么
+// 手动去点一下解析开关，要么改一次权重，才会真的推上去；
+// 而**没有任何地方提示他要这么做**。
+func TestNewNodeTriggersDNSSync(t *testing.T) {
+	r := newRig(t)
+	r.configureDNSProvider()
+
+	// 先接一台，把服务商配置那次同步的余波走完。
+	token1, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token1, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	before := r.dnsHits()
+
+	// 再接一台**新的**。
+	token2, _ := r.issueToken("node-sg-01")
+	r.startAgent("node-sg-01", token2, t.TempDir())
+	r.waitOnline("node-sg-01")
+
+	// 同步是接入之后异步发生的，给它一点时间。
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && r.dnsHits() == before {
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if got := r.dnsHits(); got == before {
+		t.Fatalf("新节点接入后一次都没推解析（服务商侧请求数停在 %d）—— "+
+			"它在库里参与解析，而服务商那边没有它", before)
+	}
+}
+
+// TestFreshNodeGetsTheBaselineConfig：**新接入的节点要拿到基线配置。**
+//
+// 接入时主控只在 Enrolled 里回一个 cfg_version，**不推配置**；而 Agent
+// 拿到那个版本号就直接记成自己的当前版本，心跳照它上报，主控又把它写回库。
+// 于是新机器在界面上显示「与基线一致、无漂移」，**而它的 Caddy 是空的**——
+// 三方都自洽，合起来是假的。
+//
+// 这决定了「新节点该不该自动进解析」：不先把配置给它，进解析就是
+// 把真实流量导向一台什么都没有的机器。
+func TestFreshNodeGetsTheBaselineConfig(t *testing.T) {
+	r := newRig(t)
+
+	// 先用一台节点把基线立起来。
+	token1, _ := r.issueToken("node-hk-01")
+	stop1 := r.startAgent("node-hk-01", token1, t.TempDir())
+	r.waitOnline("node-hk-01")
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "base.example.com", "upstream": r.upstream, "block_mode": "404",
+	})
+	r.deployNow("route:base.example.com")
+
+	// 把 Caddy 清空，模拟一台**全新机器上刚装好的 Caddy**。
+	if code, body := r.caddy.PostApp("http", []byte(`{"servers":{}}`)); code >= 300 {
+		t.Fatalf("清空 Caddy 失败：%d %s", code, body)
+	}
+	stop1()
+	r.waitOffline("node-hk-01")
+
+	// 新机器接入。它该拿到基线配置。
+	token2, _ := r.issueToken("node-sg-01")
+	r.startAgent("node-sg-01", token2, t.TempDir())
+	r.waitOnline("node-sg-01")
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if code, _ := r.curlVia("base.example.com"); code == 200 {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	code, _ := r.curlVia("base.example.com")
+	t.Fatalf("新节点接入后 Caddy 仍然服务不了基线里的域名（%d）—— "+
+		"而它的心跳上报的 cfg_version 就是基线，界面上看不出任何异常", code)
+}
+
+// TestReconnectDoesNotRepushOrResync：**重连不补，只有首次接入才补。**
+//
+// NodeUp 只对 fresh 做，而这道闸是承重的：
+//
+//	重连也重推   → 一台在抖的机器被反复推配置，每次抖动一次全量下发
+//	重连也同步解析 → 每次抖动打一次服务商 API，而它本来就在解析里
+//
+// 而「掉线后恢复」那一路已经有人管了（health 的 recover → DNS.Attach），
+// 这里管的是从来没有过的那一次。两处都做就是做两遍。
+//
+// 判法：把 Caddy 清空再让节点重连。**重连若会重推，Caddy 会被填回来** ——
+// 而正确的行为是它保持空的（真实环境里 Caddy 是独立的 systemd 服务，
+// Agent 重启时它还带着配置在跑，没什么要补的）。
+func TestReconnectDoesNotRepushOrResync(t *testing.T) {
+	r := newRig(t)
+	r.configureDNSProvider()
+
+	stateDir := t.TempDir()
+	token, _ := r.issueToken("node-hk-01")
+	stop := r.startAgent("node-hk-01", token, stateDir)
+	r.waitOnline("node-hk-01")
+	r.mustDo("POST", "/routes", map[string]any{
+		"domain": "keep.example.com", "upstream": r.upstream, "block_mode": "404",
+	})
+	r.deployNow("route:keep.example.com")
+
+	// 清空 Caddy，并记下此刻的服务商请求数。
+	if code, body := r.caddy.PostApp("http", []byte(`{"servers":{}}`)); code >= 300 {
+		t.Fatalf("清空 Caddy 失败：%d %s", code, body)
+	}
+	before := r.dnsHits()
+
+	// 断开再回来 —— 凭证书重连，不是 fresh。
+	stop()
+	_ = r.startAgent("node-hk-01", "", stateDir)
+	r.waitOnline("node-hk-01")
+
+	// 给它足够时间去做那些不该做的事。
+	time.Sleep(2 * time.Second)
+
+	if code, _ := r.curlVia("keep.example.com"); code == 200 {
+		t.Error("重连触发了一次重推 —— 一台在抖的机器会被反复推配置，" +
+			"而它的 Caddy 本来就还带着配置在跑")
+	}
+	if got := r.dnsHits(); got != before {
+		t.Errorf("重连推了 %d 次解析 —— 它本来就在解析里，"+
+			"每次抖动打一次服务商 API；掉线恢复那一路 health 已经管了", got-before)
+	}
+}

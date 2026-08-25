@@ -189,9 +189,20 @@ func main() {
 	// 里层 TLS 握手报「证书不适用于该主机名」，而人会去查证书，
 	// 那儿没有问题。
 	advertiseHost := config.AdvertiseHost(cfg.Advertise)
+	// 隧道要先于调度器建起来（调度器拿它当 Pusher），而接入回调要用调度器
+	// —— 所以是延迟绑定。e2e 的装配里是同一份写法。
+	var schedulerRef *deploy.Scheduler
 	tun, err := tunnel.New(tunnel.Options{
 		Store: st, CA: ca, Log: log,
 		Advertise: []string{advertiseHost, "127.0.0.1", "localhost"},
+		// **接入不是一个完整的操作**，缺的两步在 NodeUp 里：把基线给它、
+		// 把它加进解析。不补的话，新机器在界面上显示「与基线一致」，
+		// 而它的 Caddy 是空的、解析里也没有它。
+		OnNodeUp: func(nodeID string, fresh bool) {
+			if schedulerRef != nil {
+				schedulerRef.NodeUp(context.Background(), nodeID, fresh)
+			}
+		},
 		OnHeartbeat: func(hb tunnel.Heartbeat) string {
 			status := monitor.Observe(hb)
 			hub.Broadcast(ws.TypeHeartbeat, ws.Heartbeat{
@@ -230,7 +241,9 @@ func main() {
 			UpstreamClientCert: cfg.UpstreamCert,
 			UpstreamClientKey:  cfg.UpstreamKey,
 		},
+		DNS: dnsOrch,
 	}
+	schedulerRef = scheduler
 
 	// **主控不签发证书**（ADR-0015）。它只存、只下发、只在快到期时说出来。
 	certMgr := certs.New(&certs.Manager{

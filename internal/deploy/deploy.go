@@ -7,6 +7,7 @@ package deploy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/xltxb/edge_caddy/internal/dnsops"
 	"github.com/xltxb/edge_caddy/internal/model"
 	"github.com/xltxb/edge_caddy/internal/pki"
 	"github.com/xltxb/edge_caddy/internal/render"
@@ -48,6 +50,16 @@ type Scheduler struct {
 	// 不需要另造 CRL/OCSP（内部 PKI 的吊销列表基本没人真部署，写了也是摆设）。
 	UpstreamCA *pki.CA
 
+	// DNS 让新节点接入后能真的进解析。窄接口与 health.DNSDetacher 是一对
+	// （dnsops.Orchestrator 两边都满足）—— 那边管「摘掉与恢复」，
+	// 这边管「第一次加进来」，说的是同一件事的三个时刻。
+	// 留空表示没配服务商，接入照常，只是解析不动。
+	DNS interface {
+		Attach(ctx context.Context, nodeID string) error
+		// Configured 让 NodeUp 先问后做 —— 见 dnsops.Orchestrator.Configured。
+		Configured(ctx context.Context) bool
+	}
+
 	// RetryBackoff 是第一次重试前的等待，此后翻倍。留空即用默认的 1 秒。
 	// 做成字段只为让重试策略能被单独测——真跑 1+2+4+8+16 秒的测试不会有人跑。
 	RetryBackoff time.Duration
@@ -76,6 +88,14 @@ func (s *Scheduler) Retries() *Retrier {
 // ErrNoOnlineNodes —— 没有在线节点时下发是个无操作。
 // 静默成功会让人以为配置生效了，而实际上一台机器都没收到。
 var ErrNoOnlineNodes = fmt.Errorf("没有在线节点")
+
+// ErrNoBaseline —— 还没有过一次成功的下发，没有配置可推。
+//
+// 做成哨兵是因为 NodeUp 要**把它与「推失败」分开**：没有基线时这台机器
+// 与集群里其他机器一样就绪（大家都还没有配置），该照常进解析；
+// 而推失败意味着只有它没有配置，那时进解析就是把流量导向一台服务不了的机器。
+// 靠比对错误文本来分是错的 —— 那句话哪天改个措辞，两种情况会静默合成一种。
+var ErrNoBaseline = fmt.Errorf("还没有基线，先完成一次下发")
 
 // Result 是一次下发的结果概览。
 type Result struct {
@@ -692,7 +712,7 @@ func (s *Scheduler) RepushNode(ctx context.Context, nodeID string) (string, stri
 		return "", "", nil, fmt.Errorf("读取基线: %w", err)
 	}
 	if baseline == "" {
-		return "", "", nil, fmt.Errorf("还没有基线，先完成一次下发")
+		return "", "", nil, ErrNoBaseline
 	}
 
 	routes, rules, pol, _, err := s.effective(ctx, nil) // 不带草稿：基线就是不含草稿的那一份（因此不会有孤儿）
@@ -724,6 +744,94 @@ func (s *Scheduler) RepushNode(ctx context.Context, nodeID string) (string, stri
 	}
 	s.event(ctx, nodeID, "ok", "已重推基线 "+baseline+"，耗时 "+out.Detail)
 	return baseline, out.Detail, nil, nil
+}
+
+// NodeUp 补齐「接入」这个动作缺的两步：**把基线给它，把它加进解析。**
+//
+// 接入此前只回一个 cfg_version，不推配置也不动解析。而 Agent 拿到那个
+// 版本号就记成自己的当前版本、心跳照它上报、主控又把它写回库 ——
+// 新机器在界面上显示「与基线一致、无漂移」，而它的 Caddy 是空的、
+// 解析里也没有它。**三方各自自洽，合起来是假的。**
+//
+// # 只对 fresh 做，而这个区分是承重的
+//
+// fresh 是凭 Token 的首次接入 —— 那台机器上的 Caddy 必然是空的。
+// 而重连不同：Caddy 是独立的 systemd 服务，Agent 重启时它还带着配置在跑。
+// 对每次重连都重推，一台在抖的机器会被反复推配置；对每次重连都同步解析，
+// 它会反复打服务商的 API。**恢复那一路已经有人管了**（health 的
+// recover → DNS.Attach），这里只管从来没有过的那一次。
+//
+// # 顺序：先配置，后解析
+//
+// 反过来的话，解析先指过去、而那台机器还什么都没有 —— 那是主动把
+// 真实流量导向一台服务不了的机器。推失败就不碰解析：宁可它暂时不分流量，
+// 也不要它分到流量却给不出响应。
+func (s *Scheduler) NodeUp(ctx context.Context, nodeID string, fresh bool) {
+	if !fresh {
+		return
+	}
+	log := s.logger()
+
+	pushed := false
+	switch _, _, issues, err := s.RepushNode(ctx, nodeID); {
+	case errors.Is(err, ErrNoBaseline):
+		// **没有基线不是失败，是没东西可推。**
+		// 这台机器与集群里其他机器一样就绪（大家都还没有配置），
+		// 该照常进解析 —— 下面那次下发会把配置一起给它们。
+	case err != nil:
+		log.Error("新节点接入后推基线失败", "node", nodeID, "err", err)
+		s.event(ctx, nodeID, "warn", fmt.Sprintf(
+			"节点已接入，但推送基线配置失败：%v —— 这台机器上还没有配置，"+
+				"解析也不会指向它。修好之后用「重推配置」", err))
+		return
+	case len(issues) > 0:
+		log.Error("新节点接入后基线渲染不过", "node", nodeID, "issues", issues)
+		s.event(ctx, nodeID, "warn",
+			"节点已接入，但当前基线渲染不过，配置没能推下去；解析也不会指向它")
+		return
+	default:
+		pushed = true
+	}
+
+	// **先问后做。** Sync 无论成败都会落一条同步状态，而没配服务商时
+	// 那条记的是一件没发生过的事：界面上「从没同步过」是 at=null，
+	// 一次接入会把它变成一个像模像样的时间戳 —— 空白会让人去查，
+	// 一个看起来正常的时间不会。人点开关时该记（他问了，这是回答），
+	// 一台机器接入是背景动作，不该记。
+	attached := false
+	if s.DNS != nil && s.DNS.Configured(ctx) {
+		switch err := s.DNS.Attach(ctx, nodeID); {
+		case err == nil:
+			attached = true
+		case errors.Is(err, dnsops.ErrNoProvider):
+			// 问过之后配置又没了 —— 极窄的竞态，不算失败。
+		default:
+			// **说出来。** 不说的话，这台机器配置齐了、在线、界面上一切正常，
+			// 而它一份流量也拿不到 —— 那看起来跟「刚装好还没起量」一样。
+			log.Error("新节点接入后同步解析失败", "node", nodeID, "err", err)
+			s.event(ctx, nodeID, "warn", fmt.Sprintf(
+				"配置已下发到新节点，但同步解析失败：%v —— "+
+					"它现在拿不到流量，去解析页看看", err))
+			return
+		}
+	}
+
+	// **措辞跟着实际发生的事走**，与 health 那边 recover() 同一条规矩：
+	// 四种组合读起来不同，人接下来要做的也不同。
+	//
+	// 而这几句都**不能含「节点已接入」这个子串** —— 那是 store.EventNodeJoined
+	// 的字面值，事件流里靠数它来分「接入」与「重连」。撞上的话，
+	// 一次接入会被数成两次，而那正是那条计数要防的读法。
+	switch {
+	case pushed && attached:
+		s.event(ctx, nodeID, "ok", "新节点已就绪：基线配置已下发，并已加入解析")
+	case pushed:
+		s.event(ctx, nodeID, "ok", "新节点已就绪：基线配置已下发（尚未配置 DNS 服务商，解析未变动）")
+	case attached:
+		s.event(ctx, nodeID, "ok", "新节点已加入解析；还没有基线，下一次下发会把配置给它")
+	default:
+		s.event(ctx, nodeID, "ok", "新节点就位；还没有基线，也尚未配置 DNS 服务商")
+	}
 }
 
 // upstreamCertFor 为一个节点签一张 24 小时的回源客户端证书。
