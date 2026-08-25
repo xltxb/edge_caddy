@@ -65,21 +65,22 @@ func main() {
 	defer stopVerify()
 	log.Info("校验端点监听", "addr", cfg.VerifyListen)
 
-	// 断开就重连，指数退避封顶 30 秒。隧道断了不代表节点该停止转发流量——
+	// 断开就重连，指数退避封顶 30 秒；连接稳定跑满一分钟后断开，
+	// 退避从 1 秒重来（复位的理由见 agent.ReconnectBackoff）。
+	// 隧道断了不代表节点该停止转发流量——
 	// Caddy 仍在按最后一份配置服务，Agent 只是暂时失去控制面。
-	backoff := time.Second
+	var backoff agent.ReconnectBackoff
 	for ctx.Err() == nil {
+		started := time.Now()
 		err := a.Run(ctx)
 		if ctx.Err() != nil {
 			break
 		}
-		log.Warn("隧道断开，准备重连", "err", err, "after", backoff)
+		wait := backoff.Next(time.Since(started))
+		log.Warn("隧道断开，准备重连", "err", err, "after", wait)
 		select {
 		case <-ctx.Done():
-		case <-time.After(backoff):
-		}
-		if backoff < 30*time.Second {
-			backoff *= 2
+		case <-time.After(wait):
 		}
 	}
 	log.Info("agent 退出")
