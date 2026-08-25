@@ -268,3 +268,60 @@ func TestDrainedNodeIsNotACandidateButKeepsItsConfiguredWeight(t *testing.T) {
 		t.Error("cu 上没配过权重、且节点已下线，不该出现")
 	}
 }
+
+// TestWeightlessProviderIgnoresWeightGate 钉的是**一个死锁**。
+//
+// 灰度上撞到的：Cloudflare 纯 DNS 模式下新加的节点永远进不了解析。
+//
+//	新机器接入 → 没有权重行 → weight=0 → 被 `w > 0` 挡在轮换外
+//	           → 要进解析得把权重设成 >0
+//	           → 而这家服务商表达不了权重，界面上那一格根本没有输入框
+//	           → 拉不上去，也就永远进不了解析
+//
+// **两边各自都对，合起来把人锁死** —— 与当初「后端拒绝五条线不一致的权重、
+// 而界面已经不画权重了」是同一个形状，那次也是灰度上才现身的。
+//
+// 判法：`weight > 0` 这道闸的意义来自「权重能被表达」。表达不了的时候
+// 它不是一道更严的闸，是一道**永远关着**的闸 —— 那种模式下「在不在轮换」
+// 本来就只有两态，而那两态已经有 dns_enabled 在管了。
+func TestWeightlessProviderIgnoresWeightGate(t *testing.T) {
+	nodes := []dnssched.NodeState{
+		{ID: "hk-01", IP: "1.1.1.1", DNSEnabled: true, Status: "ok"},
+		{ID: "hk-02", IP: "2.2.2.2", DNSEnabled: true, Status: "ok"}, // 新接入，没有权重行
+	}
+	w := dnssched.Weights{"ct": {"hk-01": 100}}
+
+	// 表达得了权重的服务商：weight 0 仍然是一个有意义的「不参与」。
+	if got := ipsIn(dnssched.Build("cdn.example.com", w, nodes, dnssched.WeightsHonored(true)), "ct"); len(got) != 1 {
+		t.Errorf("能表达权重时，权重 0 该被挡在轮换外，实际写进去 %v", got)
+	}
+
+	// 表达不了的：两台都该进解析。
+	got := ipsIn(dnssched.Build("cdn.example.com", w, nodes, dnssched.WeightsHonored(false)), "ct")
+	if len(got) != 2 {
+		t.Fatalf("纯 DNS 模式下只有 %v 进了解析 —— 另一台没有权重，"+
+			"而这个模式下人根本没有地方给它填权重：那道闸永远关着", got)
+	}
+}
+
+// 停用与离线在任何模式下都要挡住 —— 少了这条，上面那条的绿可以由
+// 「表达不了权重时谁都放进去」达成，那会把一台人手动摘掉的机器放回解析。
+func TestWeightlessProviderStillHonorsEnabledAndStatus(t *testing.T) {
+	nodes := []dnssched.NodeState{
+		{ID: "hk-01", IP: "1.1.1.1", DNSEnabled: true, Status: "ok"},
+		{ID: "hk-02", IP: "2.2.2.2", DNSEnabled: false, Status: "ok"},   // 人关掉了
+		{ID: "hk-03", IP: "3.3.3.3", DNSEnabled: true, Status: "down"},  // 离线
+	}
+	got := ipsIn(dnssched.Build("cdn.example.com", nil, nodes, dnssched.WeightsHonored(false)), "ct")
+	if len(got) != 1 || got[0] != "1.1.1.1" {
+		t.Errorf("纯 DNS 模式下停用/离线仍要挡住，实际进解析的是 %v", got)
+	}
+}
+
+func ipsIn(p dnssched.Plan, line string) []string {
+	var out []string
+	for _, e := range p.Rotation(line) {
+		out = append(out, e.IP)
+	}
+	return out
+}

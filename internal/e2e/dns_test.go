@@ -1250,3 +1250,57 @@ func TestNodeListSaysWhetherItCarriesTraffic(t *testing.T) {
 			"混成一个的话新接入的警告会挂在一台人已经决定过的机器上")
 	}
 }
+
+// TestPlainDNSTakesNodesWithoutWeights 走的是**真正会往服务商写记录的那条路**。
+//
+// 灰度上锁死过：Cloudflare 纯 DNS 下新加的节点永远进不了解析 ——
+// 它没有权重行（weight=0）被 `w > 0` 挡住，而这个模式表达不了权重、
+// 界面上那一格根本没有输入框（给一个填了会被拒的框比不给更糟），
+// 于是拉不上去。**两边各自都对，合起来把人锁死** —— 与当初
+// 「后端拒绝五条线不一致的权重、而界面已经不画权重了」是同一个形状。
+//
+// **判据是写进服务商的 IP，不是「推了几次」。** 后者在
+// syncOnce 把 WeightsHonored 硬写成 true 时**照样是绿的**（撞过）：
+// 同步确实发生了，推的内容少了一台 —— 一次「推了但内容不对」的同步
+// 在计数器那儿看起来完全正常。
+func TestPlainDNSTakesNodesWithoutWeights(t *testing.T) {
+	r := newRig(t)
+	for _, id := range []string{"node-hk-01", "node-hk-02"} {
+		token, _ := r.issueToken(id)
+		r.startAgent(id, token, t.TempDir())
+		r.waitOnline(id)
+		// 每台一个不同的公网 IP，否则写进去的记录分不出是谁。
+		r.mustDo("PUT", "/nodes/"+id, map[string]any{
+			"city": "香港", "vendor": "v", "line": "l",
+			"public_ip": map[string]string{"node-hk-01": "1.1.1.1", "node-hk-02": "2.2.2.2"}[id],
+		})
+	}
+	// 只给第一台配权重 —— 第二台就是「刚接入、没人给过它权重」那一档。
+	r.mustDo("PUT", "/dns/weights", map[string]any{
+		"lines": []map[string]any{{
+			"code": "ct", "entries": []map[string]any{{"node": "node-hk-01", "weight": 100}},
+		}},
+	})
+
+	// 换成纯 DNS 模式，保存即推一次。
+	r.mustDo("PUT", "/settings", map[string]any{
+		"dns_provider": map[string]any{
+			"kind": "cloudflare_dns", "domain": "example.com", "sub": "cdn",
+			"zone_id": "z", "credential_mode": "api_token", "credential": "tok",
+		},
+	})
+
+	got := r.dnsWrittenIPs()
+	for _, ip := range []string{"1.1.1.1", "2.2.2.2"} {
+		found := false
+		for _, w := range got {
+			if w == ip {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s 没被写进解析（实际写了 %v）—— 没有权重的那台被挡在"+
+				"外面了，而这个模式下人根本没有地方给它填权重：那道闸永远关着", ip, got)
+		}
+	}
+}

@@ -184,7 +184,18 @@ func (o *Orchestrator) CurrentPlan(ctx context.Context, weights dnssched.Weights
 	if ts := cfg.EffectiveTargets(); len(ts) > 0 {
 		first = ts[0].Hostname()
 	}
-	return dnssched.Build(first, weights, states), nil
+	// **判据要跟着这家服务商表达得了什么走。** 表达不了权重时
+	// `weight > 0` 是一道永远关着的闸（界面上那一格没有输入框），
+	// 新机器会永远进不了解析 —— 见 dnssched.WeightsHonored。
+	//
+	// 服务商装配不出来时按「权重有意义」算：那时这一页只是本地意图，
+	// 还没有任何东西被推出去，而放宽判据会让页面显示一组
+	// 「一旦配好服务商就会生效」的轮换 —— 那是一句关于未来的假话。
+	honored := true
+	if p, _, err := o.Provider(ctx); err == nil {
+		honored = p.Caps().Weights
+	}
+	return dnssched.Build(first, weights, states, dnssched.WeightsHonored(honored)), nil
 }
 
 // nodeStates 把库里的节点转成归一化需要的形状。**两处共用**：
@@ -318,7 +329,10 @@ func (o *Orchestrator) syncOnce(ctx context.Context, weights dnssched.Weights) (
 			}
 			continue
 		}
-		plan := dnssched.Build(t.Hostname(), weightsForPlan, nodes)
+		// 同上：每个目标各自的服务商说了算。多域名时它们是同一家，
+		// 但取自各自的实例 —— 「假定它们一样」是一条会在加第二家时断掉的推理。
+		plan := dnssched.Build(t.Hostname(), weightsForPlan, nodes,
+			dnssched.WeightsHonored(provider.Caps().Weights))
 		if serr := provider.Sync(ctx, plan); serr != nil {
 			st.Detail = serr.Error()
 			if firstErr == nil {

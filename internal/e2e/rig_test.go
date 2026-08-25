@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -55,6 +56,11 @@ type rig struct {
 	// dnsCalls 数假服务商收到了几个请求。**「推没推」只有在这一侧才看得出来**：
 	// 接口回 200 说明它没报错，不说明它真去推了。
 	dnsCalls *int32
+	// dnsWrites 是 cloudflare_dns 真的写进服务商的那些 IP。
+	// **「推了几次」与「写进去了什么」是两个问题** —— dnsHits 答不了后者，
+	// 而一次「推了但内容不对」的同步在它那儿看起来完全正常。
+	dnsWrites *[]string
+	dnsMu     *sync.Mutex
 }
 
 func newRig(t *testing.T, opts ...caddytest.Option) *rig {
@@ -153,8 +159,31 @@ func newRig(t *testing.T, opts ...caddytest.Option) *rig {
 	// 光有这个 server 还不够，得有测试**真的去配**它（configureDNSProvider）；
 	// 不配的话 Sync 仍然返回 ErrNoProvider，跟从前一样。
 	var dnsCalls int32
+	var dnsMu sync.Mutex
+	var dnsWrites []string // cloudflare_dns 写进去的 IP，按顺序
 	dnsAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&dnsCalls, 1)
+		// **两家服务商共用这一个 server。** 路径分得开（DNSPod 走
+		// /Record.*，Cloudflare 走 /zones/…），而共用让 dnsHits 这一个
+		// 计数器对两条链都成立 —— 各起一个的话，测试得先知道
+		// 「这次配的是哪家」才知道该数哪个。
+		if strings.HasPrefix(r.URL.Path, "/zones/") {
+			w.Header().Set("Content-Type", "application/json")
+			if r.Method == http.MethodPost {
+				var rec struct {
+					Content string `json:"content"`
+				}
+				body, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(body, &rec)
+				dnsMu.Lock()
+				dnsWrites = append(dnsWrites, rec.Content)
+				dnsMu.Unlock()
+				_, _ = w.Write([]byte(`{"success":true,"result":{"id":"rec"}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"success":true,"result":[]}`))
+			return
+		}
 		body := `{"status":{"code":"10","message":"No records"}}`
 		if r.URL.Path != "/Record.List" {
 			body = `{"status":{"code":"1","message":"Action completed successful"}}`
@@ -179,7 +208,7 @@ func newRig(t *testing.T, opts ...caddytest.Option) *rig {
 	r := &rig{
 		t: t, store: st, http: srv, tunnelAddr: lis.Addr().String(),
 		caPin: caPin, caddy: cad, upstream: strings.TrimPrefix(up.URL, "http://"),
-		dnsCalls: &dnsCalls,
+		dnsCalls: &dnsCalls, dnsWrites: &dnsWrites, dnsMu: &dnsMu,
 	}
 	r.login()
 	return r
@@ -536,6 +565,13 @@ func importableCert(t *testing.T, domain string) (certPEM, keyPEM []byte) {
 
 // dnsHits 是假服务商到目前为止收到的请求数。
 func (r *rig) dnsHits() int { return int(atomic.LoadInt32(r.dnsCalls)) }
+
+// dnsWrittenIPs 是 cloudflare_dns 真的写进服务商的那些 IP。
+func (r *rig) dnsWrittenIPs() []string {
+	r.dnsMu.Lock()
+	defer r.dnsMu.Unlock()
+	return append([]string(nil), *r.dnsWrites...)
+}
 
 // startVerifyServer 在节点的回环 socket 上起校验端点。
 //

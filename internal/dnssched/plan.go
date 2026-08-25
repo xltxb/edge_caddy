@@ -111,7 +111,40 @@ type Weights map[string]map[string]int
 //
 // warn 的节点**仍然参与解析**：它是「连着但不健康」，把它摘掉会把负载全压到
 // 其余节点上，很可能连锁。要摘由人决定。
-func Build(domain string, weights Weights, nodes []NodeState) Plan {
+// Option 调整 Build 的判据。
+type Option func(*buildOpts)
+
+type buildOpts struct{ weightsHonored bool }
+
+// WeightsHonored 说这家服务商**表达得了权重**。
+//
+// 表达不了时（Cloudflare 纯 DNS：多条 A 记录等概率轮询），
+// `weight > 0` 那道闸**不是一道更严的闸，是一道永远关着的闸** ——
+// 界面上那一格根本没有输入框（给一个填了会被拒的框比不给更糟），
+// 于是新加的机器权重恒为 0，永远进不了解析。
+//
+// 灰度上就是这么锁死的：
+//
+//	新机器接入 → 没有权重行 → weight=0 → 被挡在轮换外
+//	           → 要进解析得把权重设成 >0
+//	           → 而这个模式下填不了 → 拉不上去
+//
+// **两边各自都对，合起来把人锁死** —— 与当初「后端拒绝五条线不一致的权重、
+// 而界面已经不画权重了」是同一个形状，那次也是灰度上才现身的。
+//
+// 表达不了权重的模式里「在不在轮换」本来就只有两态，而那两态已经有
+// dns_enabled 在管了；停用与离线在任何模式下都照常挡住。
+func WeightsHonored(v bool) Option { return func(o *buildOpts) { o.weightsHonored = v } }
+
+// Build 算出这份解析安排。
+//
+// **默认按「权重有意义」判**（DNSPod、Cloudflare 负载均衡都是这样），
+// 表达不了权重的服务商要显式传 WeightsHonored(false) —— 见那个选项的说明。
+func Build(domain string, weights Weights, nodes []NodeState, opts ...Option) Plan {
+	o := buildOpts{weightsHonored: true}
+	for _, fn := range opts {
+		fn(&o)
+	}
 	byID := make(map[string]NodeState, len(nodes))
 	for _, n := range nodes {
 		byID[n.ID] = n
@@ -155,7 +188,8 @@ func Build(domain string, weights Weights, nodes []NodeState) Plan {
 		for _, id := range ids {
 			n, known := byID[id]
 			w, wset := weights[line.Code][id]
-			in := known && n.DNSEnabled && n.Status != store.StatusDown && w > 0
+			in := known && n.DNSEnabled && n.Status != store.StatusDown &&
+				(w > 0 || !o.weightsHonored)
 			if in {
 				total += w
 			}

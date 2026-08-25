@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -733,5 +734,58 @@ func TestCloudflareDNSKeepsRecordsWhenNothingIsInRotation(t *testing.T) {
 	}
 	if n := len(api.seen()); n != 0 {
 		t.Errorf("发出了 %d 个请求 —— 这种情况一个都不该发", n)
+	}
+}
+
+// TestCloudflareDNSTakesNodesWithoutWeights 走的是**整条链**：
+// 这家服务商的 Caps.Weights=false → Build 不看权重 → 两台都被写进 CF。
+//
+// 灰度上锁死过：Cloudflare 纯 DNS 下新加的节点永远进不了解析 ——
+// 它没有权重行（weight=0）被 `w > 0` 挡住，而这个模式下界面上那一格
+// 根本没有输入框（给一个填了会被拒的框比不给更糟），于是拉不上去。
+// **两边各自都对，合起来把人锁死。**
+//
+// 这条从 Caps 一路验到真实发出去的 HTTP 请求：中间任何一环把
+// WeightsHonored 接错，它都会红 —— 而 dnssched 那两条单测不会，
+// 它们是直接传的那个布尔。
+func TestCloudflareDNSTakesNodesWithoutWeights(t *testing.T) {
+	api := &fakeAPI{respond: map[string]string{
+		"GET /zones/z/dns_records":  `{"success":true,"result":[]}`,
+		"POST /zones/z/dns_records": `{"success":true,"result":{"id":"rec"}}`,
+	}}
+	cf := dnsctl.NewCloudflareDNS("z", "cdn.example.com")
+	cf.Token = "tok"
+	cf.Base = api.server(t)
+
+	nodes := []dnssched.NodeState{node("hk-01", "1.1.1.1"), node("hk-02", "2.2.2.2")}
+	// 只有 hk-01 配过权重 —— hk-02 是刚接入的那台。
+	w := dnssched.Weights{}
+	for _, l := range []string{"ct", "cu", "cm", "tw", "ov"} {
+		w[l] = map[string]int{"hk-01": 100}
+	}
+	// **判据取自这家服务商自己**，不是硬写 false：接错了这里就红。
+	plan := dnssched.Build("cdn.example.com", w, nodes,
+		dnssched.WeightsHonored(cf.Caps().Weights))
+
+	if err := cf.Sync(context.Background(), plan); err != nil {
+		t.Fatalf("同步失败: %v", err)
+	}
+
+	var wrote []string
+	for _, c := range api.seen() {
+		if c.Method == "POST" && strings.Contains(c.Path, "/dns_records") {
+			content, _ := c.Body["content"].(string)
+			wrote = append(wrote, content)
+		}
+	}
+	if len(wrote) != 2 {
+		t.Fatalf("只写了 %d 条 A 记录（%v），想要 2 —— 没有权重的那台被挡在"+
+			"外面了，而这个模式下人根本没有地方给它填权重：那道闸永远关着",
+			len(wrote), wrote)
+	}
+	for _, ip := range []string{"1.1.1.1", "2.2.2.2"} {
+		if !slices.Contains(wrote, ip) {
+			t.Errorf("%s 没被写进解析，实际写了 %v", ip, wrote)
+		}
 	}
 }
