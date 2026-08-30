@@ -49,7 +49,15 @@ type Options struct {
 
 	// LogDir 是节点上 Caddy 日志文件的目录，生产是 /var/log/caddy
 	// （部署脚本负责建目录、给 caddy 用户写权限）。
-	// 做成参数只为让真 Caddy 的测试能写进临时目录——理由同 HTTPListen。
+	//
+	// 做成参数，是为了 TestCaddyWritesLogFilesToLogDir 能把日志导到
+	// caddytest fixture 的临时目录里。那条测试跑的是**真** Caddy，请求过后
+	// 回读 access.log —— 写死 /var/log/caddy 的话它得往系统目录写，
+	// 而并行跑的几个用例还会撞进同一个文件。
+	//
+	// 渲染层的 golden 断言够不着这一档（它只证明得了「渲染出了 writer」，
+	// 证明不了 Caddy 认这个 writer、更证明不了行真的落到了盘上），
+	// 所以这个参数的存在理由挂在那条测试上，不在 golden 上。
 	LogDir string
 }
 
