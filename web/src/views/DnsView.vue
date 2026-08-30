@@ -448,6 +448,7 @@ async function save(): Promise<void> {
  * 否则整条被忽略。今天在 AclView 上撞过一次，整页样式塌了而九步检查全绿。
  */
 .fresh {
+  grid-column: 3;
   padding: 1px 6px;
   border-radius: var(--radius-sm);
   background: var(--warning-bg, var(--surface-sunken));
@@ -566,9 +567,20 @@ async function save(): Promise<void> {
   flex-direction: column;
   gap: var(--space-2);
 }
+/*
+ * 六列，而且**每一格都写死在哪一列**。
+ *
+ * 「新接入」是条件渲染的：五列模板下它一出现，后面每一格都被往右顶一格 ——
+ * 进度条挤进占比那列、状态被顶到第二行第一列，整行散开。而
+ * `weight_set === false` 是**全新装机的常态**（节点接入后五条线路上全是它），
+ * 也就是这一页最容易被看到的样子：一个只在「一切正常」时才对的布局。
+ *
+ * 每个 li 是各自独立的 grid，**行与行之间不共享列宽** —— 所以那一列必须
+ * 定宽。写 auto 的话，有标记的行和没标记的行进度条起点会错开半格。
+ */
 .entry {
   display: grid;
-  grid-template-columns: 130px 64px 1fr 52px 44px;
+  grid-template-columns: 130px 64px 56px 1fr 52px 44px;
   align-items: center;
   gap: var(--space-3);
   font-family: var(--font-mono);
@@ -579,9 +591,11 @@ async function save(): Promise<void> {
   color: var(--text-faint);
 }
 .node {
+  grid-column: 1;
   color: var(--text-strong);
 }
 .w {
+  grid-column: 2;
   padding: 3px 8px;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
@@ -599,7 +613,14 @@ async function save(): Promise<void> {
   opacity: 0.5;
   cursor: not-allowed;
 }
+/* 表达不了权重时顶替输入框的那格 —— 右对齐，对齐它替代的那个东西 */
+.w-off {
+  grid-column: 2;
+  text-align: right;
+  color: var(--text-faint);
+}
 .bar {
+  grid-column: 4;
   height: 6px;
   border-radius: var(--radius-full);
   background: var(--surface-sunken);
@@ -612,10 +633,12 @@ async function save(): Promise<void> {
   transition: width var(--dur-fast) var(--ease-out);
 }
 .share {
+  grid-column: 5;
   text-align: right;
   color: var(--text-body);
 }
 .st {
+  grid-column: 6;
   text-align: right;
   color: var(--success-text);
 }
