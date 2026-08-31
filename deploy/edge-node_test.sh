@@ -27,11 +27,23 @@ hasnt(){ case "$1" in *"$2"*) bad "$3" "不该出现 [$2]" ;; *) ok "$3" ;; esac
 # 不能用 hasnt：单元文件里有一句解释「为什么不用 Requires=caddy.service」的注释，
 # 而整段搜字符串分不出「指令」和「关于该指令的注释」——那会把说明看成违规。
 # 只匹配行首（允许前导空白）的指令。
-no_directive(){ 
+no_directive(){
   if printf '%s\n' "$1" | grep -qE "^[[:space:]]*$2"; then
     bad "$3" "单元里出现了指令 [$2]"
   else
     ok "$3"
+  fi
+}
+# has_line 断言**整行**就是这个，后面不许有别的。
+#
+# 用 has 的话，`CapabilityBoundingSet=` 会被
+# `CapabilityBoundingSet=CAP_NET_BIND_SERVICE` 满足——而那两者的含义
+# 正好相反：一个是「一个都不给」，一个是「给这一个」。
+has_line(){
+  if printf '%s\n' "$1" | grep -qE "^$2$"; then
+    ok "$3"
+  else
+    bad "$3" "找不到整行 [$2]"
   fi
 }
 
@@ -93,6 +105,74 @@ hasnt "$unit" "EC_ENROLL_TOKEN" "Token 不出现在单元里（ExecStart 的参�
 no_directive "$unit" "Requires=" "不 Requires caddy —— Caddy 挂了 Agent 要活着把这件事报上去"
 has "$unit" "ProtectSystem=strict" "沙箱：节点被打穿后唯一还在的那道墙"
 has "$unit" "ReadWritePaths=/var/lib/edge-agent" "状态目录可写"
+
+printf '\nAgent 不以 root 跑\n'
+#
+# **root 身份下 ProtectSystem=strict 挡不住多少。**
+#
+# 盘过 Agent 的全部特权操作，一项都不需要 root：写文件只落在 StateDir
+#（agent.go 的 certPath 与 StateDir、geoip.go 的 mmdb），校验端点监听
+# 127.0.0.1:2020 是非特权端口，出站连主控与访问 Caddy Admin 都不要特权，
+# 排空走 Caddy 的 metrics（drain.go 的 countConns）而不是 /proc。
+#
+# 回源证书路径是主控下发的（PushConfig.upstream_cert_path），看起来像个
+# 任意文件写入口——但它的默认值就在 StateDir 里（config.go 的
+# EC_UPSTREAM_CERT），而 ReadWritePaths 早已把它锁死在那儿了。
+no_directive "$unit" "User=root" "不以 root 跑"
+has "$unit" "User=edge-agent" "跑在专用系统用户下"
+has "$unit" "Group=edge-agent" "同名的组"
+# **空的 CapabilityBoundingSet 是这一组里最要紧的一条。**
+#
+# 非 root 进程本来就没有 capability，所以它现在是冗余的——它防的是**以后**：
+# 哪天有人为了图省事把 User 改回 root，这一行让那件事不再等于「拿回全部特权」。
+has_line "$unit" "CapabilityBoundingSet=" "capability 集清空"
+has_line "$unit" "AmbientCapabilities=" "不主动获取任何 capability"
+
+printf '\n沙箱里那些非 root 才谈得上的项\n'
+for d in PrivateDevices=yes ProtectClock=yes ProtectHostname=yes \
+         ProtectKernelLogs=yes RestrictSUIDSGID=yes RestrictNamespaces=yes \
+         RestrictRealtime=yes SystemCallArchitectures=native UMask=0077; do
+  has "$unit" "$d" "沙箱：$d"
+done
+has "$unit" "SystemCallFilter=@system-service" "系统调用走白名单"
+# **MemoryDenyWriteExecute 是故意不加的。**
+#
+# 对 Go 程序通常没问题，但它属于「出问题时表现为进程在某次 GC 或某个
+# cgo 调用上随机崩溃」的那一类——而 Agent 挂掉那一刻，受保护域名整体 502
+#（ADR-0003 的 fail-closed）。这点收益配不上那个风险。
+no_directive "$unit" "MemoryDenyWriteExecute" "不加 MemoryDenyWriteExecute（Go 上风险大于收益）"
+
+printf '\n建专用系统用户\n'
+has "$(agent_user_plan debian)" "useradd" "Debian 系用 useradd"
+has "$(agent_user_plan rhel)" "useradd" "RHEL 系用 useradd"
+has "$(agent_user_plan alpine)" "adduser" "Alpine 的 busybox 没有 useradd"
+has "$(agent_user_plan debian)" "nologin" "不给登录 shell"
+# 用同一条命令跑第二遍不能失败：重装、升级都会再跑一次 do_install，
+# 而 useradd 撞上已存在的用户是非零退出——那会让整个安装在这一步断掉。
+has "$(agent_user_plan debian)" "id -u edge-agent" "先判存在，重跑不炸"
+# 认不出的家族要失败，跟 caddy_install_plan 一致。猜一条建用户命令的后果是
+# 「用户没建成、Agent 起不来」，而 systemd 报的是 217/USER —— 那个错误码
+# 不会有人联想到发行版探测。
+agent_user_plan unknown >/dev/null 2>&1
+[ $? -ne 0 ] && ok "未知家族不给建用户计划，跟安装 Caddy 一致" \
+             || bad "未知家族不该给出建用户计划"
+
+printf '\n降权之后那两个文件还得读得到\n'
+#
+# **这一组守的是降权最容易砸的地方。**
+#
+# /etc/edge-agent.env 现在是 0600 root:root。改完 User= 之后 Agent 读不到它，
+# 而症状是进程起不来、报「缺少 EC_ENROLL_TOKEN」——看起来像 Token 没写进去，
+# 人会去查接入流程，那儿没有问题。
+script_text="$(cat "$HERE/edge-node.sh")"
+has "$script_text" 'chown root:"$AGENT_USER" "$AGENT_ENV"' "ENV 文件归组给 edge-agent"
+has "$script_text" 'chmod 0640 "$AGENT_ENV"' "ENV 文件 0640（组可读，其他人不可读）"
+no_directive "$script_text" 'chmod 0600 "\$AGENT_ENV"' "不再是 0600（那样降权后读不到）"
+# **存量节点的状态目录是 root:root 0700，里面躺着隧道客户端证书私钥。**
+# StateDirectory= 对已存在的目录会不会重设属主，我不打算靠记忆断言——
+# 显式 chown 一次，代价是零。
+has "$script_text" 'chown -R "$AGENT_USER":"$AGENT_USER" "$AGENT_HOME"' \
+  "状态目录改属主（存量节点是 root:root）"
 
 printf '\nEnvironmentFile 的内容\n'
 env_out="$(agent_env ec.internal:9000 node-hk-01 ec_tok 9e8f22a3)"
@@ -230,6 +310,29 @@ has "$(cat "$HERE/edge-node.sh")" 'install -m 0755 "$backup" "$AGENT_BIN"' \
 # 那种问题。只判 is-active 的话，一次失败的更新会被报成成功。
 has "$(cat "$HERE/edge-node.sh")" '接入完成' "update 等的是隧道真的连上了"
 rm -f "$tmpbin"
+
+# ── harden ────────────────────────────────────────────────────────────
+#
+# **这一组的存在理由**：install 要 --token，而 Token 是一次性的、存量节点
+# 早就用掉了；update 只换二进制、不碰单元文件。没有 harden 的话，降权这件事
+# 对所有已经在跑的节点是死的 —— 而没有任何地方会说出来。
+
+printf '\nharden：把存量节点降权\n'
+has "$usage_out" "harden" "用法里有 harden"
+hasnt "$usage_out" "harden --token" "harden 不要 Token（Token 是一次性的，早用掉了）"
+has "$usage_out" "502" "用法说清了会重启 Agent、受保护域名会短暂 502"
+has "$script_text" 'harden)    shift; do_harden ;;' "harden 接进了子命令分发"
+
+# **降权起不来那一刻，受保护域名整体 502。** 这时候没有时间去手写一份单元
+# 回去，所以备份和自动回滚都不是可选项。
+has "$script_text" 'cp -p "$AGENT_UNIT" "$backup"' "harden 重写单元前先备份"
+has "$script_text" 'install -m 0644 "$backup" "$AGENT_UNIT"' "连不上主控时把单元换回去"
+
+# **等的判据必须与 update 共用一份。**
+# 分成两份的话，迟早有一份会停在「进程还在」上——而进程活着、隧道连不上
+# 正是降权最可能出的那种故障（读不到 EnvironmentFile）。
+eq 1 "$(grep -c '^wait_tunnel_up()' "$HERE/edge-node.sh")" "等隧道的判据只有一份"
+eq 2 "$(grep -c 'if wait_tunnel_up; then' "$HERE/edge-node.sh")" "update 与 harden 都用它"
 
 printf '\n──────────\n通过 %d，失败 %d\n\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

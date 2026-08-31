@@ -31,6 +31,8 @@ set -euo pipefail
 
 readonly AGENT_BIN=/usr/local/bin/edge-agent
 readonly AGENT_HOME=/var/lib/edge-agent
+# Agent 跑在这个专用系统用户下，**不是 root**。理由见 agent_unit。
+readonly AGENT_USER=edge-agent
 readonly AGENT_ENV=/etc/edge-agent.env
 readonly AGENT_UNIT=/etc/systemd/system/edge-agent.service
 readonly CADDY_DROPIN_DIR=/etc/systemd/system/caddy.service.d
@@ -135,9 +137,41 @@ port_is_loopback_only() {
   return "$bad"
 }
 
+# agent_user_plan 给出建专用系统用户的命令。
+#
+# 形状跟 caddy_install_plan 一样（吐命令、调用方 eval），理由也一样：
+# **认不出的家族直接失败，不去猜。** 猜错的后果是用户没建成、Agent 起不来，
+# 而 systemd 报的是 `217/USER` —— 那个错误码不会有人联想到发行版探测。
+#
+# **每条都先判存在**：重装和升级都会再跑一次 do_install，而 useradd 撞上
+# 已存在的用户是非零退出，那会让整个安装在这一步断掉。
+agent_user_plan() {
+  local family="$1"
+  case "$family" in
+    debian|rhel|arch)
+      # --system 拿的是系统 UID 段，不进 /etc/login.defs 的普通用户范围。
+      # --no-create-home 是因为它的状态目录是 StateDirectory= 管的
+      # （/var/lib/edge-agent），家目录只会多一个没人用的空目录。
+      echo "id -u ${AGENT_USER} >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin ${AGENT_USER}"
+      ;;
+    alpine)
+      # busybox 的 adduser 没有长选项：-S 系统用户、-D 不设密码、-H 不建家目录。
+      echo "id -u ${AGENT_USER} >/dev/null 2>&1 || adduser -S -D -H -s /sbin/nologin ${AGENT_USER}"
+      ;;
+    *)
+      echo "认不出发行版家族 [$family]，不知道怎么建系统用户" >&2
+      return 1
+      ;;
+  esac
+}
+
 # agent_unit 生成 edge-agent 的 systemd 单元。
+#
+# **heredoc 不加引号**，因为下面要展开 ${AGENT_USER}——用户名在脚本里
+# 只有一份真相（那个 readonly），单元文件、chown、verify 都取自它。
+# 单元内容里没有 `$` 也没有反引号，所以展开是安全的。
 agent_unit() {
-  cat <<'UNIT'
+  cat <<UNIT
 [Unit]
 Description=Edge Controller Agent
 After=network-online.target caddy.service
@@ -158,7 +192,18 @@ ExecStart=/usr/local/bin/edge-agent
 Restart=always
 RestartSec=2
 
-User=root
+# **不是 root。**
+#
+# 盘过 Agent 的全部特权操作，一项都不需要：写文件只落在 StateDir
+#（agent.go 的 certPath 与 StateDir、geoip.go 的 mmdb），校验端点监听
+# 127.0.0.1:2020 是非特权端口，出站连主控与访问 Caddy Admin 都不要特权，
+# 排空走 Caddy 的 metrics（drain.go 的 countConns）而不是 /proc。
+#
+# 回源证书路径虽然是主控下发的（PushConfig.upstream_cert_path），看起来
+# 像个任意文件写入口，但它的默认值就在 StateDir 里（config.go 的
+# EC_UPSTREAM_CERT），而下面的 ReadWritePaths 早已把它锁死在那儿了。
+User=${AGENT_USER}
+Group=${AGENT_USER}
 StateDirectory=edge-agent
 StateDirectoryMode=0700
 
@@ -173,6 +218,41 @@ ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 LockPersonality=yes
+
+# **空的 capability 集，两行都要。**
+#
+# 非 root 进程本来就没有 capability，所以这两行**现在**是冗余的。
+# 它们防的是以后：哪天有人为了图省事把 User= 改回 root，
+# 这两行让那件事不再等于「顺手拿回全部特权」。
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# 以下这些在 root 身份下大多形同虚设，降权之后才真正成立。
+PrivateDevices=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
+
+# **MemoryDenyWriteExecute 是故意没有的，而上面那些留着——凭的是
+# 「出问题时什么时候暴露」，不是「有没有风险」。**
+#
+# ProcSubset=pid 万一挡了 Go runtime 要读的东西，进程**起不来**：
+# harden 三十秒等不到隧道就把单元换回去，install 装完 verify 立刻报红。
+# 这条路上有网。
+#
+# MemoryDenyWriteExecute 不一样：它的故障是进程先正常跑起来，之后在某次
+# GC 或某个 cgo 调用上崩。那三十秒是绿的，网接不住 —— 而 Agent 挂掉那一刻
+# 受保护域名整体 502（ADR-0003 的 fail-closed）。
+#
+# 起不来的风险有回滚兜着，跑着跑着崩没有。所以留前者、去后者。
 
 [Install]
 WantedBy=multi-user.target
@@ -342,11 +422,28 @@ do_install() {
   # ——假装有会比没有更糟。
   [ -x "$AGENT_BIN" ] || die "$AGENT_BIN 不存在。用 --agent-bin 指向本机的二进制，或先自行放置。"
 
+  log "建专用系统用户 $AGENT_USER"
+  agent_user_plan "$family" | while IFS= read -r cmd; do
+    [ -z "$cmd" ] && continue
+    log "  $cmd"
+    eval "$cmd"
+  done
+
   install -d -m 0700 "$AGENT_HOME"
+  # **存量节点的状态目录是 root:root 0700**（Agent 以前跑在 root 下），
+  # 里面躺着隧道客户端证书私钥。StateDirectory= 对一个**已存在**的目录
+  # 会不会重设属主，我不打算靠记忆断言——显式改一次，代价是零。
+  chown -R "$AGENT_USER":"$AGENT_USER" "$AGENT_HOME"
 
   log "写入配置与单元"
   agent_env "$master" "$node_id" "$token" "$ca_pin" > "$AGENT_ENV"
-  chmod 0600 "$AGENT_ENV"   # 里面有一次性 Token
+  # **0640 root:edge-agent，不是 0600 root:root。**
+  #
+  # 里面有一次性 Token，所以其他人仍然不可读；但降权之后 Agent 得读得到它。
+  # 留成 0600 的话进程起不来，报的是「缺少 EC_ENROLL_TOKEN」——
+  # 看起来像 Token 没写进去，人会去查接入流程，而那儿没有问题。
+  chown root:"$AGENT_USER" "$AGENT_ENV"
+  chmod 0640 "$AGENT_ENV"
   agent_unit > "$AGENT_UNIT"
   install -d -m 0755 "$CADDY_DROPIN_DIR"
   caddy_admin_dropin > "$CADDY_DROPIN_DIR/admin-loopback.conf"
@@ -431,12 +528,33 @@ do_verify() {
     rc=1
   fi
 
+  # **0640 而不是 0600**：Agent 降权之后要读得到它（组是 edge-agent）。
+  # 判据放宽到「其他人不可读」，因为 0600 与 0640 都满足那一条，
+  # 而真正要防的是最后那一位不为 0。
   local mode
   mode="$(stat -c '%a' "$AGENT_ENV" 2>/dev/null || stat -f '%Lp' "$AGENT_ENV" 2>/dev/null || echo '?')"
-  if [ "$mode" = "600" ]; then
-    printf '  ✓ %s 权限 600\n' "$AGENT_ENV"
+  case "$mode" in
+    600|640)
+      printf '  ✓ %s 权限 %s（其他人不可读）\n' "$AGENT_ENV" "$mode"
+      ;;
+    *)
+      printf '  ✘ %s 权限是 %s，里面有接入 Token\n' "$AGENT_ENV" "$mode"
+      rc=1
+      ;;
+  esac
+
+  # **Agent 到底跑在谁身上。**
+  #
+  # 单元文件写着 User=edge-agent 不等于进程真的降权了：单元可能是旧的
+  #（升级时忘了 daemon-reload），也可能有人手动改回去过。所以查的是
+  # 运行中的进程，不是那份文件。
+  local runas
+  runas="$(systemctl show -p User --value edge-agent 2>/dev/null || echo '?')"
+  if [ "$runas" = "$AGENT_USER" ]; then
+    printf '  ✓ Agent 跑在 %s 下，不是 root\n' "$AGENT_USER"
   else
-    printf '  ✘ %s 权限是 %s，里面有接入 Token\n' "$AGENT_ENV" "$mode"
+    printf '  ✘ Agent 跑在 [%s] 下 —— 期望 %s。单元可能是旧的（试 daemon-reload）\n' \
+      "$runas" "$AGENT_USER"
     rc=1
   fi
 
@@ -492,19 +610,10 @@ do_update() {
   log "重启 edge-agent"
   systemctl restart edge-agent
 
-  # **起来了不等于连上了。** 进程活着而隧道连不上时，节点在控制台上是离线的
-  # ——而那正是更新最容易出的那种问题（版本对不上、证书路径变了）。
-  # 所以等的是「隧道通了」，不是「进程还在」。
-  local i=0
-  while [ $i -lt 30 ]; do
-    if systemctl is-active --quiet edge-agent && \
-       journalctl -u edge-agent --since "-30s" 2>/dev/null | grep -q "接入完成\|隧道已重连\|已连接主控"; then
-      log "更新完成。旧的留在 $backup —— 确认没问题之后可以删掉。"
-      return 0
-    fi
-    sleep 1
-    i=$((i + 1))
-  done
+  if wait_tunnel_up; then
+    log "更新完成。旧的留在 $backup —— 确认没问题之后可以删掉。"
+    return 0
+  fi
 
   # **自动回滚。** 一台连不上主控的节点是收不到任何配置的，
   # 包括「把它换回去」那条 —— 所以这一步不能等人来做。
@@ -512,6 +621,88 @@ do_update() {
   install -m 0755 "$backup" "$AGENT_BIN"
   systemctl restart edge-agent
   die "新版本没能连上主控，已回滚。看 journalctl -u edge-agent -n 50"
+}
+
+# wait_tunnel_up 等隧道真的连上，最多 30 秒。连上返回 0，超时返回 1。
+#
+# **起来了不等于连上了。** 进程活着而隧道连不上时，节点在控制台上是离线的
+# ——而那正是改动最容易出的那种问题（版本对不上、证书路径变了、
+# 降权之后读不到 EnvironmentFile）。所以等的是「隧道通了」，不是「进程还在」。
+#
+# update 与 harden 共用这一份：两者都在改一台**正在服务**的机器，
+# 判据分成两份的话，迟早有一份会停在「进程还在」上。
+wait_tunnel_up() {
+  local i=0
+  while [ $i -lt 30 ]; do
+    if systemctl is-active --quiet edge-agent && \
+       journalctl -u edge-agent --since "-30s" 2>/dev/null | grep -q "接入完成\|隧道已重连\|已连接主控"; then
+      return 0
+    fi
+    sleep 1
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# do_harden 把一台**已经在跑**的节点降权到专用系统用户。
+#
+# # 为什么需要一个单独的子命令
+#
+# install 要 --token，而 Token 是一次性的、这台机器早就用掉了；
+# update 只换二进制、不碰单元文件。于是存量节点没有任何路径能拿到降权后的
+# 单元 —— **降权这件事对它们会是死的**，而没有任何地方会说出来。
+#
+# 它是幂等的：建用户先判存在，chown 与重写单元重复做没有副作用。
+# 已经降过权的机器上再跑一次，代价只是一次重启。
+do_harden() {
+  need_root
+  [ -x "$AGENT_BIN" ] || die "$AGENT_BIN 不在 —— 这台机器还没装过，用 install"
+  [ -f "$AGENT_UNIT" ] || die "$AGENT_UNIT 不在 —— 这台机器不是本脚本装的，不动它"
+
+  local family
+  family="$(os_family /etc/os-release)" || die "认不出这个发行版，不知道怎么建系统用户"
+
+  log "建专用系统用户 $AGENT_USER"
+  agent_user_plan "$family" | while IFS= read -r cmd; do
+    [ -z "$cmd" ] && continue
+    log "  $cmd"
+    eval "$cmd"
+  done
+
+  log "把状态目录与配置文件交给 $AGENT_USER"
+  # 里面躺着隧道客户端证书私钥，存量节点上它是 root:root 0700。
+  chown -R "$AGENT_USER":"$AGENT_USER" "$AGENT_HOME"
+  # 0640 而不是 0600：降权之后 Agent 得读得到它，而其他人仍然不可读。
+  chown root:"$AGENT_USER" "$AGENT_ENV"
+  chmod 0640 "$AGENT_ENV"
+
+  # **先备份单元。** 降权起不来那一刻，受保护域名整体 502
+  #（ADR-0003 的 fail-closed）—— 这时候没有时间去手写一份单元回去。
+  local backup="${AGENT_UNIT}.prev"
+  log "备份当前单元到 $backup"
+  cp -p "$AGENT_UNIT" "$backup"
+
+  log "写入降权后的单元并重启"
+  agent_unit > "$AGENT_UNIT"
+  systemctl daemon-reload
+  systemctl restart edge-agent
+
+  if wait_tunnel_up; then
+    log "降权完成。旧单元留在 $backup —— 确认没问题之后可以删掉。"
+    log "跑 '$0 verify' 查一遍。"
+    return 0
+  fi
+
+  # **自动回滚，理由与 update 那处相同**：一台连不上主控的节点收不到
+  # 任何配置，包括「把它换回去」那条。
+  log "30 秒内没有看到隧道连上，把单元换回去"
+  install -m 0644 "$backup" "$AGENT_UNIT"
+  systemctl daemon-reload
+  systemctl restart edge-agent
+  die "降权之后没能连上主控，已回滚到原来的单元。
+看 journalctl -u edge-agent -n 50 —— 最可能的两种：
+  1) $AGENT_ENV 读不到（权限或属主没改成 root:$AGENT_USER 0640）
+  2) $AGENT_HOME 里的隧道证书还是 root 的（chown -R 没跑到）"
 }
 
 do_uninstall() {
@@ -531,6 +722,7 @@ usage() {
   $0 install --master <wss://host 或 host:port> --node-id <id> --token <一次性> --ca-pin <sha256>
              [--agent-bin <路径>] [--http3]
   $0 update --agent-bin <新二进制的路径>
+  $0 harden
   $0 verify
   $0 uninstall
 
@@ -542,6 +734,13 @@ update **只换二进制**，不碰配置、不碰状态目录、不碰 Caddy，
 （这台机器已经有隧道证书了）。换完等隧道连上；30 秒内没连上就**自动回滚**
 ——一台连不上主控的节点收不到任何配置，包括「把它换回去」那条。
 
+harden 把一台**已经在跑**的节点降权到专用系统用户 edge-agent（早期版本装的
+节点跑在 root 下）。它不需要 Token，可以重复跑。**会重启一次 Agent**——
+受保护域名在那几秒里整体 502（ADR-0003 的 fail-closed），所以多节点要一台一台来。
+降权之后连不上主控会自动把单元换回去。
+
+新装的节点不需要 harden：install 直接就是降权后的单元。
+
 本脚本**不下载** edge-agent 二进制。用 --agent-bin 指向本机已有的文件。
 USAGE
 }
@@ -550,6 +749,7 @@ main() {
   case "${1:-}" in
     install)   shift; do_install "$@" ;;
     update)    shift; do_update "$@" ;;
+    harden)    shift; do_harden ;;
     verify)    shift; do_verify ;;
     uninstall) shift; do_uninstall ;;
     ""|-h|--help) usage ;;
