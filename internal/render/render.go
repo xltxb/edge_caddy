@@ -115,9 +115,14 @@ func Render(routes []model.Route, rules []model.Rule, certs []Cert, pol Policies
 		}
 		caddyRoutes = append(caddyRoutes, proxyRoute(r, applied, pol, opt))
 	}
-	if caddyRoutes == nil {
-		caddyRoutes = []any{}
-	}
+	// 兜底：没匹配到任何域名的请求（直接拿节点 IP、没接入的 Host）静默断连。
+	// 不放这一条的话会落到 Caddy 的默认行为——空 200，等于告诉扫描器
+	// 「这里有东西」。abort 与 blockHandler 的默认分支同一语义。
+	// 两台 server 共用这份 routes，:80 与 :443 一处兜底两边生效。
+	caddyRoutes = append(caddyRoutes, map[string]any{
+		"handle":   []any{map[string]any{"handler": "static_response", "abort": true}},
+		"terminal": true,
+	})
 
 	servers := map[string]any{
 		"edge": map[string]any{

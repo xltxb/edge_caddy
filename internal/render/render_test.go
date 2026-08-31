@@ -159,6 +159,69 @@ func TestMTLSRendersAsUpstreamClientCertNotConnectionPolicy(t *testing.T) {
 	}
 }
 
+// 不带域名的访问（直接拿节点 IP、或者一个没接入的 Host）不能穿到 Caddy 的
+// 默认行为——那是一个空 200，等于告诉扫描器「这里有东西」。兜底路由不带
+// match、放在最后、静默断连，两台 server 共用同一份 routes，一处兜底两边生效。
+func TestFallbackRouteAbortsUnmatchedHost(t *testing.T) {
+	certs := []render.Cert{{
+		Domain:  "t.example.com",
+		CertPEM: []byte("-----BEGIN CERTIFICATE-----\nAAA\n-----END CERTIFICATE-----\n"),
+		KeyPEM:  []byte("-----BEGIN EC PRIVATE KEY-----\nBBB\n-----END EC PRIVATE KEY-----\n"),
+	}}
+	b, issues := render.Render([]model.Route{ok("t.example.com", "127.0.0.1:1")}, nil, certs,
+		render.Policies{}, render.Options{})
+	if len(issues) > 0 {
+		t.Fatalf("不该有校验问题: %v", issues)
+	}
+
+	var cfg struct {
+		Apps struct {
+			HTTP struct {
+				Servers map[string]struct {
+					Routes []struct {
+						Match    []map[string]any `json:"match"`
+						Terminal bool             `json:"terminal"`
+						Handle   []map[string]any `json:"handle"`
+					} `json:"routes"`
+				} `json:"servers"`
+			} `json:"http"`
+		} `json:"apps"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"edge", "edge_tls"} {
+		srv, exists := cfg.Apps.HTTP.Servers[name]
+		if !exists || len(srv.Routes) == 0 {
+			t.Fatalf("%s 那台 server 没渲染出来，下面的断言无从谈起", name)
+		}
+		last := srv.Routes[len(srv.Routes)-1]
+		if len(last.Match) != 0 {
+			t.Fatalf("%s 的最后一条路由该是无 match 的兜底，实际 match=%v", name, last.Match)
+		}
+		if !last.Terminal {
+			t.Errorf("%s 的兜底路由要 terminal，不然请求继续往下走", name)
+		}
+		if len(last.Handle) != 1 || last.Handle[0]["handler"] != "static_response" ||
+			last.Handle[0]["abort"] != true {
+			t.Errorf("%s 的兜底该是 static_response abort（静默断连），实际 %v", name, last.Handle)
+		}
+	}
+}
+
+// 一条路由都没有的节点同样要兜底——刚接入、还没配域名的机器，
+// 拿 IP 一扫是空 200 的话，等于裸奔窗口。
+func TestFallbackRouteExistsEvenWithNoRoutes(t *testing.T) {
+	b, issues := render.Render(nil, nil, nil, render.Policies{}, render.Options{})
+	if len(issues) > 0 {
+		t.Fatalf("不该有校验问题: %v", issues)
+	}
+	if !strings.Contains(string(b), `"abort": true`) {
+		t.Fatalf("零路由时也该有兜底 abort:\n%s", b)
+	}
+}
+
 // 一张证书都没有时**完全不渲染 apps/tls，也不渲染 :443**（ADR-0010）。
 //
 // 渲染空的 tls app 会把节点上外部证书平台写入的内容抹掉——那是上一版真出过

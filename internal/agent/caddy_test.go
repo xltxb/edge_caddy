@@ -203,6 +203,37 @@ func TestWhitelistDeniesWithAbort(t *testing.T) {
 	}
 }
 
+// 不带域名的访问（Host 是节点 IP，或任何没接入的域名）落进兜底路由，
+// 静默断连——而不是 Caddy 默认的空 200。空 200 会告诉扫描器「这里有东西」，
+// 也会让拨测误判「节点正常」。同时确认兜底不误伤：接入的域名照常回源。
+func TestUnmatchedHostIsAbortedNotEmpty200(t *testing.T) {
+	up := upstream(t, "REAL SITE")
+	c := caddytest.New(t)
+
+	cfg, issues := render.Render([]model.Route{{
+		Domain: "real.example.com", Upstream: up, BlockMode: model.BlockAbort,
+	}}, nil, nil, render.Policies{}, render.Options{HTTPListen: c.EdgeListen(), LogDir: c.LogDir()})
+	if len(issues) > 0 {
+		t.Fatalf("渲染报了问题: %v", issues)
+	}
+	if _, err := agent.NewCaddyClient(c.AdminURL()).ApplyConfig(context.Background(), cfg); err != nil {
+		t.Fatalf("Caddy 拒绝了带兜底路由的配置: %v", err)
+	}
+
+	// 接入的域名不受兜底影响。
+	if code, body := c.Get("real.example.com", "/", nil); code != 200 || body != "REAL SITE" {
+		t.Fatalf("接入的域名被兜底误伤：得到 %d %q", code, body)
+	}
+
+	// 直接拿 IP 当 Host——正是「不带域名的访问」的样子。
+	if code, body := c.Get("203.0.113.9", "/", nil); code == 200 {
+		t.Fatalf("未接入的 Host 不该拿到响应，却得到 200 %q", body)
+	}
+	if code, body := c.Get("unknown.example.com", "/", nil); code == 200 {
+		t.Fatalf("未接入的域名不该拿到响应，却得到 200 %q", body)
+	}
+}
+
 // 403 与 abort 的区别是可观察的：403 会明确告诉对方「这里有东西但你不能进」。
 func TestWhitelistDenyWith403IsDistinguishableFromAbort(t *testing.T) {
 	up := upstream(t, "SECRET")
