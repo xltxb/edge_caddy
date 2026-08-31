@@ -6,6 +6,12 @@ import { resetMocks, visit } from './helpers'
  *
  * 拆成两页之后，同一个接口有了两个调用方，而它们看到的是各自加载那一刻的
  * 快照。这一页要守的第一件事就是**别把不属于自己的字段发回去**。
+ *
+ * ## 页面形态
+ *
+ * 页面按**顶级域名分组**：一行一个域名（`.target`），子域收在「管理子域」
+ * 弹窗里。线上形态仍是平铺的 `targets`（每条 = domain + sub + zone_id），
+ * 分组只是界面的组织方式 —— 保存时摊平回去，整份替换。
  */
 
 /** 模拟「别处改了服务商」：另一页保存过，或者另一个人刚改完。 */
@@ -26,6 +32,18 @@ async function readKind(page: Page): Promise<string> {
   return await page.evaluate(async () => {
     const r = await fetch('/api/v1/settings', { credentials: 'same-origin' })
     return (await r.json())?.data?.dns_provider?.kind as string
+  })
+}
+
+/** 服务端此刻存着的平铺 targets —— 「存进去了没有」的最终判据。 */
+async function readTargets(page: Page): Promise<Array<{ domain: string; sub: string }>> {
+  return await page.evaluate(async () => {
+    const r = await fetch('/api/v1/settings', { credentials: 'same-origin' })
+    const t = (await r.json())?.data?.dns_provider?.targets as Array<{
+      domain: string
+      sub: string
+    }> | null
+    return (t ?? []).map(({ domain, sub }) => ({ domain, sub }))
   })
 }
 
@@ -65,11 +83,11 @@ test.describe('解析域名', () => {
     const other = before === 'dnspod' ? 'cloudflare' : 'dnspod'
     await setKindElsewhere(page, other)
 
-    // 这一页只改域名，然后保存
-    const first = page.locator('[data-field="domain"]')
-    await first.fill('changed.example.com')
+    // 这一页只加一个域名，然后保存
+    await page.locator('[data-field="domain"]').fill('changed.example.com')
+    await page.locator('button.add').click()
     const save = page.locator('header.head button.primary')
-    await expect(save, '改了域名而保存按钮没亮').toBeEnabled()
+    await expect(save, '加了域名而保存按钮没亮').toBeEnabled()
     await save.click()
     await expect(save, '保存没完成').toBeDisabled()
 
@@ -80,42 +98,91 @@ test.describe('解析域名', () => {
     ).toBe(other)
 
     // 而它自己要改的那件事确实存进去了 —— 否则「没覆盖」可能只是因为它什么都没发
-    await expect(first, '域名没保存成功').toHaveValue('changed.example.com')
+    await expect(
+      page.locator('.target', { hasText: 'changed.example.com' }),
+      '域名没保存成功',
+    ).toHaveCount(1)
   })
 
   /**
-   * **加一行、删一行，都要能存下去。**
+   * **一次粘一串域名，一步全加进来** —— 这一页存在的理由之一。
+   *
+   * 新加的域名默认带一条根记录：平铺形态里「0 条记录的域名」不存在
+   * （没有行就没有域名），不给根记录的话它保存后会**无声消失**。
    *
    * 删到零条也算 —— 那表达的是「不再管任何域名」，是个合法意图；
    * 拦住它等于逼人去数据库里改。
    */
-  test('加一条域名，存得进去；再删掉，也存得回来', async ({ page }) => {
+  test('一次加多个域名，存得进去；再删掉，也存得回来', async ({ page }) => {
     const rows = page.locator('.target')
     const n0 = await rows.count()
-    expect(n0, 'seed 里一条域名都没有，这条测的是空集').toBeGreaterThan(0)
+    expect(n0, 'seed 里一个域名都没有，这条测的是空集').toBeGreaterThan(0)
 
+    // 逗号分隔一次加两个
+    await page.locator('[data-field="domain"]').fill('added-a.example.com, added-b.example.com')
     await page.locator('button.add').click()
-    await expect(rows).toHaveCount(n0 + 1)
-
-    // 新行是空的 —— 填上再存，否则存的是一条没有意义的记录
-    const last = rows.nth(n0)
-    await last.locator('.t-domain').fill('added.example.com')
-    await last.locator('.t-sub').fill('www')
+    await expect(rows).toHaveCount(n0 + 2)
 
     const save = page.locator('header.head button.primary')
     await save.click()
     await expect(save).toBeDisabled()
 
-    // 存完重新拉回来的那一份里要有它
-    await expect(rows).toHaveCount(n0 + 1)
-    await expect(rows.nth(n0).locator('.t-domain')).toHaveValue('added.example.com')
+    // 存完重新拉回来的那一份里要有它们，且带着默认的根记录
+    await expect(rows).toHaveCount(n0 + 2)
+    expect(await readTargets(page)).toEqual(
+      expect.arrayContaining([
+        { domain: 'added-a.example.com', sub: '' },
+        { domain: 'added-b.example.com', sub: '' },
+      ]),
+    )
 
-    // 再删掉
-    await rows.nth(n0).locator('button.mini', { hasText: '删除' }).click()
+    // 再删掉 —— 删整组，连带它的全部记录
+    for (const d of ['added-a.example.com', 'added-b.example.com']) {
+      await rows
+        .filter({ hasText: d })
+        .locator('button.mini', { hasText: '删除' })
+        .click()
+    }
     await expect(rows).toHaveCount(n0)
     await save.click()
     await expect(save).toBeDisabled()
-    await expect(rows, '删掉的那条又回来了 —— PUT 大概被当成了逐条合并').toHaveCount(n0)
+    await expect(rows, '删掉的那组又回来了 —— PUT 大概被当成了逐条合并').toHaveCount(n0)
+  })
+
+  /**
+   * **子域在弹窗里管**：页面上只见顶级域名，点开才见这个域名下的记录。
+   *
+   * 弹窗里改的要走同一条「摊平 → 整份 PUT」的路 —— 判据是服务端那份
+   * 平铺 targets 里真的多了那几条，不是界面上的字样。
+   */
+  test('子域弹窗：加两个子域，存进服务端的是平铺的记录', async ({ page }) => {
+    const group = page.locator('.target', { hasText: 'example.com' }).first()
+    await group.locator('button', { hasText: '管理子域' }).click()
+
+    const modal = page.locator('.modal')
+    await expect(modal, '弹窗没开').toHaveCount(1)
+    // seed 里 example.com 只有 cdn 一条
+    await expect(modal.locator('.sub-row')).toHaveCount(1)
+
+    // 弹窗里同样一次加多个
+    await modal.locator('input.add-subs').fill('www, edge')
+    await modal.locator('button.add').click()
+    await expect(modal.locator('.sub-row')).toHaveCount(3)
+    await modal.locator('button', { hasText: '确定' }).click()
+    await expect(page.locator('.modal')).toHaveCount(0)
+
+    const save = page.locator('header.head button.primary')
+    await expect(save, '弹窗里改了子域而保存按钮没亮').toBeEnabled()
+    await save.click()
+    await expect(save).toBeDisabled()
+
+    expect(await readTargets(page)).toEqual(
+      expect.arrayContaining([
+        { domain: 'example.com', sub: 'cdn' },
+        { domain: 'example.com', sub: 'www' },
+        { domain: 'example.com', sub: 'edge' },
+      ]),
+    )
   })
 
   /**
