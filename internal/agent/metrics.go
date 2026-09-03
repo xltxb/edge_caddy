@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shirou/gopsutil/v4/cpu"
@@ -32,7 +33,11 @@ type Metrics struct {
 
 // metricsCollector 采集本机与本机 Caddy 的观测量。
 type metricsCollector struct {
-	caddy     *CaddyClient
+	caddy *CaddyClient
+
+	// mu 护着 edgePorts：下发线程写、心跳与排空线程读，
+	// 而端口为空时读的那一侧也会写（见 ports）。
+	mu        sync.Mutex
 	edgePorts []uint32
 }
 
@@ -42,7 +47,32 @@ func newMetricsCollector(c *CaddyClient) *metricsCollector {
 
 // setEdgePorts 告诉采集器边缘 server 监听在哪些端口——连接数只统计它们上面的。
 // 不限定的话会把 SSH、隧道自己的连接都算进去，那个数字就没有意义了。
-func (m *metricsCollector) setEdgePorts(ports []uint32) { m.edgePorts = ports }
+func (m *metricsCollector) setEdgePorts(ports []uint32) {
+	m.mu.Lock()
+	m.edgePorts = ports
+	m.mu.Unlock()
+}
+
+// ports 返回要统计的端口；一个都没有时先问本机 Caddy。
+//
+// **Agent 重启之后端口不能靠下发来补。** 重启后的 Agent 向主控报的就是
+// 基线版本号，主控看不到漂移，不会再推——于是从重启起到下一次人为下发，
+// 这台机器报上去的连接数一直是 0，而它正扛着流量。全部节点一起
+// 升级重启一次，总览的「全网连接数」就这样变成 0.0k。
+//
+// Caddy 自己知道它在哪些端口上监听，问它就是。与 loadGeoDBFromDisk 同一条：
+// 重启不该把已经具备的能力丢掉。拿不到（Caddy 还没起来）就下次再问，
+// 一次失败不能被记成「没有边缘端口」。
+func (m *metricsCollector) ports(ctx context.Context) []uint32 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.edgePorts) == 0 {
+		if cfg, err := m.caddy.Config(ctx); err == nil {
+			m.edgePorts = edgePorts(cfg)
+		}
+	}
+	return m.edgePorts
+}
 
 func (m *metricsCollector) collect(ctx context.Context) Metrics {
 	var out Metrics
@@ -65,7 +95,8 @@ func (m *metricsCollector) collect(ctx context.Context) Metrics {
 }
 
 func (m *metricsCollector) countConns(ctx context.Context) uint32 {
-	if len(m.edgePorts) == 0 {
+	ports := m.ports(ctx)
+	if len(ports) == 0 {
 		return 0
 	}
 	conns, err := net.ConnectionsWithContext(ctx, "tcp")
@@ -73,7 +104,7 @@ func (m *metricsCollector) countConns(ctx context.Context) uint32 {
 		return 0
 	}
 	want := map[uint32]bool{}
-	for _, p := range m.edgePorts {
+	for _, p := range ports {
 		want[p] = true
 	}
 	var n uint32

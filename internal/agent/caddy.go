@@ -240,6 +240,27 @@ func sortedKeys(m map[string]json.RawMessage) []string {
 	return out
 }
 
+// Config 读本机 Caddy **此刻在跑的**整份配置。
+//
+// 用途是 Agent 重启之后找回边缘端口：那份配置 Agent 自己没有留底，
+// 而 Caddy 手里的才是真在生效的那一份。守着这条的是
+// TestEdgePortsRecoveredFromRunningCaddyWithoutPush。
+func (c *CaddyClient) Config(ctx context.Context) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.Admin+"/config/", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("读取 Caddy 当前配置: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("读取 Caddy 当前配置: HTTP %d", resp.StatusCode)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+}
+
 // Alive 探一下本机 Caddy Admin 是否可达。
 func (c *CaddyClient) Alive(ctx context.Context) bool {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.Admin+"/config/", nil)
