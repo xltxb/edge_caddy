@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"sort"
 	"time"
 )
 
@@ -45,7 +47,49 @@ func (s *Store) PutDraft(ctx context.Context, resKey string, patch json.RawMessa
 	if err := json.Unmarshal(patch, &m); err == nil && len(m) == 0 {
 		return s.DeleteDraft(ctx, resKey)
 	}
-	_, err := s.Pool.Exec(ctx,
+	return putDraft(ctx, s.Pool, resKey, patch, by)
+}
+
+// PutDrafts 把一批草稿**一次性**写进去：要么全在，要么一条都不写。
+//
+// 回滚是它唯一的调用方，而回滚原先是逐条写、中途失败就地返回——工作台里
+// 于是亮着前几条，接口回 500，响应里一个 res_key 都不报。人接着按「待下发」
+// 发出去的是半个回滚（issue #44）。
+//
+// 这里不走 PutDraft 里那条「空对象等于删除」的捷径：回滚写的是快照与 live
+// 的差异，空差异本来就不会进这张表。
+func (s *Store) PutDrafts(ctx context.Context, patches map[string]json.RawMessage, by string) error {
+	if len(patches) == 0 {
+		return nil
+	}
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// **按键排序，不靠 map 的随机顺序。**
+	//
+	// 顺序在正确的实现里无所谓——整批要么全成要么全不成。它要紧是因为
+	// 「整批」这件事只有在「失败之前确实已经写了几条」时才检验得出来：
+	// 随机顺序下非法的那条可能排在最前，于是一个逐条写的坏实现也什么都
+	// 没留下，测试照样绿。探针把这件事抓了出来。
+	keys := make([]string, 0, len(patches))
+	for k := range patches {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, resKey := range keys {
+		if err := putDraft(ctx, tx, resKey, patches[resKey], by); err != nil {
+			return fmt.Errorf("写回草稿 %s: %w", resKey, err)
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func putDraft(ctx context.Context, q querier, resKey string, patch json.RawMessage, by string) error {
+	_, err := q.Exec(ctx,
 		`INSERT INTO config_drafts (res_key, patch, updated_by, updated_at)
 		 VALUES ($1,$2,$3,now())
 		 ON CONFLICT (res_key) DO UPDATE SET
@@ -60,10 +104,15 @@ func (s *Store) DeleteDraft(ctx context.Context, resKey string) error {
 }
 
 func (s *Store) DeleteDrafts(ctx context.Context, resKeys []string) error {
+	return deleteDrafts(ctx, s.Pool, resKeys)
+}
+
+// deleteDrafts 是 DeleteDrafts 的事务内版本（同一条 SQL 只有这一份）。
+func deleteDrafts(ctx context.Context, q querier, resKeys []string) error {
 	if len(resKeys) == 0 {
 		return nil
 	}
-	_, err := s.Pool.Exec(ctx, `DELETE FROM config_drafts WHERE res_key = ANY($1)`, resKeys)
+	_, err := q.Exec(ctx, `DELETE FROM config_drafts WHERE res_key = ANY($1)`, resKeys)
 	return err
 }
 

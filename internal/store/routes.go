@@ -69,11 +69,18 @@ func (s *Store) CreateRoute(ctx context.Context, r model.Route) error {
 }
 
 func (s *Store) UpsertRoute(ctx context.Context, r model.Route) error {
+	return upsertRoute(ctx, s.Pool, r)
+}
+
+// upsertRoute 是 UpsertRoute 的事务内版本。**同一条 SQL 只有这一份**——
+// 抄两份的话，它们不一致的那天独立路径是对的、事务里那条是错的，
+// 而两边的测试都不会红。
+func upsertRoute(ctx context.Context, q querier, r model.Route) error {
 	wl, err := json.Marshal(defaultSlice(r.Whitelist))
 	if err != nil {
 		return err
 	}
-	_, err = s.Pool.Exec(ctx,
+	_, err = q.Exec(ctx,
 		`INSERT INTO proxy_routes (domain, upstream, block_mode, mtls, compress, body_max, whitelist)
 		 VALUES ($1,$2,$3::block_mode,$4,$5,$6,$7)
 		 ON CONFLICT (domain) DO UPDATE SET

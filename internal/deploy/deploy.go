@@ -252,7 +252,12 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 		// 不落回 live 就等于：节点上跑着新配置，而真相源里还是旧值，
 		// 下一次下发会把旧值推回去。而现象是「我明明改过、也下发成功了，
 		// 怎么又变回去了」——中间没有任何报错。
-		if err := s.commit(ctx, resKeys, routes, rules); err != nil {
+		if err := s.Store.CommitDeploy(ctx, store.CommitDeploy{
+			ResKeys: resKeys, Routes: routes, Rules: rules,
+			CfgVersion: cfgVersion, DeployID: deployID,
+			Sealer: s.Sealer,
+			Fault:  s.commitFaultFn(),
+		}); err != nil {
 			// **失败就停在这里，下面一步都不走。**
 			//
 			// 走下去的话：基线前进（宣称「live 渲染出来就是这一版」——假的）、
@@ -274,23 +279,11 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 			}, nil, nil
 		}
 
-		// 至少有一台真的应用了，基线才前进。全部失败时什么都没变，
-		// 让基线前进会让「配置漂移」把所有节点都算成漂移，而真相是没人变过。
-		if err := s.Store.SetBaseline(ctx, cfgVersion, deployID); err != nil {
-			log.Error("确立基线失败", "err", err)
-		}
-		if err := s.Store.BumpRouteVersions(ctx, keysWithPrefix(resKeys, "route:")); err != nil {
-			log.Error("推进路由版本失败", "err", err)
-		}
-		if err := s.Store.BumpRuleVersions(ctx, keysWithPrefix(resKeys, "rule:")); err != nil {
-			log.Error("推进规则版本失败", "err", err)
-		}
-		if err := s.Store.BumpPolicyVersions(ctx, keysWithPrefix(resKeys, "global:")); err != nil {
-			log.Error("推进策略版本失败", "err", err)
-		}
-		if err := s.Store.DeleteDrafts(ctx, resKeys); err != nil {
-			log.Error("清空草稿失败", "err", err)
-		}
+		// 基线、三个版本号、清草稿都在上面那一个事务里。
+		//
+		// 它们原先是五个散装调用，每个失败都只 log.Error 然后继续——
+		// 而「至少有一台真的应用了，基线才前进」这条判断仍然成立：
+		// 它就是上面那个 okCount > 0 的 if。
 	}
 
 	// 首轮跑完就返回，掉队的交给后台补推：5 次指数退避最长要一分多钟，
@@ -889,32 +882,6 @@ func (s *Scheduler) certsForRender(ctx context.Context) ([]render.Cert, error) {
 // **它不动 version，也不删草稿**——那两件由调用方分别做（BumpXVersions 与
 // DeleteDrafts）。这里点明是因为「下发」在契约 §7.2 里是三件事，
 // 而这个函数只做其中一件；一个只读到这里的人容易以为「合入 live」
-// 顺带把另外两件也办了。
-func (s *Scheduler) commit(ctx context.Context, resKeys []string, routes []model.Route, rules []model.Rule) error {
-	if s.commitFault != nil {
-		return s.commitFault
-	}
-	selected := map[string]bool{}
-	for _, k := range resKeys {
-		selected[k] = true
-	}
-	for _, r := range routes {
-		if selected["route:"+r.Domain] {
-			if err := s.Store.UpsertRoute(ctx, r); err != nil {
-				return fmt.Errorf("合入路由 %s: %w", r.Domain, err)
-			}
-		}
-	}
-	for _, r := range rules {
-		if selected["rule:"+r.ID] {
-			// 密钥传空串表示保持不变——它不在草稿里，也不该被这一步碰。
-			if err := s.Store.UpsertRule(ctx, r, "", s.Sealer); err != nil {
-				return fmt.Errorf("合入规则 %s: %w", r.ID, err)
-			}
-		}
-	}
-	return nil
-}
 
 // RollbackResult 是一次回滚写回了什么。
 type RollbackResult struct {
@@ -963,10 +930,13 @@ func (s *Scheduler) Rollback(ctx context.Context, cfgVersion, operator string) (
 	}
 	sort.Strings(keys)
 
-	for _, k := range keys {
-		if err := s.Store.PutDraft(ctx, k, patches[k], operator); err != nil {
-			return out, fmt.Errorf("写回草稿 %s: %w", k, err)
-		}
+	// **一次写进去，要么全在要么一条都不写。**
+	//
+	// 原先是逐条写、中途失败就地返回，而 out.ResKeys 还是 nil：工作台里亮着
+	// 前几条、接口回 500、响应里一个 res_key 都不报。人接着按「待下发」发出去
+	// 的是半个回滚（issue #44）。
+	if err := s.Store.PutDrafts(ctx, patches, operator); err != nil {
+		return out, err
 	}
 	out.ResKeys = keys
 
@@ -1051,4 +1021,16 @@ func nodeSupports(n store.Node, kind string) bool {
 		}
 	}
 	return false
+}
+
+// commitFaultFn 把注入的错误包成一个**在事务中途**触发的钩子。
+//
+// 触发点在 live 已经合入、基线尚未确立的那一刻——那正是要验的状态。
+// 放在整批开头的话一行都还没写，每次都会跳过被测的那个状态，
+// 而测试照样是绿的（TestCommitIsAtomicAcrossRoutes 一开始就这么绿过一次）。
+func (s *Scheduler) commitFaultFn() func() error {
+	if s.commitFault == nil {
+		return nil
+	}
+	return func() error { return s.commitFault }
 }

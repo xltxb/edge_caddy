@@ -89,7 +89,12 @@ func (s *Store) FinishDeploy(ctx context.Context, deployID int64, okCount, failC
 // 前端反推不出来——从节点上报的版本取众数，在一次下发只到了少数节点时会指向旧版，
 // 于是配置漂移会反着算。
 func (s *Store) SetBaseline(ctx context.Context, cfgVersion string, deployID int64) error {
-	_, err := s.Pool.Exec(ctx,
+	return setBaseline(ctx, s.Pool, cfgVersion, deployID)
+}
+
+// setBaseline 是 SetBaseline 的事务内版本（同一条 SQL 只有这一份）。
+func setBaseline(ctx context.Context, q querier, cfgVersion string, deployID int64) error {
+	_, err := q.Exec(ctx,
 		`INSERT INTO baseline (only_row, cfg_version, deploy_id) VALUES (TRUE, $1, $2)
 		 ON CONFLICT (only_row) DO UPDATE SET
 		   cfg_version = EXCLUDED.cfg_version, deploy_id = EXCLUDED.deploy_id`,

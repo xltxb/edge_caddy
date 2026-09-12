@@ -269,6 +269,29 @@ PROBES = [
         "./internal/agent/", "TestServeStopsItsLoopsWhenTheTunnelDrops",
         "serve 没有返回",
     ),
+    Probe(
+        "下发-合入是一个事务",
+        "七步散着跑时，只有第一步的失败会中止流水线（#31 的修复），"
+        "后面五步各自只 log.Error 然后继续；而合入 live 自己也是逐条 Upsert。"
+        "把事务拆掉之后 live 会被半更新，**而界面说这次下发没成**（issue #43）",
+        "internal/store/commit.go",
+        "\tdefer func() { _ = tx.Rollback(ctx) }()",
+        "\tdefer func() { _ = tx.Commit(ctx) }()",
+        "./internal/deploy/", "TestCommitIsAtomicAcrossRoutes",
+        "live 被半更新了",
+    ),
+    Probe(
+        "回滚-整批写草稿",
+        "逐条写、中途失败就地返回的话，工作台里亮着前几条而响应里一个 "
+        "res_key 都不报——人接着发出去的是半个回滚（issue #44）。"
+        "改坏必须是「根本没有事务」：PG 在语句出错时会自己中止整个事务，"
+        "所以把 Rollback 换成 Commit 是看不出区别的（试过，没红）",
+        "internal/store/drafts.go",
+        "putDraft(ctx, tx, resKey, patches[resKey], by)",
+        "putDraft(ctx, s.Pool, resKey, patches[resKey], by)",
+        "./internal/store/", "TestPutDraftsIsAllOrNothing",
+        "工作台里会亮着半个回滚",
+    ),
 ]
 
 

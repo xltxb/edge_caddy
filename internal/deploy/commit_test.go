@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/xltxb/edge_caddy/internal/model"
 )
 
 // **commit 失败时，草稿必须活着，基线不能前进，且有人被告知。**
@@ -72,5 +74,72 @@ func TestCommitFailureKeepsDraftsAndBaseline(t *testing.T) {
 	}
 	if !told {
 		t.Error("commit 失败没有写事件 —— 「节点是新的、库是旧的」这件事只有日志知道")
+	}
+}
+
+// **合入基线的每一步都在同一个事务里：中途失败，一处都不留。**
+//
+// #31 的修复只给 commit 那一步加了「失败就停」，而它后面还有五步——
+// SetBaseline、三个 Bump*Versions、DeleteDrafts——每一步都只 log.Error 然后
+// 继续往下走。SetBaseline 报错时基线停在旧版而草稿照样被删，随后 retry.go
+// 读到 cur != job.cfgVersion，把所有掉队节点标成「已被新的下发取代」，
+// 那是一句假话（issue #43）。
+//
+// commit 自己也是逐条 Upsert，没有事务：第 3 条失败时前 2 条已经落进 live，
+// 而 deploy.go 那句注释写着「停下来之后的状态是真话：草稿还在、基线没动」。
+//
+// **这条测试盯的是 #31 没覆盖的那一半：live 表不能被半更新。**
+// 两条路由一起下发，故障在它们之间发生——两条都不该进 live。
+func TestCommitIsAtomicAcrossRoutes(t *testing.T) {
+	p := newFakePusher("node-1")
+	s, st := newSched(t, p)
+	ctx := context.Background()
+
+	// newSched 已经建了 api.example.com。再加一条，让这次下发有两条要写。
+	if err := st.CreateRoute(ctx, model.Route{
+		Domain: "web.example.com", Upstream: "127.0.0.1:8081", BlockMode: model.BlockAbort,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	keys := []string{"route:api.example.com", "route:web.example.com"}
+	for _, k := range keys {
+		if err := st.PutDraft(ctx, k,
+			json.RawMessage(`{"upstream":"127.0.0.9:9999"}`), "tester"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 故障在事务中途：此前已经有行被写进去了。
+	s.SetCommitFault(errors.New("注入：合入到一半失败"))
+
+	if _, _, err := s.Deploy(ctx, "tester", keys); err != nil {
+		t.Fatalf("下发本身不该失败（推送是成功的）：%v", err)
+	}
+
+	// live 里两条路由都该是原来的回源地址——一条都没被改。
+	for _, domain := range []string{"api.example.com", "web.example.com"} {
+		r, err := st.GetRoute(ctx, domain)
+		if err != nil {
+			t.Fatalf("读 %s: %v", domain, err)
+		}
+		if r.Upstream == "127.0.0.9:9999" {
+			t.Errorf("%s 的 live 已经被改成草稿里的值，而这次合入是失败的——"+
+				"live 被半更新了，而界面会说这次下发没成", domain)
+		}
+	}
+
+	// 两条草稿都要活着：它们是此刻唯一还留着用户改动的地方。
+	drafts, err := st.ListDrafts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alive := map[string]bool{}
+	for _, d := range drafts {
+		alive[d.ResKey] = true
+	}
+	for _, k := range keys {
+		if !alive[k] {
+			t.Errorf("%s 的草稿被删了——用户的改动哪儿都不在了", k)
+		}
 	}
 }

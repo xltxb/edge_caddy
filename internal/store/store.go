@@ -16,6 +16,7 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -29,6 +30,15 @@ var migrationFS embed.FS
 type Store struct {
 	Pool *pgxpool.Pool
 	url  string
+}
+
+// querier 是 *pgxpool.Pool 与 pgx.Tx 的公共面。
+//
+// 有了它，同一条 SQL 既能自己跑一次，也能被收进一个事务——**而不必抄两遍**。
+// 抄两遍的代价不是多打几个字：两份 SQL 会各自演化，而它们不一致的那一天，
+// 独立跑的那条路径是对的、事务里那条是错的，两边的测试都不会红。
+type querier interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
 func Open(ctx context.Context, url string) (*Store, error) {

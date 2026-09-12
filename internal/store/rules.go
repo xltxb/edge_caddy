@@ -67,6 +67,11 @@ func (s *Store) GetRule(ctx context.Context, id string) (model.Rule, error) {
 // UpsertRule 写入规则。secret 为空串表示**保持不变**——
 // 前端不回显凭证，因此它提交时也带不出原值来（PRD §7）。
 func (s *Store) UpsertRule(ctx context.Context, r model.Rule, plainSecret string, sealer *secret.Sealer) error {
+	return upsertRule(ctx, s.Pool, r, plainSecret, sealer)
+}
+
+// upsertRule 是 UpsertRule 的事务内版本（同一条 SQL 只有这一份）。
+func upsertRule(ctx context.Context, q querier, r model.Rule, plainSecret string, sealer *secret.Sealer) error {
 	spec, err := json.Marshal(r.Spec)
 	if err != nil {
 		return err
@@ -88,7 +93,7 @@ func (s *Store) UpsertRule(ctx context.Context, r model.Rule, plainSecret string
 		sealed = b
 	}
 
-	_, err = s.Pool.Exec(ctx,
+	_, err = q.Exec(ctx,
 		`INSERT INTO access_rules (id, name, type, enabled, spec, apply_to, secret_sealed)
 		 VALUES ($1,$2,$3::rule_type,$4,$5,$6,$7)
 		 ON CONFLICT (id) DO UPDATE SET
