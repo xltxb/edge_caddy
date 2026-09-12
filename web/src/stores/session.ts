@@ -39,5 +39,16 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  return { operator, resolved, probe, login, logout }
+  /**
+   * expire 把会话标成「已经不在了」。
+   *
+   * 与 logout 的区别是它**不问后端**：调用它的时候后端刚刚用一个 401 回答过
+   * 同一个问题。留着 resolved 为 true，是因为路由守卫判的是 operator——
+   * 把 resolved 打回 false 只会让跳向登录页的那一跳再问一遍已经有答案的事。
+   */
+  function expire(): void {
+    operator.value = null
+  }
+
+  return { operator, resolved, probe, login, logout, expire }
 })
