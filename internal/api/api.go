@@ -194,7 +194,7 @@ func New(o Options) *gin.Engine {
 		o.Tunnel.HTTPHandler()(c.Writer, c.Request)
 	})
 
-	authed := v1.Group("", Auth(o.Store, o.OpsBotToken, o.CertBotToken), Audit(o.Store, o.Log))
+	authed := v1.Group("", Auth(o.Store, o.Log, o.OpsBotToken, o.CertBotToken), Audit(o.Store, o.Log))
 	authed.POST("/auth/logout", audited("登出", s.handleLogout))
 	authed.GET("/auth/session", s.handleSession)
 

@@ -223,7 +223,8 @@ func (s *Server) handleNodeDrain(c *gin.Context) {
 	//
 	// 也要在摘解析之后：解析还指着这台机器的时候排空，是在排一个还在进水的池子。
 	// 顺序是这三步唯一的硬约束。
-	steps = append(steps, s.drainStep(ctx, nodeID, synced))
+	drained := s.drainStep(ctx, nodeID, synced)
+	steps = append(steps, drained)
 
 	// **先落下线标记，再断隧道。** 反过来的话，断开与写库之间有一个窗口，
 	// 而 Agent 恰恰在那个窗口里重连 —— 它会被放进来，然后一直待到下次有人再点。
@@ -243,8 +244,35 @@ func (s *Server) handleNodeDrain(c *gin.Context) {
 	}
 	steps = append(steps, step("tunnel_closed", true, detail))
 
-	setAuditPartial(c, "已下线；连接未主动排空")
+	// **只有真的有步骤没成，才算部分成功。**
+	//
+	// 这里原先无条件记 partial，detail 还是一句写死的「连接未主动排空」——
+	// 而同一次请求的响应里 conns_drained.ok 可能正是 true。于是审计表里这一列
+	// 恒为 partial，等于不作数，而审计是 ADR-0013 那个准入模型的三分之一
+	// （issue #45）。
+	//
+	// detail 取那一步自己的结论，不另写一句：两处各自措辞迟早会对不上账，
+	// 而对不上的那一刻没有任何东西会说出来。
+	if !stepOK(drained) {
+		setAuditPartial(c, stepDetail(drained))
+	} else if !synced {
+		setAuditPartial(c, stepDetail(steps[0]))
+	}
 	OK(c, gin.H{"steps": steps})
+}
+
+// stepOK / stepDetail 读一个步骤自己报的结论。
+//
+// 从步骤里读而不是另写一句：两处各自措辞迟早会对不上账，
+// 而对不上的那一刻没有任何东西会说出来。
+func stepOK(s gin.H) bool {
+	v, _ := s["ok"].(bool)
+	return v
+}
+
+func stepDetail(s gin.H) string {
+	v, _ := s["detail"].(string)
+	return v
 }
 
 // handleNodeRejoin 撤销下线。

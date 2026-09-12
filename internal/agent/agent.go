@@ -148,8 +148,45 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.cfgVersion = enrolled.GetCfgVersion()
 	a.mu.Unlock()
 
-	go a.heartbeatLoop(ctx, out)
-	go a.logLoop(ctx, out)
+	return a.serve(ctx, stream, out)
+}
+
+// tunnelStream 是一条隧道的收发两端。抽出来让 serve 能被单独测——
+// 真流与测试里的替身都满足它。
+type tunnelStream interface {
+	Send(*edgev1.AgentMsg) error
+	Recv() (*edgev1.MasterMsg, error)
+}
+
+// serve 跑一次连接：起这次连接的后台循环，读到流断为止。
+//
+// **这次连接的 ctx 必须是派生的。** 用调用方那个的话——它是 cmd/agent 的
+// 进程级信号 ctx——隧道断开时后台循环不会退出，而 main 紧接着就重连并再起
+// 一份。dial.go:29 记着真实日志：中间设施按小时掐长连接，一天断三次，
+// 于是一天多三份心跳循环，每份每 3 秒做一次 200ms CPU 采样并列全机 TCP
+// 连接，跑一个月的机器上这是持续增长的 CPU 与 fd 压力（issue #42）。
+//
+// reportCerts 是刻意的例外：它用 context.WithoutCancel，因为证书回执要在
+// 配置应用之后把话说完，而那时这次连接可能已经在收尾了。
+func (a *Agent) serve(ctx context.Context, stream tunnelStream, out *tunnelWriter) error {
+	// connCtx 是**这次连接**的生命周期，与调用方那个进程级 ctx 分开。
+	connCtx, cancel := context.WithCancel(ctx)
+
+	// **serve 返回时，它起的循环已经停了。**
+	//
+	// 只 cancel 不等的话，契约就退化成「它们迟早会停」——而「迟早」在
+	// main 那个重连循环里是没有意义的：下一次连接可能已经建起来了，
+	// 那一刻两份心跳同时活着，只是其中一份很快会走。真正要保证的是
+	// 「一次连接对应一份循环」，那需要等。
+	//
+	// defer 是后进先出：cancel 先跑，wg.Wait 后跑。
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	defer cancel()
+
+	wg.Add(2)
+	go func() { defer wg.Done(); a.heartbeatLoop(connCtx, out) }()
+	go func() { defer wg.Done(); a.logLoop(connCtx, out) }()
 
 	for {
 		msg, err := stream.Recv()
@@ -158,16 +195,16 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 		switch m := msg.M.(type) {
 		case *edgev1.MasterMsg_Push:
-			a.handlePush(ctx, out, m.Push)
+			a.handlePush(connCtx, out, m.Push)
 		case *edgev1.MasterMsg_Probe:
-			a.handleProbe(ctx, out, m.Probe)
+			a.handleProbe(connCtx, out, m.Probe)
 		case *edgev1.MasterMsg_GeoDb:
 			a.applyGeoDB(m.GeoDb)
 
 		case *edgev1.MasterMsg_Drain:
 			// 排空要等，不能占着这条读循环 —— 占住的话主控这段时间
 			// 推不下来配置也探不了活，而排空可能要等几十秒。
-			go a.handleDrain(ctx, out, m.Drain)
+			go a.handleDrain(connCtx, out, m.Drain)
 		default:
 			// **主控发下来的每一种消息都有人接了，这里不该再有新分支。**
 			//

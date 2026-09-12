@@ -2,6 +2,7 @@ package render_test
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -293,6 +294,89 @@ func TestCertsAreInlinedAndTLSServerAppears(t *testing.T) {
 	// **:80 那台绝不能带连接策略** —— 加上会让所有没有服务端证书的域名立即失联。
 	if plain := cfg.Apps.HTTP.Servers["edge"]; len(plain.Policies) != 0 {
 		t.Fatalf(":80 那台不该有连接策略，实际 %+v", plain.Policies)
+	}
+}
+
+// TestHSTSRendersOnTheTLSServerOnly：HSTS 要真的出现在 :443 上。
+//
+// tlsRoutes 写好了却没有任何调用方，edge_tls 用的是裸路由——于是 HSTS 在两台
+// server 上都不会出现（:80 那台 tls=false 主动跳过，:443 那台压根没挂 handler），
+// strip_headers 在 :443 上也一并失效（issue #40）。默认值恰好是 HSTS: true。
+//
+// render.go:5 自己写的 ADR-0004 配套原则：「一条能改、能进资源树、有版本号却
+// 对节点毫无影响的设置，比没有这个设置更糟」。
+//
+// **两个方向都要钉。** 只断言 :443 上有，一个「两台都挂上」的实现也能让它绿，
+// 而那会让浏览器在明文响应里收到 HSTS —— 那正是当初把它分成两个函数的理由。
+func TestHSTSRendersOnTheTLSServerOnly(t *testing.T) {
+	certs := []render.Cert{{
+		Domain:  "t.example.com",
+		CertPEM: []byte("-----BEGIN CERTIFICATE-----\nAAA\n-----END CERTIFICATE-----\n"),
+		KeyPEM:  []byte("-----BEGIN EC PRIVATE KEY-----\nBBB\n-----END EC PRIVATE KEY-----\n"),
+	}}
+	pol := render.Policies{TLS: render.TLSPolicy{HSTS: true, HSTSMaxAge: 63072000}}
+	pol.Log.StripHeaders = true
+
+	b, issues := render.Render(
+		[]model.Route{ok("t.example.com", "127.0.0.1:1")}, nil, certs, pol,
+		render.Options{HTTPListen: ":8080", HTTPSListen: ":8443"})
+	if len(issues) > 0 {
+		t.Fatalf("渲染不过: %+v", issues)
+	}
+
+	var cfg struct {
+		Apps struct {
+			HTTP struct {
+				Servers map[string]struct {
+					Routes []struct {
+						Handle []struct {
+							Handler  string `json:"handler"`
+							Response struct {
+								Set    map[string][]string `json:"set"`
+								Delete []string            `json:"delete"`
+							} `json:"response"`
+						} `json:"handle"`
+					} `json:"routes"`
+				} `json:"servers"`
+			} `json:"http"`
+		} `json:"apps"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	// headersOn 返回这台 server 上 headers handler 设的头与删的头。
+	headersOn := func(server string) (map[string][]string, []string) {
+		t.Helper()
+		srv, okSrv := cfg.Apps.HTTP.Servers[server]
+		if !okSrv {
+			t.Fatalf("没有渲染出 %s 这台 server", server)
+		}
+		for _, r := range srv.Routes {
+			for _, h := range r.Handle {
+				if h.Handler == "headers" {
+					return h.Response.Set, h.Response.Delete
+				}
+			}
+		}
+		return nil, nil
+	}
+
+	tlsSet, tlsDel := headersOn("edge_tls")
+	if len(tlsSet["Strict-Transport-Security"]) == 0 {
+		t.Error("HSTS 开着，:443 上却没有 Strict-Transport-Security —— " +
+			"界面上它可编辑、进 diff、有版本号，而浏览器一个都收不到")
+	}
+	if !slices.Contains(tlsDel, "Server") {
+		t.Error("strip_headers 开着，:443 上却没删 Server —— HTTPS 才是主要流量")
+	}
+
+	plainSet, plainDel := headersOn("edge")
+	if len(plainSet["Strict-Transport-Security"]) > 0 {
+		t.Error("明文响应里发了 HSTS —— 浏览器会忽略它，而人会以为已经生效了")
+	}
+	if !slices.Contains(plainDel, "Server") {
+		t.Error(":80 上的 strip_headers 不该被这次改动带坏")
 	}
 }
 

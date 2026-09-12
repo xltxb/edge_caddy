@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -76,7 +77,7 @@ var certBotRoutes = map[string]bool{
 	"PUT /api/v1/certs/:domain": true, // 推证书
 }
 
-func Auth(st *store.Store, opsBotToken, certBotToken string) gin.HandlerFunc {
+func Auth(st *store.Store, log *slog.Logger, opsBotToken, certBotToken string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if tok := bearerToken(c.Request); tok != "" {
 			// ops-bot 用静态 Bearer。常数时间比较：token 比对是认证边界，
@@ -108,8 +109,24 @@ func Auth(st *store.Store, opsBotToken, certBotToken string) gin.HandlerFunc {
 			return
 		}
 		username, err := st.SessionOwner(c.Request.Context(), sid)
-		if err != nil {
+		switch {
+		case errors.Is(err, store.ErrNoSession):
+			// 确实没登录（或会话过期）——**只有这一种**配得上 401。
 			Unauthorized(c)
+			return
+		case err != nil:
+			// 数据库倒了不是「你没登录」。envelope.go 把话说死了：
+			// 「除了『确实未登录』之外，任何情况都不要用它」——前端收到 401
+			// 就跳登录页，于是一次连接池耗尽会表现成全员会话过期，
+			// 而人会去查 SessionTTL 和 Cookie，方向是反的（issue #46）。
+			//
+			// 也必须记日志：这条路径原先把 err 整个丢掉，事后查不出来。
+			log.Error("查会话失败", "err", err)
+			// Fail 是给 handler 用的出口（HTTP 200 + code），它**不中断链路**。
+			// 在中间件里不 Abort 的话 handler 照样会跑，于是一个响应体里
+			// 会有两个包裹体——这条是测试抓出来的，不是推出来的。
+			Fail(c, CodeDownstream, "读取会话失败，请稍后重试")
+			c.Abort()
 			return
 		}
 		c.Set(ctxKeyPrincipal, Principal{Name: username, Kind: "human"})

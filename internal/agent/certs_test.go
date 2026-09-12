@@ -229,6 +229,53 @@ func TestGlobalPoliciesActuallyTakeEffect(t *testing.T) {
 	if err := tryHandshake(c.TLSSocketPath(), "p.example.com", tls.VersionTLS13, tls.VersionTLS13); err != nil {
 		t.Errorf("TLS 1.3 应当握得上: %v", err)
 	}
+
+	// **HSTS 在 :443 上真的发出来了。**
+	//
+	// 上面那条「明文响应不该带 HSTS」是一条否定断言——装置失效（渲染器根本
+	// 没给这台 server 挂响应头 handler、Caddy 没起来、请求没发出去）同样让它
+	// 变绿。而那正是当时的实情：edge_tls 用的是裸路由，HSTS 在两台 server 上
+	// 都不存在，这条测试却一直是绿的（issue #40）。
+	//
+	// 一条否定断言需要一条肯定断言作伴，否则它守的是「没发生」而不是「发生在
+	// 该发生的地方」（domain.md「否定断言天然会因为装置失效而变绿」）。
+	tlsResp := getOverTLS(t, c.TLSSocketPath(), "p.example.com", "/")
+	defer tlsResp.Body.Close()
+	if got := tlsResp.Header.Get("Strict-Transport-Security"); !strings.Contains(got, "max-age=31536000") {
+		t.Errorf("HSTS 开着，:443 的响应里却是 %q", got)
+	}
+	if got := tlsResp.Header.Get("Server"); got != "" {
+		t.Errorf("strip_headers 开着时 :443 也不该有 Server 头，实际 %q", got)
+	}
+}
+
+// getOverTLS 经 unix socket 向 :443 那台 server 发一次真的 HTTPS 请求。
+func getOverTLS(t *testing.T, sock, host, path string) *http.Response {
+	t.Helper()
+	cli := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			DialTLSContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				raw, err := (&net.Dialer{}).DialContext(ctx, "unix", sock)
+				if err != nil {
+					return nil, err
+				}
+				conn := tls.Client(raw, &tls.Config{
+					ServerName: host, InsecureSkipVerify: true, MinVersion: tls.VersionTLS13,
+				})
+				if err := conn.HandshakeContext(ctx); err != nil {
+					raw.Close()
+					return nil, err
+				}
+				return conn, nil
+			},
+		},
+	}
+	resp, err := cli.Get("https://" + host + path)
+	if err != nil {
+		t.Fatalf("向 :443 发 HTTPS 请求失败: %v", err)
+	}
+	return resp
 }
 
 func tryHandshake(sock, sni string, min, max uint16) error {

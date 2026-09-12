@@ -107,6 +107,39 @@ func login(t *testing.T, r *gin.Engine) *http.Cookie {
 
 // --- 契约 §0.2：HTTP 状态码与 code 的分工 ---
 
+// TestDatabaseFailureIsNotReportedAsExpiredSession：数据库倒了不等于会话过期。
+//
+// 会话查询原先把 store.ErrNoSession 与 pgx 的连接失败并成一支 401，err 直接
+// 丢掉、一条日志都不记（issue #46）。而 ErrNoSession 这个哨兵就是为了区分
+// 而存在的。
+//
+// envelope.go 把话说死了：「Unauthorized 走 HTTP 401 …收到就跳登录页。
+// 因此除了『确实未登录』之外，任何情况都不要用它。」
+//
+// 现象是全员「会话已过期」，而人会去查 SessionTTL 和 Cookie——方向是反的。
+// 叠上前端那条 401 重定向环（issue #38）更贵：一次数据库抖动会把所有人锁在
+// 控制台外面。
+func TestDatabaseFailureIsNotReportedAsExpiredSession(t *testing.T) {
+	r, st := newServer(t)
+	ck := login(t, r)
+
+	// **会话是真的，倒下的是数据库。** 关掉连接池之后 SessionOwner 回的是
+	// 连接错误，不是 ErrNoSession——两者此前走同一支。
+	st.Pool.Close()
+
+	w, env := do(t, r, "GET", "/api/v1/nodes", nil, func(req *http.Request) {
+		req.AddCookie(ck)
+	})
+	if w.Code == http.StatusUnauthorized {
+		t.Fatalf("数据库不可用被报成了 401「登录已过期」——"+
+			"人会去查会话 TTL 和 Cookie，而问题根本不在那儿（code=%d msg=%s）",
+			env.Code, env.Msg)
+	}
+	if env.Code == api.CodeOK {
+		t.Fatalf("数据库都没了，却回了成功：http=%d", w.Code)
+	}
+}
+
 // 未登录必须是 HTTP 401，不能是 200 + 某个 code。
 // 401 是前端 http.ts 里唯一特判的码，用别的表达会让它跳不了登录页。
 func TestUnauthenticatedIsHTTP401(t *testing.T) {

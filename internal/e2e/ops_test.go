@@ -561,6 +561,72 @@ func TestDrainedNodeIsNotADeployTarget(t *testing.T) {
 // 前面那些下线测试都在「没配 DNS 服务商」的分支上：dns_removed 报 false，
 // 排空因此被跳过——于是排空这段代码在 e2e 里一次也没执行过。
 // 一个只在「上一步失败」这个分支上被测过的功能，等于没测。
+// TestCleanDrainIsNotRecordedAsPartial：三步全绿的下线，审计里要记成 ok。
+//
+// setAuditPartial 原先在成功路径上**无条件**调用，detail 还是一句写死的
+// 「已下线；连接未主动排空」——而同一次请求的响应里 conns_drained.ok 是 true
+// （issue #45）。于是这张表里这一列恒为 partial，等于不作数，而审计是
+// ADR-0013 那个准入模型的三分之一。
+//
+// middleware.go 自己写着 setAuditPartial 的用途：「5 个节点成功 1 个失败，
+// 记成 ok 或 fail 都是撒谎」。三步全成功不是那种情形。
+func TestCleanDrainIsNotRecordedAsPartial(t *testing.T) {
+	r := newRig(t)
+	r.configureDNSProvider()
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+
+	// 两台，另一台留在轮换里——摘掉最后一条记录会被空轮换护栏拦住（#36），
+	// 那时 dns_removed 本来就该是 false，这条测试要的是三步全绿那一种。
+	token2, _ := r.issueToken("node-sg-01")
+	r.startAgent("node-sg-01", token2, t.TempDir())
+	r.waitOnline("node-sg-01")
+	r.putInRotation("node-hk-01", "node-sg-01")
+
+	ok := r.mustDo("POST", "/nodes/node-hk-01/drain", map[string]any{"confirm": true})
+	var d struct {
+		Steps []struct {
+			Step string `json:"step"`
+			OK   bool   `json:"ok"`
+		} `json:"steps"`
+	}
+	if err := json.Unmarshal(ok.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	for _, st := range d.Steps {
+		if !st.OK {
+			t.Fatalf("这条测试要的是三步全绿的下线，而 %s 报了 false —— 前提不成立", st.Step)
+		}
+	}
+
+	var audit struct {
+		Items []struct {
+			Action string `json:"action"`
+			Target string `json:"target"`
+			Result string `json:"result"`
+			Detail string `json:"detail"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(r.mustDo("GET", "/audit", nil).Data, &audit); err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, a := range audit.Items {
+		if a.Action != "下线节点" {
+			continue
+		}
+		found = true
+		if a.Result != "ok" {
+			t.Errorf("三步全成功的下线被记成 %q（detail=%q）—— "+
+				"响应里每一步都是 true，两处说的不是同一件事", a.Result, a.Detail)
+		}
+	}
+	if !found {
+		t.Fatal("审计里没有「下线节点」这一行")
+	}
+}
+
 func TestDrainActuallyDrainsWhenDNSWasRemoved(t *testing.T) {
 	r := newRig(t)
 	r.configureDNSProvider()

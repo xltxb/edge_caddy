@@ -247,6 +247,28 @@ PROBES = [
         "./internal/agent/", "TestAgentSendPathsShareOneSerializedWriter",
         "在同一条流上重叠了",
     ),
+    Probe(
+        "HSTS-只在 :443 上发",
+        "tlsRoutes 曾经写好了却没有调用方，于是 HSTS 在两台 server 上都不出现，"
+        "而守着它的那条 e2e 只断言了「明文响应不带 HSTS」——一条否定断言，"
+        "渲染器根本没挂 handler 时同样是绿的（issue #40）",
+        "internal/render/render.go",
+        "\t\t\t\"routes\":          tlsRoutes(caddyRoutes, pol),\n",
+        "\t\t\t\"routes\":          caddyRoutes,\n",
+        "./internal/render/", "TestHSTSRendersOnTheTLSServerOnly",
+        "却没有 Strict-Transport-Security",
+    ),
+    Probe(
+        "重连-一次连接一份循环",
+        "循环用调用方那个进程级 ctx 的话，隧道断开时它们不退出，"
+        "而 main 紧接着重连再起一份。泄漏的那份发不到主控（流已经死了），"
+        "所以主控侧看不见——症状只在节点的 CPU 与 fd 上（issue #42）",
+        "internal/agent/agent.go",
+        "a.heartbeatLoop(connCtx, out)",
+        "a.heartbeatLoop(ctx, out)",
+        "./internal/agent/", "TestServeStopsItsLoopsWhenTheTunnelDrops",
+        "serve 没有返回",
+    ),
 ]
 
 

@@ -161,13 +161,15 @@ func Render(routes []model.Route, rules []model.Rule, certs []Cert, pol Policies
 	// :443 同理：一个没有证书的 TLS 监听会让每一次握手都失败，比不监听更糟。
 	if len(certs) > 0 {
 		servers["edge_tls"] = map[string]any{
-			"listen":          []string{opt.HTTPSListen},
-			"routes":          caddyRoutes,
+			"listen": []string{opt.HTTPSListen},
+			// **走 tlsRoutes，不是裸的 caddyRoutes。** 裸的那份没有响应头
+			// handler，于是 HSTS 在两台 server 上都不会出现（:80 那台
+			// tls=false 主动跳过），strip_headers 在 :443 上也失效——
+			// 而 HTTPS 才是主要流量（issue #40）。
+			"routes":          tlsRoutes(caddyRoutes, pol),
 			"metrics":         map[string]any{},
 			"logs":            map[string]any{},
 			"automatic_https": map[string]any{"disable": true},
-			// 空的连接策略让**这台 server** 转 TLS。它只加在 :443 那台上——
-			// 加到 :80 那台会让所有没有服务端证书的域名立即失联（ADR-0010 实测）。
 			// 空的连接策略让**这台 server** 转 TLS。它只加在 :443 那台上——
 			// 加到 :80 那台会让所有没有服务端证书的域名立即失联（ADR-0010 实测）。
 			"tls_connection_policies": []any{map[string]any{
