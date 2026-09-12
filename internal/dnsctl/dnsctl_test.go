@@ -235,24 +235,71 @@ func TestDNSPodRemovesNodeThatLeftRotation(t *testing.T) {
 	}
 }
 
-// 不认识的线路上的记录不动：别人手工加的东西不该被这套系统清掉。
-func TestDNSPodLeavesUnmanagedLinesAlone(t *testing.T) {
+// TestDNSPodKeepsRecordsWhenNothingIsInRotation：
+// 一个节点都不在轮换里时**不清空记录**——与两个 Cloudflare 适配同一条规矩。
+//
+// DNSPod 原先没有这道闸，而它是唯一原生支持线路+权重的服务商，也就是推荐配置：
+// 主控每重启一次所有节点都会错过几个心跳被判离线（health.go 记着这在灰度上真实
+// 发生过），那条路径通到这里 want 就是空的，于是五条线的记录被逐条删光 → NXDOMAIN。
+//
+// 断言「一个请求都没发」而不只是「没发 Remove」：连列都不该列，
+// 因为这一趟本来就不打算改任何东西。
+func TestDNSPodKeepsRecordsWhenNothingIsInRotation(t *testing.T) {
+	// 库里是有记录的——正是这些记录不该被删掉。
 	api := &fakeAPI{respond: map[string]string{
 		"/Record.List": `{"status":{"code":"1"},"records":[
-			{"id":"9","name":"cdn","line":"教育网","type":"A","value":"9.9.9.9","weight":1}]}`,
+			{"id":"1","name":"cdn","line":"电信","type":"A","value":"1.1.1.1","weight":50},
+			{"id":"2","name":"cdn","line":"联通","type":"A","value":"1.1.1.1","weight":50}]}`,
 		"/Record.Remove": `{"status":{"code":"1"}}`,
 	}}
 	d := dnsctl.NewDNSPod("12345,tok", "example.com", "cdn")
 	d.Base = api.server(t)
 
-	plan := dnssched.Build("cdn.example.com", dnssched.Weights{}, nil)
+	dead := dnssched.NodeState{ID: "a", IP: "1.1.1.1", DNSEnabled: true, Status: "down"}
+	err := d.Sync(context.Background(), plainPlan(t, dead))
+	if err == nil {
+		t.Fatal("一个节点都没有时该明确报错，而不是默默把记录清空")
+	}
+	if n := len(api.seen()); n != 0 {
+		t.Errorf("发出了 %d 个请求 —— 这种情况一个都不该发", n)
+	}
+}
+
+// 不认识的线路上的记录不动：别人手工加的东西不该被这套系统清掉。
+//
+// **这条计划里必须真有节点在轮换。** 原先它传的是「零个节点」，于是删除循环
+// 一趟下来无事可做，测试因此变绿——而绿的理由是「没有东西可删」，不是
+// 「不认识的线路被保护了」（domain.md「断言被『对象消失』满足」）。
+// 空轮换现在会被更前面那道闸短路（见 TestDNSPodKeepsRecordsWhenNothingIsInRotation），
+// 那道闸一加，这条的旧写法连删除循环都走不到了。
+func TestDNSPodLeavesUnmanagedLinesAlone(t *testing.T) {
+	api := &fakeAPI{respond: map[string]string{
+		"/Record.List": `{"status":{"code":"1"},"records":[
+			{"id":"9","name":"cdn","line":"教育网","type":"A","value":"9.9.9.9","weight":1}]}`,
+		"/Record.Create": `{"status":{"code":"1"}}`,
+		"/Record.Modify": `{"status":{"code":"1"}}`,
+		"/Record.Remove": `{"status":{"code":"1"}}`,
+	}}
+	d := dnsctl.NewDNSPod("12345,tok", "example.com", "cdn")
+	d.Base = api.server(t)
+
+	// 有一台真在轮换里：托管线路上会发生写入，删除循环也会真的跑一遍，
+	// 而那条教育网记录要在这一趟之后仍然活着。
+	plan := plainPlan(t, node("a", "1.1.1.1"))
 	if err := d.Sync(context.Background(), plan); err != nil {
 		t.Fatal(err)
 	}
+	var wrote bool
 	for _, c := range api.seen() {
-		if c.Path == "/Record.Remove" {
+		switch c.Path {
+		case "/Record.Remove":
 			t.Fatalf("不该动我们不管的线路上的记录: %+v", c.Form)
+		case "/Record.Create", "/Record.Modify":
+			wrote = true
 		}
+	}
+	if !wrote {
+		t.Fatal("托管线路上一个字都没写——那么这一趟没有真的走到删除循环，断言是空的")
 	}
 }
 

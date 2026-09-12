@@ -568,6 +568,18 @@ func TestDrainActuallyDrainsWhenDNSWasRemoved(t *testing.T) {
 	r.startAgent("node-hk-01", token, t.TempDir())
 	r.waitOnline("node-hk-01")
 
+	// **两台，不是一台。**
+	//
+	// 下线要摘的是「这一台」的解析记录，而集群里只有一台时，摘掉它就是摘掉
+	// 最后一条记录——那等于主动制造一次 NXDOMAIN，空轮换护栏会拦住
+	// （issue #36，两个 Cloudflare 适配一直是这个规矩）。
+	// 也就是说只有一台的时候，「解析被摘掉了」这句话没有一个能成立的版本，
+	// 而这条测试原先之所以绿，是因为 DNSPod 当时不检查空轮换。
+	token2, _ := r.issueToken("node-sg-01")
+	r.startAgent("node-sg-01", token2, t.TempDir())
+	r.waitOnline("node-sg-01")
+	r.putInRotation("node-hk-01", "node-sg-01")
+
 	ok := r.mustDo("POST", "/nodes/node-hk-01/drain", map[string]any{"confirm": true})
 	var d struct {
 		Steps []struct {

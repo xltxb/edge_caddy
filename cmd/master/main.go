@@ -245,6 +245,14 @@ func main() {
 	}
 	schedulerRef = scheduler
 
+	// 回源证书的续期（ADR-0009：叶子 24 小时，续期通道「隧道，自动」）。
+	//
+	// **「自动」原先是靠人**：续期只挂在下发路径上，理由是「下发的频率远高于
+	// 24 小时」——那是一句关于人类操作频率的假设。一个配置稳定、隧道健康、
+	// 指标全绿的集群会在最后一次下发满 24 小时后回源全断，而主控侧没有症状
+	// （issue #39）。这一行就是那个被假设顶替掉的机制。
+	go scheduler.RunUpstreamRenewal(ctx, deploy.UpstreamRenewalInterval)
+
 	// **主控不签发证书**（ADR-0015）。它只存、只下发、只在快到期时说出来。
 	certMgr := certs.New(&certs.Manager{
 		Store: st, Sealer: sealer, Hub: hub, Log: log, Alert: notifier,

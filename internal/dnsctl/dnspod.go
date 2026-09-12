@@ -77,19 +77,7 @@ type dnspodRecord struct {
 // 先列后改而不是先删后建：删了再建会有一个「这个域名没有任何 A 记录」的窗口，
 // 而 DNS 解析恰恰在那一刻会失败。
 func (d *DNSPod) Sync(ctx context.Context, plan dnssched.Plan) error {
-	existing, err := d.list(ctx)
-	if err != nil {
-		return err
-	}
-
-	// 按 线路名+IP 索引已有记录。
 	type key struct{ line, value string }
-	have := map[key]dnspodRecord{}
-	for _, r := range existing {
-		if r.Type == "A" {
-			have[key{r.Line, r.Value}] = r
-		}
-	}
 
 	want := map[key]int{} // → weight
 	for _, lp := range plan.Lines {
@@ -102,6 +90,29 @@ func (d *DNSPod) Sync(ctx context.Context, plan dnssched.Plan) error {
 				continue
 			}
 			want[key{lineName, e.IP}] = e.Weight
+		}
+	}
+
+	// **不清空记录。** 把最后一条记录撤掉等于主动让域名解析不出来，
+	// 而「一个节点都不在轮换里」多半是一次短暂的全体离线。
+	// 宁可让流量继续打到已知的机器上，也不要主动制造一次 NXDOMAIN。
+	// 与两个 Cloudflare 适配同一条规矩。
+	//
+	// **闸在 list 之前**：这一趟既然不打算改任何东西，连列都不必列。
+	if len(want) == 0 {
+		return capErr("没有任何节点在解析轮换里，本次不改动 DNS 记录")
+	}
+
+	existing, err := d.list(ctx)
+	if err != nil {
+		return err
+	}
+
+	// 按 线路名+IP 索引已有记录。
+	have := map[key]dnspodRecord{}
+	for _, r := range existing {
+		if r.Type == "A" {
+			have[key{r.Line, r.Value}] = r
 		}
 	}
 

@@ -33,6 +33,29 @@ type weightsResp struct {
 	} `json:"capabilities"`
 }
 
+// putInRotation 给这些节点在五条线上都配上权重。
+//
+// **「有一台在线节点」不等于「有一台在轮换里的节点」**，两者差一个权重：
+// 认权重的服务商（dnspod 就是）下，w == 0 的节点不在轮换里
+// （dnssched/plan.go 的 `w > 0 || !weightsHonored`）。
+//
+// 这个差别此前没有任何测试看得见，因为 DNSPod 不检查空轮换——一整轮同步
+// 下来什么也没发生，而「什么也没发生」和「推成功了」在这些断言里长得一样。
+// 加上空轮换护栏之后（issue #36），几条自称「先有一个在轮换里的节点」的测试
+// 同时红了，说的都是同一件事：那句前提写在注释里，没写进装置。
+func (r *rig) putInRotation(nodes ...string) {
+	r.t.Helper()
+	lines := make([]any, 0, 5)
+	for _, code := range []string{"ct", "cu", "cm", "tw", "ov"} {
+		entries := make([]any, 0, len(nodes))
+		for _, n := range nodes {
+			entries = append(entries, map[string]any{"node": n, "weight": 50})
+		}
+		lines = append(lines, map[string]any{"code": code, "entries": entries})
+	}
+	r.mustDo("PUT", "/dns/weights", map[string]any{"lines": lines})
+}
+
 func (r *rig) weights() weightsResp {
 	r.t.Helper()
 	e := r.mustDo("GET", "/dns/weights", nil)
@@ -605,9 +628,11 @@ func TestConfiguringProviderPushesImmediately(t *testing.T) {
 	r := newRig(t)
 
 	// 先有一个在轮换里的节点，否则推的时候没东西可推。
+	// **在线还不够，得有权重**——服务商这会儿还没配，权重只存在本地。
 	token, _ := r.issueToken("node-hk-01")
 	r.startAgent("node-hk-01", token, t.TempDir())
 	r.waitOnline("node-hk-01")
+	r.putInRotation("node-hk-01")
 
 	before := r.dnsHits()
 	e := r.mustDo("PUT", "/settings", map[string]any{
@@ -683,6 +708,7 @@ func TestSyncDetailNamesTheRecordItWrote(t *testing.T) {
 	token, _ := r.issueToken("node-hk-01")
 	r.startAgent("node-hk-01", token, t.TempDir())
 	r.waitOnline("node-hk-01")
+	r.putInRotation("node-hk-01")
 
 	// 故意把 sub 和 domain 配成会重复的那种。
 	e := r.mustDo("PUT", "/settings", map[string]any{
@@ -845,6 +871,7 @@ func TestMultipleTargetsAllGetPushed(t *testing.T) {
 	token, _ := r.issueToken("node-hk-01")
 	r.startAgent("node-hk-01", token, t.TempDir())
 	r.waitOnline("node-hk-01")
+	r.putInRotation("node-hk-01")
 
 	e := r.mustDo("PUT", "/settings", map[string]any{
 		"dns_provider": map[string]any{
@@ -1008,6 +1035,9 @@ func TestNewNodeTriggersDNSSync(t *testing.T) {
 	token1, _ := r.issueToken("node-hk-01")
 	r.startAgent("node-hk-01", token1, t.TempDir())
 	r.waitOnline("node-hk-01")
+	// 它得真的在轮换里：否则新节点接入触发的那次同步面对的是一个空轮换，
+	// 而空轮换不改动任何记录（issue #36），于是「推了没有」这个判据失效。
+	r.putInRotation("node-hk-01")
 
 	before := r.dnsHits()
 
@@ -1182,6 +1212,30 @@ func TestNodeListSaysWhetherItCarriesTraffic(t *testing.T) {
 	r.startAgent("node-hk-01", token, t.TempDir())
 	r.waitOnline("node-hk-01")
 
+	// **另一台常年待在轮换里的机器。**
+	//
+	// 这条测试的主题是 node-hk-01 那两个字段怎么变，而它中间要把 hk-01 的权重
+	// 明确存成 0。只有一台机器的话，那一步会把整个轮换清空，而空轮换不改动任何
+	// 记录（issue #36）——于是 PUT 被拒，测试在一个与它主题无关的地方红。
+	// 留一台别人在轮换里，hk-01 就能自由地进出而不牵动全局。
+	token2, _ := r.issueToken("node-sg-01")
+	r.startAgent("node-sg-01", token2, t.TempDir())
+	r.waitOnline("node-sg-01")
+
+	// 权重是整体替换的（store.PutDNSWeights 先 DELETE 再 INSERT），
+	// 所以每一次 PUT 都得把 sg-01 带上，否则它会被这一次写入抹掉。
+	putWeights := func(hk int) {
+		t.Helper()
+		r.mustDo("PUT", "/dns/weights", map[string]any{
+			"lines": []map[string]any{{
+				"code": "ct", "entries": []map[string]any{
+					{"node": "node-hk-01", "weight": hk},
+					{"node": "node-sg-01", "weight": 50},
+				},
+			}},
+		})
+	}
+
 	read := func() (inRot *bool, weightSet *bool) {
 		t.Helper()
 		var d struct {
@@ -1216,11 +1270,7 @@ func TestNodeListSaysWhetherItCarriesTraffic(t *testing.T) {
 	}
 
 	// 给它分配权重，两个字段都要跟着变。
-	r.mustDo("PUT", "/dns/weights", map[string]any{
-		"lines": []map[string]any{{
-			"code": "ct", "entries": []map[string]any{{"node": "node-hk-01", "weight": 10}},
-		}},
-	})
+	putWeights(10)
 	inRot, wset = read()
 	if inRot == nil || !*inRot {
 		t.Error("分配权重之后仍然说不在解析里")
@@ -1235,11 +1285,7 @@ func TestNodeListSaysWhetherItCarriesTraffic(t *testing.T) {
 	// （撞过，全绿）。而那正是前端要防的误伤：一台被人有意设成 0 的机器
 	// 会常年挂着「新接入」的警告，而一条天天亮着的警告，
 	// 人两天就学会忽略它 —— 连带忽略掉真出问题那天的那一条。
-	r.mustDo("PUT", "/dns/weights", map[string]any{
-		"lines": []map[string]any{{
-			"code": "ct", "entries": []map[string]any{{"node": "node-hk-01", "weight": 0}},
-		}},
-	})
+	putWeights(0)
 	inRot, wset = read()
 	if inRot == nil || *inRot {
 		t.Error("权重是 0 却说在解析里")

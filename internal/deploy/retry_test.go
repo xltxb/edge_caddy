@@ -26,6 +26,8 @@ type fakePusher struct {
 	attempts map[string]int
 	// outcomes[node] 是这个节点第 n 次被推时的结果；用完最后一个就一直用它。
 	outcomes map[string][]tunnel.PushOutcome
+	// ups[node] 是这个节点收到过的回源证书，按收到的顺序。
+	ups map[string][]tunnel.UpstreamCert
 }
 
 func newFakePusher(nodes ...string) *fakePusher {
@@ -33,6 +35,7 @@ func newFakePusher(nodes ...string) *fakePusher {
 		nodes:    nodes,
 		attempts: map[string]int{},
 		outcomes: map[string][]tunnel.PushOutcome{},
+		ups:      map[string][]tunnel.UpstreamCert{},
 	}
 }
 
@@ -44,11 +47,12 @@ func (f *fakePusher) plan(node string, outs ...tunnel.PushOutcome) {
 
 func (f *fakePusher) OnlineNodes() []string { return f.nodes }
 
-func (f *fakePusher) Push(_ context.Context, node, _ string, _, _ []byte, _ tunnel.ResourceCounts, _ tunnel.UpstreamCert, _ time.Duration) tunnel.PushOutcome {
+func (f *fakePusher) Push(_ context.Context, node, _ string, _, _ []byte, _ tunnel.ResourceCounts, up tunnel.UpstreamCert, _ time.Duration) tunnel.PushOutcome {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	n := f.attempts[node]
 	f.attempts[node]++
+	f.ups[node] = append(f.ups[node], up)
 	outs := f.outcomes[node]
 	if len(outs) == 0 {
 		return tunnel.PushOutcome{OK: true, Detail: "1ms", Responded: true}
@@ -63,6 +67,21 @@ func (f *fakePusher) attemptsFor(node string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.attempts[node]
+}
+
+// upstreamCertsFor 取这个节点收到过的回源证书。
+func (f *fakePusher) upstreamCertsFor(node string) []tunnel.UpstreamCert {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]tunnel.UpstreamCert(nil), f.ups[node]...)
+}
+
+// forget 把已经发生过的推送清空，**让「从这一刻起」成为一个能断言的时刻**。
+func (f *fakePusher) forget() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.attempts = map[string]int{}
+	f.ups = map[string][]tunnel.UpstreamCert{}
 }
 
 func timeout() tunnel.PushOutcome {

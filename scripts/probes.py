@@ -209,6 +209,33 @@ PROBES = [
         "./internal/e2e/", "TestDeleteRouteUnbindsRules",
         "规则 wl 应当还在",
     ),
+    Probe(
+        "DNSPod-空轮换不清记录",
+        "一个节点都不在轮换里时把记录删光 = 主动制造 NXDOMAIN，"
+        "而这多半只是一次短暂的全体离线（主控重启就够了）。"
+        "两个 Cloudflare 适配一直守着这条，DNSPod 漏了三年（issue #36）。"
+        "改坏之后 Sync 会一路走到删除循环，症状是「没报错」——"
+        "而「没报错」正是这个 bug 当初能活下来的原因",
+        "internal/dnsctl/dnspod.go",
+        '\tif len(want) == 0 {\n'
+        '\t\treturn capErr("没有任何节点在解析轮换里，本次不改动 DNS 记录")\n'
+        "\t}\n",
+        "",
+        "./internal/dnsctl/", "TestDNSPodKeepsRecordsWhenNothingIsInRotation",
+        "一个节点都没有时该明确报错",
+    ),
+    Probe(
+        "回源证书-没人下发也会续",
+        "ADR-0009 说回源叶子 24 小时、续期通道「隧道，自动」，"
+        "而续期原先只挂在下发路径上——真实条件是「没人点下发」超过 24 小时。"
+        "改坏之后循环照常转，只是一趟都不干活：全绿、无日志、无事件，"
+        "直到 24 小时后回源全断（issue #39）",
+        "internal/deploy/renew.go",
+        "\t\ts.renewUpstreamCerts(ctx)\n",
+        "",
+        "./internal/deploy/", "TestUpstreamCertsRenewWithNobodyDeploying",
+        "一张回源证书都没收到",
+    ),
 ]
 
 
