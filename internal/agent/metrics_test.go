@@ -29,7 +29,7 @@ func TestEdgePortsRecoveredFromRunningCaddyWithoutPush(t *testing.T) {
 	}))
 	t.Cleanup(admin.Close)
 
-	m := newMetricsCollector(NewCaddyClient(admin.URL))
+	m := newMetricsCollector(NewCaddyClient(admin.URL), nil)
 	// 没有任何 setEdgePorts —— 模拟「重启后主控没有再推」。
 	m.collect(context.Background())
 
@@ -53,7 +53,7 @@ func TestEdgePortsRetriedUntilCaddyIsUp(t *testing.T) {
 	}))
 	t.Cleanup(admin.Close)
 
-	m := newMetricsCollector(NewCaddyClient(admin.URL))
+	m := newMetricsCollector(NewCaddyClient(admin.URL), nil)
 	m.collect(context.Background())
 	if len(m.edgePorts) != 0 {
 		t.Fatalf("Caddy 没起来时边缘端口 = %v，想要空", m.edgePorts)

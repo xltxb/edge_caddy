@@ -47,6 +47,7 @@ type VerifyServer struct {
 	// 分不出「我们限的」和「上游自己回的 429」。
 	// 这里数得精确：只有真的拒过才加。
 	rateLimited atomic.Uint64
+	denied      atomic.Uint64
 }
 
 // verifyRule 是校验端点需要的那部分规则。
@@ -145,7 +146,7 @@ func (v *VerifyServer) RunSweeper(ctx context.Context, every time.Duration) {
 
 func (v *VerifyServer) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/verify/", v.handleVerify)
+	mux.Handle("/verify/", v.countDenied(http.HandlerFunc(v.handleVerify)))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -457,3 +458,35 @@ func (v *VerifyServer) LoadGeoDB(path string) error { return v.geo.Load(path) }
 
 // RateLimited 是被限流拦下的请求数，累计（进程重启归零）。
 func (v *VerifyServer) RateLimited() uint64 { return v.rateLimited.Load() }
+
+// Denied 是校验端点拒掉的请求数，累计（进程重启归零）。**限流的也算在内**：
+// 它们同样没有到源站，而这个数存在的理由就是把「到了源站」和「没到」分开。
+//
+// 主控那边用它校正回源率：在 forward_auth 处被拒的请求也记在
+// handler="reverse_proxy" 上，而 Caddy 的计数器分不出它和真正的回源
+// （两者渲染出来是同一个 handler）。这一侧分得出（issue #41）。
+func (v *VerifyServer) Denied() uint64 { return v.denied.Load() }
+
+// countDenied 在**一处**数拒绝，而不是在六个出口各加一行。
+//
+// 加在出口上的话，下一个人加第七个出口时不会想起这件事——而漏掉的症状是
+// 回源率悄悄偏高，没有任何东西会说出来。
+func (v *VerifyServer) countDenied(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		if rec.status < 200 || rec.status > 299 {
+			v.denied.Add(1)
+		}
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
+}

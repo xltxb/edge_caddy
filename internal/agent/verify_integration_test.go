@@ -41,6 +41,20 @@ func echoUpstream(t *testing.T) string {
 // 返回一个能把它「杀掉」的函数——ADR-0003 的第四行要验的就是那个情形。
 func serveVerify(t *testing.T, c *caddytest.Caddy, rules []model.VerifyRule) func() {
 	t.Helper()
+	_, stop := serveVerifyWith(t, c, rules)
+	return stop
+}
+
+// serveVerifyServer 与 serveVerify 一样，但把校验端点本身交出来——
+// 它自己的计数器是回源率那两个数的一半（见 VerifyServer.Denied）。
+func serveVerifyServer(t *testing.T, c *caddytest.Caddy, rules []model.VerifyRule) *agent.VerifyServer {
+	t.Helper()
+	v, _ := serveVerifyWith(t, c, rules)
+	return v
+}
+
+func serveVerifyWith(t *testing.T, c *caddytest.Caddy, rules []model.VerifyRule) (*agent.VerifyServer, func()) {
+	t.Helper()
 	v := agent.NewVerifyServer(nil)
 	v.SetRules(rules)
 
@@ -61,7 +75,7 @@ func serveVerify(t *testing.T, c *caddytest.Caddy, rules []model.VerifyRule) fun
 		_ = ln.Close()
 	}
 	t.Cleanup(stop)
-	return stop
+	return v, stop
 }
 
 func applyWithRules(t *testing.T, c *caddytest.Caddy, routes []model.Route, rules []model.Rule) {

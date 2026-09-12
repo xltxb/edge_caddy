@@ -274,8 +274,8 @@ func TestVerifyKindsCoversEveryHandledType(t *testing.T) {
 // 被 CC 打过一轮再删规则，残留的量就是攻击期间的独立 IP 数。
 func TestSweepAllDropsOrphanBuckets(t *testing.T) {
 	l := newLimiter()
-	l.allow("deleted|1.2.3.4", 5, 1)     // 已删规则留下的桶
-	l.allow("live|1.2.3.4", 5, 5.0/300)  // 在册规则的桶，还远没攒满
+	l.allow("deleted|1.2.3.4", 5, 1)    // 已删规则留下的桶
+	l.allow("live|1.2.3.4", 5, 5.0/300) // 在册规则的桶，还远没攒满
 
 	l.sweepAll(map[string]*verifyRule{
 		"live": {ID: "live", Type: "rate_limit", Requests: 5, WindowSec: 300},

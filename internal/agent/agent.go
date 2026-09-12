@@ -73,11 +73,12 @@ func New(cfg Config) *Agent {
 		cfg.Heartbeat = 3 * time.Second
 	}
 	caddy := NewCaddyClient(cfg.CaddyAdmin)
+	verify := NewVerifyServer(cfg.Log)
 	return &Agent{
 		cfg: cfg, log: cfg.Log,
 		caddy:   caddy,
-		verify:  NewVerifyServer(cfg.Log),
-		metrics: newMetricsCollector(caddy),
+		verify:  verify,
+		metrics: newMetricsCollector(caddy, verify),
 		logs:    cfg.Logs,
 	}
 }
@@ -422,12 +423,10 @@ func (a *Agent) heartbeatLoop(ctx context.Context, out *tunnelWriter) {
 			Cpu: m.CPU, Mem: m.Mem, Conns: m.Conns,
 			Routes: a.routes, Rules: a.rules,
 			ReqTotal: m.ReqTotal, OriginTotal: m.OriginTotal,
-			// **两个来源相加。**
-			//
-			// Caddy 的指标数得到访问规则拦的（handler="static_response"），
-			// 数不到限流的（429 经 reverse_proxy 透传，与正常回源同一个 handler）。
-			// 校验端点自己数限流那一半，精确。
-			BlockedTotal: m.BlockedTotal + a.verify.RateLimited(),
+			// 这三个数怎么算出来的都在 metricsCollector.collect 里——
+			// 原先限流那一半在这里拼，而「一个数字是怎么来的」散在两处，
+			// 读心跳的人看不出 ReqTotal 与 BlockedTotal 是不是同一个口径。
+			BlockedTotal: m.BlockedTotal,
 			// **报「本机那份」的哈希，不是「主控推过什么」。**
 			// 主控记账的话，一次推送失败之后它会一直以为节点有库，
 			// 而那个域名的地域规则一直不生效 —— 与 cfg_version 同一条理由。

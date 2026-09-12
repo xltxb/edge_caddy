@@ -292,6 +292,28 @@ PROBES = [
         "./internal/store/", "TestPutDraftsIsAllOrNothing",
         "工作台里会亮着半个回滚",
     ),
+    Probe(
+        "回源率-分母不重复计数",
+        "caddy_http_requests_total 按 handler 各记一次，把所有行相加会让分母"
+        "翻倍、回源率腰斩。而两个数一起错的时候指标之间仍然自洽——"
+        "判据只能是「我发了几个请求」（issue #41）",
+        "internal/agent/metrics.go",
+        "\t\tcase strings.Contains(labels, `handler=\"static_response\"`):\n\t\t\treq += uint64(v)\n",
+        "\t\tdefault:\n\t\t\treq += uint64(v)\n",
+        "./internal/agent/", "TestRequestTotalsCountEachRequestOnce",
+        "req_total 报的是",
+    ),
+    Probe(
+        "回源率-分子减掉被拒的",
+        "在 forward_auth 处被拒的请求也记在 handler=\"reverse_proxy\" 上，"
+        "而它一个字节都没到源站。Caddy 的计数器分不出这两件事，"
+        "校验端点自己分得出（issue #41）",
+        "internal/agent/metrics.go",
+        "out.OriginTotal = origin - m.verifyDenied()",
+        "out.OriginTotal = origin",
+        "./internal/agent/", "TestRequestTotalsCountEachRequestOnce",
+        "origin_total 报的是",
+    ),
 ]
 
 

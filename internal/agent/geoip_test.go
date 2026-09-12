@@ -54,7 +54,7 @@ func buildTestDB(t *testing.T, entries map[string]string) string {
 // TestGeoLookupReadsRealMMDB 钉的是**我们读对了那个二进制格式**。
 func TestGeoLookupReadsRealMMDB(t *testing.T) {
 	path := buildTestDB(t, map[string]string{
-		"1.2.3.0/24":  "CN",
+		"1.2.3.0/24": "CN",
 		"5.6.7.0/24": "US",
 	})
 	g := newGeoDB()
@@ -63,9 +63,9 @@ func TestGeoLookupReadsRealMMDB(t *testing.T) {
 	}
 
 	for ip, want := range map[string]string{
-		"1.2.3.7":   "CN",
+		"1.2.3.7":  "CN",
 		"5.6.7.42": "US",
-		"10.0.0.1":      "", // 库里没有 —— 与「没有库」是两回事
+		"10.0.0.1": "", // 库里没有 —— 与「没有库」是两回事
 	} {
 		got, err := g.Country(ip)
 		if err != nil {

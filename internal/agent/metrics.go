@@ -35,14 +35,20 @@ type Metrics struct {
 type metricsCollector struct {
 	caddy *CaddyClient
 
+	// verify 是本机校验端点。**两个数只有它说得准**：
+	// 限流的 429 经 reverse_proxy 透传，与正常回源同一个 handler；
+	// 在 forward_auth 处被拒的请求也记在 reverse_proxy 上，而它们
+	// 一个字节都没到源站。Caddy 的计数器分不出这两件事，它自己能。
+	verify *VerifyServer
+
 	// mu 护着 edgePorts：下发线程写、心跳与排空线程读，
 	// 而端口为空时读的那一侧也会写（见 ports）。
 	mu        sync.Mutex
 	edgePorts []uint32
 }
 
-func newMetricsCollector(c *CaddyClient) *metricsCollector {
-	return &metricsCollector{caddy: c}
+func newMetricsCollector(c *CaddyClient, v *VerifyServer) *metricsCollector {
+	return &metricsCollector{caddy: c, verify: v}
 }
 
 // setEdgePorts 告诉采集器边缘 server 监听在哪些端口——连接数只统计它们上面的。
@@ -89,9 +95,36 @@ func (m *metricsCollector) collect(ctx context.Context) Metrics {
 
 	req, origin, blocked, ok := m.scrapeCaddy(ctx)
 	if ok {
-		out.ReqTotal, out.OriginTotal, out.BlockedTotal = req, origin, blocked
+		out.ReqTotal = req
+		// **这两处校正只有校验端点说得准，而它们在同一个地方做完。**
+		//
+		// origin 减掉被拒的：在 forward_auth 处被拒的请求记在
+		// handler="reverse_proxy" 上，而它一个字节都没到源站。
+		// blocked 加上限流的：429 经 reverse_proxy 透传，Caddy 的按状态码
+		// 计数里分不出「我们限的」和「上游限的」。
+		//
+		// 收在一处是因为「一个数字是怎么算出来的」应该只有一个地方知道——
+		// 限流那一半原先在 heartbeatLoop 里拼，读心跳的人看不出 ReqTotal 与
+		// BlockedTotal 是不是同一个口径。
+		out.OriginTotal = origin - m.verifyDenied()
+		out.BlockedTotal = blocked + m.verifyRateLimited()
 	}
 	return out
+}
+
+// verifyDenied / verifyRateLimited 容忍没有校验端点的装配（本地跑、测试里）。
+func (m *metricsCollector) verifyDenied() uint64 {
+	if m.verify == nil {
+		return 0
+	}
+	return m.verify.Denied()
+}
+
+func (m *metricsCollector) verifyRateLimited() uint64 {
+	if m.verify == nil {
+		return 0
+	}
+	return m.verify.RateLimited()
 }
 
 func (m *metricsCollector) countConns(ctx context.Context) uint32 {
@@ -184,9 +217,29 @@ func (m *metricsCollector) scrapeCaddy(ctx context.Context) (req, origin, blocke
 		if err != nil {
 			continue
 		}
-		req += uint64(v)
-		if strings.Contains(labels, `handler="reverse_proxy"`) {
+
+		// **只数终结 handler，不是把所有行相加。**
+		//
+		// caddy_http_requests_total 是**按 handler 各记一次**的。本机
+		// caddy 2.11.4 实测，两个请求（一条普通、一条受保护且验签通过）：
+		//
+		//	caddy_http_requests_total{handler="headers",server="edge"}       2
+		//	caddy_http_requests_total{handler="reverse_proxy",server="edge"} 2
+		//
+		// 相加是 4，真实值是 2 —— 回源率因此被腰斩（issue #41）。而 headers
+		// 那个 handler 只在全局策略产出响应头处理时才存在，所以「改成只认
+		// headers」也不行：关掉策略它就整个消失，计数恒为 0 且无声。
+		//
+		// 终结 handler 是 reverse_proxy（回源或 forward_auth）与
+		// static_response（被规则拦下），一个请求恰好经过其中一个。
+		// **abort 那一档两边都数不到**：它静默断连，不产生响应 —— 与
+		// blocked 那个计数同一个盲区，前面那段注释说的就是它。
+		switch {
+		case strings.Contains(labels, `handler="reverse_proxy"`):
+			req += uint64(v)
 			origin += uint64(v)
+		case strings.Contains(labels, `handler="static_response"`):
+			req += uint64(v)
 		}
 	}
 	return req, origin, blocked, true

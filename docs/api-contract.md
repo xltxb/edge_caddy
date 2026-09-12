@@ -400,15 +400,39 @@ Upgrade: websocket
   越低越好，前端按「高于阈值转 warning」着色。**一个请求都还没有时是 `null`**——
   0 会被读成「一个请求都没回源」，那是个很好的数字，而真相是「还没有数据」。
 
-  数据来自各节点 Caddy 的 `/metrics`：`caddy_http_requests_total{handler="reverse_proxy"}`
-  是到达 upstream 的，其余 handler 的是被访问规则拦下或由静态响应处理掉的。
+  数据来自各节点 Caddy 的 `/metrics`，**而口径不是「把那个计数器的所有行相加」**。
+
+  `caddy_http_requests_total` 是**按 handler 各记一次**的。本机 caddy 2.11.4 实测，
+  两个请求（一条普通、一条受保护且验签通过）得到：
+
+  ```
+  caddy_http_requests_total{handler="headers",server="edge"}       2
+  caddy_http_requests_total{handler="reverse_proxy",server="edge"} 2
+  ```
+
+  相加是 4，真实值是 2。所以：
+
+  - **分母**只数**终结 handler**：`reverse_proxy`（回源或 forward_auth）与
+    `static_response`（被访问规则拦下）。一个请求恰好经过其中一个。
+    不改成「只认 `handler="headers"`」是因为那个 handler 只在全局策略产出响应头
+    处理时才存在——关掉策略它整个消失，计数恒为 0 且无声。
+  - **分子**是 `reverse_proxy` 的计数**减去校验端点拒掉的请求数**。在 forward_auth
+    处被拒的请求也记在 `handler="reverse_proxy"` 上（forward_auth 渲染出来就是一个
+    `reverse_proxy`），而它一个字节都没到源站。Caddy 的计数器分不出这两件事，
+    Agent 的校验端点自己分得出。
+
+  > **`abort` 那一档两边都数不到**：它静默断连，不产生响应，Caddy 的计数里一条都
+  > 没有。这与 `blocked_total` 是同一个盲区——分子分母同时缺这一类，比率本身仍然
+  > 有意义，只是「总请求」不含它们。
 
   > **注意它不是缓存命中率。** 设计稿的脚注写着「静态缓存承载 91.3% 请求」——
   > 那个说法在本架构下不成立：**官方 Caddy 没有 HTTP 缓存模块**（`reverse_proxy`
   > 不缓存，能做这件事的 `caddy-cache-handler` / Souin 是第三方插件）。而「节点跑
-  > apt 装的官方 Caddy」正是 [ADR-0001](adr/0001-master-issues-certificates.md) 与
-  > [ADR-0003](adr/0003-edge-auth-via-agent-forward-auth.md) 共同的前提，装插件要
-  > 连着推翻这两条。
+  > apt 装的官方 Caddy」正是 [ADR-0003](adr/0003-edge-auth-via-agent-forward-auth.md)
+  > 与 [ADR-0015](adr/0015-master-does-not-issue-certificates.md) 共同的前提，装插件
+  > 要连着推翻这两条。
+  >
+  > （这里原先引的是 ADR-0001，而 ADR-0015 开篇就是「推翻 ADR-0001 的核心决定」。）
   >
   > 重定义后这个数字回答的是**边缘挡掉了多少**：没到达 upstream 的那部分，是被访问
   > 规则拦下（静默断连 / 403 / 404）或由静态响应处理掉的。脚注应改为「边缘拦截 N%」。
