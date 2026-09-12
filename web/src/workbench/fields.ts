@@ -704,8 +704,37 @@ export function fieldsFor(
     if (t === 'geo_block') return GEO_BLOCK_FIELDS as FieldSpec<never>[]
     if (t === 'service_secret') return SERVICE_SECRET_FIELDS as FieldSpec<never>[]
     if (t === 'jwt_bearer') return JWT_BEARER_FIELDS as FieldSpec<never>[]
-    return []
+    return unknownKind(`规则类型 ${t || '(空)'}`)
   }
   const id = resKey.slice(resKey.indexOf(':') + 1)
-  return (id === 'tls' ? TLS_FIELDS : LOG_FIELDS) as FieldSpec<never>[]
+  if (id === 'tls') return TLS_FIELDS as FieldSpec<never>[]
+  if (id === 'log') return LOG_FIELDS as FieldSpec<never>[]
+  // **不认识的 global id 不能落进日志策略的表单。**
+  // 原先是 `id === 'tls' ? TLS : LOG`，于是任何第三种全局策略都会被渲染成
+  // 一张日志策略的表单——人会在一张不属于这个资源的表单上改字段、存进草稿、
+  // 下发出去，而每一步都成功（issue #67）。
+  return unknownKind(`全局策略 ${id || '(空)'}`)
+}
+
+/**
+ * unknownKind 是「控制台不认识这个东西」在描述表里的样子。
+ *
+ * 返回一条 notice 而不是空表：空表在界面上读作「这里没什么要配的」，
+ * 而真相是「我不知道这里该配什么」——那正是这个仓库反复记的
+ * 「『还不知道』被显示成『没问题』」。
+ *
+ * 触发条件是主控加了一种控制台还不认识的类型，而主控与控制台本来就会
+ * 各自升级，这是迟早的事。
+ */
+function unknownKind(what: string): FieldSpec<never>[] {
+  return [
+    {
+      kind: 'notice',
+      field: '',
+      label: '这一项控制台还不认识',
+      text:
+        `这个主控报了一种控制台还不认识的${what}。` +
+        `升级控制台之后才能在这里编辑它——在那之前它的内容原样保留，不会被这一页改动。`,
+    },
+  ]
 }

@@ -88,7 +88,25 @@ export interface ChipsField<T> extends FieldBase<T> {
   kind: 'chips'
 }
 
+/**
+ * 一条**只说话、不编辑**的字段。
+ *
+ * 它存在的理由是「控制台不认识这个东西」这件事必须在界面上占一个位置。
+ * 原先不认识的规则类型返回空表，而 fields.ts 的注释声称「工作台会显示
+ * 『这个类型还没有编辑器』」——**全仓库搜不到那句文案**，它只活在注释里
+ * （issue #67）。一片空白在界面上读作「这里没什么要配的」，
+ * 而真相是「我不知道这里该配什么」。
+ *
+ * readonly 是它的全部含义：人不该在一张自己都不认识的表单上改东西。
+ */
+export interface NoticeField<T> extends FieldBase<T> {
+  kind: 'notice'
+  /** 要说的话。它必须带上那个陌生的名字，否则人不知道该去升级什么。 */
+  text: string
+}
+
 export type FieldSpec<T> =
+  | NoticeField<T>
   | TextField<T>
   | AreaField<T>
   | SegField<T>

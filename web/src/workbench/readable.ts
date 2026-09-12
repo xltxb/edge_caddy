@@ -203,6 +203,12 @@ export function policyReadable(p: PolicyWire): unknown {
 /** 按 res_key 挑渲染函数，返回格式化好的多行文本。 */
 export function readableFor(resKey: string, value: unknown): string {
   const kind = resKey.slice(0, resKey.indexOf(':'))
+  const id = resKey.slice(resKey.indexOf(':') + 1)
+  if (kind === 'global' && id !== 'tls' && id !== 'log') {
+    // 不认识的全局策略不能被渲染成一份像模像样的日志策略：那份表示看起来
+    // 跟真的一样，而它描述的是另一个资源（issue #67）。
+    return JSON.stringify({ 控制台还不认识这项全局策略: id, 原样内容: value }, null, 2)
+  }
   const json =
     kind === 'route'
       ? routeReadable(value as RouteWire)

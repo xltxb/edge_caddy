@@ -63,13 +63,20 @@ describe('fieldsFor 的分派', () => {
   })
 
   /*
-   * **认不出的类型返回空表，不返回某张碰巧存在的表。**
+   * **认不出的类型要说「认不出」，不返回某张碰巧存在的表。**
    *
-   * 一张空表在界面上是看得见的（工作台会说这个类型还没有编辑器），
-   * 而一张错的表看起来跟对的一样。
+   * 这条原先断言的是「返回空表」，理由写着「一张空表在界面上是看得见的
+   * （工作台会说这个类型还没有编辑器）」——**那句文案全仓库搜不到**，
+   * 它只活在这条注释和 fields.ts 的注释里，两处互相引用（issue #67）。
+   *
+   * 一片空白在界面上读作「这里没什么要配的」。现在返回一条 notice，
+   * 它带着那个陌生的类型名——人据此知道该去升级什么。
    */
-  it('认不出的类型返回空表', () => {
-    expect(fieldsFor('rule:r1', rule('something_new', {}))).toHaveLength(0)
+  it('认不出的类型给出一条说明，而不是一片空白', () => {
+    const got = fieldsFor('rule:r1', rule('something_new', {}))
+    expect(got).toHaveLength(1)
+    expect(got[0]!.kind).toBe('notice')
+    expect(JSON.stringify(got)).toContain('something_new')
   })
 })
 

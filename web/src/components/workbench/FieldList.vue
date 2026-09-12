@@ -112,6 +112,11 @@ function switchText(r: Row): string {
 function switchWarn(r: Row): boolean {
   return r.spec.kind === 'switch' && r.current !== true && r.spec.offWarn === true
 }
+
+/** notice 要说的那句话。写成函数是因为模板里做不了类型收窄。 */
+function noticeText(spec: FieldSpec<never>): string {
+  return spec.kind === 'notice' ? spec.text : ''
+}
 </script>
 
 <template>
@@ -173,6 +178,15 @@ function switchWarn(r: Row): boolean {
             @update:model-value="(v) => emit('change', r.spec.field, v)"
           />
 
+          <!--
+            notice 只说话、不编辑：控制台不认识这个资源的类型时用它
+            （issue #67）。放在兜底之前，因为它是一个**已知**的 kind——
+            掉进「控件还没实现」那一支会把一句给人看的话说成一个实现缺口。
+          -->
+          <p v-else-if="r.spec.kind === 'notice'" class="notice">
+            {{ noticeText(r.spec) }}
+          </p>
+
           <VChipsField
             v-else-if="r.spec.kind === 'chips'"
             :model-value="r.current"
@@ -208,6 +222,16 @@ function switchWarn(r: Row): boolean {
 </template>
 
 <style scoped>
+/* notice 不是错误（没人做错任何事），但必须比普通 hint 更被看见。 */
+.notice {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--warn-bg, #fff8e6);
+  color: var(--warn-fg, #7a5b00);
+  line-height: 1.5;
+}
+
 .list {
   display: flex;
   flex-direction: column;
