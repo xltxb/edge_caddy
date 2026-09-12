@@ -72,7 +72,7 @@ const hb = (over: Partial<HeartbeatFrame['data']>): HeartbeatFrame => ({
 describe('useNodesStore', () => {
   beforeEach(() => setActivePinia(createPinia()))
 
-  describe('recomputeDrift', () => {
+  describe('setBaseline', () => {
     it('漂移只由「上报版本号 ≠ 基线」决定', () => {
       // ADR-0002：这个判断不看节点上的实际配置内容，只看版本号
       const store = useNodesStore()
@@ -80,7 +80,7 @@ describe('useNodesStore', () => {
         fromNodeWire(w),
       )
 
-      store.recomputeDrift('cfg-new')
+      store.setBaseline('cfg-new')
 
       expect(store.items.find((n) => n.id === 'node-a')!.drift).toBe(false)
       expect(store.items.find((n) => n.id === 'node-b')!.drift).toBe(true)
@@ -91,10 +91,10 @@ describe('useNodesStore', () => {
       const store = useNodesStore()
       store.items = [fromNodeWire(wire('node-a', 'cfg-old'))]
 
-      store.recomputeDrift('cfg-old')
+      store.setBaseline('cfg-old')
       expect(store.items[0]!.drift).toBe(false)
 
-      store.recomputeDrift('cfg-newer')
+      store.setBaseline('cfg-newer')
       expect(store.items[0]!.drift).toBe(true)
     })
   })
@@ -415,5 +415,50 @@ describe('下线与离线各记各的', () => {
       expect((caught as Error).message).toContain('先下线')
       expect(store.items.map((n) => n.id)).toEqual(['node-a'])
     })
+  })
+})
+
+/**
+ * **下发之后，「未收到最近下发」那个徽标要跟着变。**
+ *
+ * applyHeartbeat 里写着「drift 由基线决定，不在心跳帧里；由 overview store 的
+ * 基线变化触发重算」—— 而那个触发器不存在：overview store 里没有任何 watch，
+ * `recomputeDrift` 全仓只有 loadShell 里那一次调用（issue #50）。
+ *
+ * 于是 drift 停在登录那一刻的值，两个方向都会错：刚下发成功的节点继续挂着
+ * 「未收到最近下发」，真漂移的节点一片干净。这是 ADR-0002（漂移 = 版本号比对）
+ * 在前端的兑现缺口。
+ */
+describe('漂移跟着版本号走（ADR-0002）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    getMock.mockReset()
+  })
+
+  it('基线前进时，还停在旧版的节点被标成漂移', async () => {
+    const store = useNodesStore()
+    getMock.mockResolvedValue({ items: [wire('node-a', 'cfg-1'), wire('node-b', 'cfg-1')] })
+    await store.fetchAll()
+
+    store.setBaseline('cfg-1')
+    expect(store.items.map((n) => n.drift)).toEqual([false, false])
+
+    store.setBaseline('cfg-2')
+    expect(store.items.map((n) => n.drift)).toEqual([true, true])
+  })
+
+  it('心跳报上新版本时，那一台的漂移当场消失', async () => {
+    const store = useNodesStore()
+    getMock.mockResolvedValue({ items: [wire('node-a', 'cfg-1'), wire('node-b', 'cfg-1')] })
+    await store.fetchAll()
+    store.setBaseline('cfg-2')
+    expect(store.items[0]!.drift).toBe(true)
+
+    // node-a 应用了新配置，下一个心跳报的是 cfg-2。
+    store.applyHeartbeat(hb({ id: 'node-a', cfg_version: 'cfg-2' }))
+
+    expect(store.items[0]!.drift).toBe(false)
+    // 没报上来的那台还是漂移的——一台机器的心跳不该替另一台说话。
+    expect(store.items[1]!.drift).toBe(true)
   })
 })

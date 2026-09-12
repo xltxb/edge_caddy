@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { http, errorText } from '@/api/http'
+import { useNodesStore } from './nodes'
+import { useOverviewStore } from './overview'
 import type {
   DeployCreatedWire,
   DeployDetailWire,
@@ -175,6 +177,7 @@ export const useDeployStore = defineStore('deploy', () => {
       c.phase = 'done'
       phase.value = 'done'
       rememberRunning(null)
+      void refreshBaseline()
     }
   }
 
@@ -197,6 +200,28 @@ export const useDeployStore = defineStore('deploy', () => {
    * POST /deploys 的响应来的，本来就完整；`targets` 唯一的用武之地
    * 恰恰是「那次响应已经没了」的场景。
    */
+  /**
+   * 一次下发落定之后，**基线与总览四格都变了**，要重新取一次。
+   *
+   * 不取的话它们停在登录那一刻：顶栏的「基线 cfg-xxx」、总览 KPI，以及节点上
+   * 那个「未收到最近下发」的徽标，整个会话都不再动（issue #50）。
+   *
+   * 基线取回来之后要交给 nodes store —— 漂移是「上报版本号 vs 基线」，
+   * 两个操作数缺一不可（ADR-0002）。
+   *
+   * 失败不抛：下发本身已经成功了，把它变成一次失败是本末倒置。下一次刷新
+   * 或下一次下发会把这两个数追上。
+   */
+  async function refreshBaseline(): Promise<void> {
+    const overview = useOverviewStore()
+    try {
+      await overview.fetch()
+    } catch {
+      return
+    }
+    if (overview.baseline) useNodesStore().setBaseline(overview.baseline)
+  }
+
   async function resume(): Promise<boolean> {
     if (current.value) return true
     const id = recallRunning()

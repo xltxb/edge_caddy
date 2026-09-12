@@ -36,13 +36,39 @@ const rollingBack = ref<string | null>(null)
 /** 回滚覆盖不到的资源。有值时**不自动跳转** —— 跳走会把这条警告一起扫掉。 */
 const skipped = ref<{ cfg: string; items: RollbackSkipped[]; done: string[] } | null>(null)
 
+/** 还有没有更早的记录（契约 §0.4 的 cursor 分页）。null 表示到底了。 */
+const nextBeforeId = ref<number | null>(null)
+
 async function load(): Promise<void> {
   loading.value = true
   error.value = null
   try {
-    items.value = (await http.get<Paged<DeployWire>>('/deploys')).items
+    const page = await http.get<Paged<DeployWire>>('/deploys')
+    items.value = page.items
+    nextBeforeId.value = page.next_before_id
   } catch (e) {
     error.value = errorText(e, '加载下发记录失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+/**
+ * 往回翻更早的下发记录（契约 §0.4 的 cursor 分页）。
+ *
+ * 这一页的副标题没有像审计页那样说「全部」，所以只取第一页不算一句假话——
+ * 但「查不到那次下发」和「那次下发没发生」在界面上仍然长得一样（issue #49）。
+ */
+async function loadMore(): Promise<void> {
+  if (nextBeforeId.value === null || loading.value) return
+  loading.value = true
+  error.value = null
+  try {
+    const page = await http.get<Paged<DeployWire>>(`/deploys?before_id=${nextBeforeId.value}`)
+    items.value = [...items.value, ...page.items]
+    nextBeforeId.value = page.next_before_id
+  } catch (e) {
+    error.value = errorText(e, '加载更多下发记录失败')
   } finally {
     loading.value = false
   }
@@ -206,6 +232,12 @@ const detailOf = computed(() => (id: number) => details.value[id])
         </template>
       </tbody>
     </table>
+
+    <div v-if="nextBeforeId !== null && items.length" class="more">
+      <button class="mini" type="button" data-test="load-more" :disabled="loading" @click="loadMore">
+        {{ loading ? '加载中…' : '加载更早的记录' }}
+      </button>
+    </div>
   </section>
 </template>
 

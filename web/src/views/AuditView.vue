@@ -15,12 +15,33 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const operator = ref('all')
 
+/**
+ * nextBeforeId 是**还有没有下一页**（契约 §0.4 的 cursor 分页）。
+ *
+ * 这个字段在 types.ts 里声明过之后一直没人读，于是这一页只渲染第一页
+ * 而自称「全部写操作与登录记录」。正常使用一段时间后第一页被日常写操作
+ * 填满，暴力破解留下的失败登录被挤出去 —— 横幅归零，页面还说「全部」
+ * （issue #49）。
+ *
+ * null 表示到底了。只有那时这一页才说得出「全部」。
+ */
+const nextBeforeId = ref<number | null>(null)
+
+async function fetchPage(beforeID: number | null): Promise<Paged<AuditWire>> {
+  const q = new URLSearchParams()
+  if (operator.value !== 'all') q.set('operator', operator.value)
+  if (beforeID !== null) q.set('before_id', String(beforeID))
+  const qs = q.toString()
+  return http.get<Paged<AuditWire>>(`/audit${qs ? `?${qs}` : ''}`)
+}
+
 async function load(): Promise<void> {
   loading.value = true
   error.value = null
   try {
-    const q = operator.value === 'all' ? '' : `?operator=${encodeURIComponent(operator.value)}`
-    items.value = (await http.get<Paged<AuditWire>>(`/audit${q}`)).items
+    const page = await fetchPage(null)
+    items.value = page.items
+    nextBeforeId.value = page.next_before_id
   } catch (e) {
     error.value = errorText(e, '加载审计日志失败')
   } finally {
@@ -28,8 +49,35 @@ async function load(): Promise<void> {
   }
 }
 
+async function loadMore(): Promise<void> {
+  if (nextBeforeId.value === null || loading.value) return
+  loading.value = true
+  error.value = null
+  try {
+    const page = await fetchPage(nextBeforeId.value)
+    items.value = [...items.value, ...page.items]
+    nextBeforeId.value = page.next_before_id
+  } catch (e) {
+    error.value = errorText(e, '加载更多审计日志失败')
+  } finally {
+    loading.value = false
+  }
+}
+
 onMounted(load)
 watch(operator, load)
+
+/**
+ * 副标题说的是**这一页此刻真的拿到了什么**。
+ *
+ * 「全部」是一句承诺，只有翻到底之后才兑现得了。没到底时说出条数与
+ * 「还有更早的」，人就知道自己看到的是一个窗口而不是全景。
+ */
+const scope = computed(() =>
+  nextBeforeId.value === null
+    ? `全部写操作与登录记录（${items.value.length} 条）· 倒序`
+    : `已加载最近 ${items.value.length} 条，还有更早的 · 倒序`,
+)
 
 /** 操作人列表从当前结果里取，切到「全部」时才重算。 */
 const operators = ref<string[]>([])
@@ -69,15 +117,16 @@ function stamp(at: string): string {
   <section class="panel">
     <header class="head">
       <div class="title">审计日志</div>
-      <div class="sub">全部写操作与登录记录 · 倒序</div>
+      <div class="sub">{{ scope }}</div>
       <select v-model="operator" class="select">
         <option value="all">全部操作人</option>
         <option v-for="o in operators" :key="o" :value="o">{{ o }}</option>
       </select>
     </header>
 
-    <div v-if="failedLogins.length" class="banner danger">
-      有 {{ failedLogins.length }} 次失败的登录尝试，最近一次来自
+    <div v-if="failedLogins.length" class="banner danger" data-test="failed-logins">
+      {{ nextBeforeId === null ? '有' : '已加载的记录里有' }}
+      {{ failedLogins.length }} 次失败的登录尝试，最近一次来自
       <span class="mono">{{ orDash(failedLogins[0]!.src_ip) }}</span>。
     </div>
 
@@ -117,6 +166,12 @@ function stamp(at: string): string {
         </tr>
       </tbody>
     </table>
+
+    <div v-if="nextBeforeId !== null && items.length" class="more">
+      <button class="mini" type="button" data-test="load-more" :disabled="loading" @click="loadMore">
+        {{ loading ? '加载中…' : '加载更早的记录' }}
+      </button>
+    </div>
   </section>
 </template>
 

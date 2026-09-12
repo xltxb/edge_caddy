@@ -53,7 +53,7 @@ async function loadShell(): Promise<void> {
     config.fetchAll().catch(() => {}),
   ])
   // 漂移只由「上报版本号 vs 基线」决定（ADR-0002），基线到位后统一重算一次
-  if (overview.baseline) nodes.recomputeDrift(overview.baseline)
+  if (overview.baseline) nodes.setBaseline(overview.baseline)
 }
 
 // 登录成功后才装配外壳与实时通道；登出时拆掉，别让 socket 在登录页上空转

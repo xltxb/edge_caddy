@@ -86,16 +86,40 @@ export const useNodesStore = defineStore('nodes', () => {
     n.cfgVersion = d.cfg_version
     n.routes = d.routes
     n.rules = d.rules
-    // drift 由基线决定，不在心跳帧里；由 overview store 的基线变化触发重算。
+    // **drift 在这里就算出来**：它不在心跳帧里，但算它要的两样东西此刻都在手上
+    // ——刚报上来的版本号，和这个 store 记着的基线。
+    //
+    // 这一行原先是一句注释：「由 overview store 的基线变化触发重算」。
+    // 那个触发器不存在（issue #50），于是 drift 停在登录那一刻的值，
+    // 两个方向都会错：刚下发成功的节点继续挂着「未收到最近下发」，
+    // 真漂移的节点一片干净。
+    n.drift = driftOf(n.cfgVersion)
 
     const next = [...n.cpuSeries, Math.round(d.cpu)]
     n.cpuSeries = next.slice(-SERIES_LEN)
   }
 
-  /** 基线变了要重算全体 drift —— 版本号比对是漂移的**唯一**依据（ADR-0002）。 */
-  function recomputeDrift(baseline: string): void {
-    for (const n of items.value) n.drift = n.cfgVersion !== baseline
+  /**
+   * baseline 是**这个 store 自己记着的基线**。
+   *
+   * 漂移 = 上报版本号 ≠ 基线（ADR-0002），两个操作数缺一不可。基线原先只活在
+   * overview store 里，nodes 这边每次要算 drift 都得有人把它端过来——而那个
+   * 「有人」只在登录时出现过一次。记在这里之后，两个操作数任何一个变了都算得动。
+   */
+  const baseline = ref<string>('')
+
+  function driftOf(cfgVersion: string): boolean {
+    // 基线还没到位时不谈漂移：那时「不一致」说的是「还不知道」。
+    if (!baseline.value) return false
+    return cfgVersion !== baseline.value
   }
+
+  /** 基线变了要重算全体 drift —— 版本号比对是漂移的**唯一**依据（ADR-0002）。 */
+  function setBaseline(v: string): void {
+    baseline.value = v
+    for (const n of items.value) n.drift = driftOf(n.cfgVersion)
+  }
+
 
   async function withBusy<T>(id: string, label: string, fn: () => Promise<T>): Promise<T> {
     busy.value = { ...busy.value, [id]: label }
@@ -260,6 +284,7 @@ export const useNodesStore = defineStore('nodes', () => {
     updateNode,
     removeNode,
     applyHeartbeat,
-    recomputeDrift,
+    baseline,
+    setBaseline,
   }
 })
