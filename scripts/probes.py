@@ -236,6 +236,17 @@ PROBES = [
         "./internal/deploy/", "TestUpstreamCertsRenewWithNobodyDeploying",
         "一张回源证书都没收到",
     ),
+    Probe(
+        "隧道-发送串行化",
+        "gRPC 的流不允许并发 Send，而 Agent 有五条并发的发送路径。"
+        "去掉锁之后一切照常：消息条数一样、错误路径一样、测试里除了重叠数"
+        "没有任何观测会变——数次数的断言在这儿是看不见的（issue #37）",
+        "internal/agent/tunnelwriter.go",
+        "\tw.mu.Lock()\n\tdefer w.mu.Unlock()\n",
+        "",
+        "./internal/agent/", "TestAgentSendPathsShareOneSerializedWriter",
+        "在同一条流上重叠了",
+    ),
 ]
 
 

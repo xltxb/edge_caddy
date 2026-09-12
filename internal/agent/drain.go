@@ -62,14 +62,14 @@ func waitDrained(ctx context.Context, count func(context.Context) uint32,
 //
 // 它**不关 Caddy、不断隧道**：那两件事分别是人的决定和主控的决定。
 // Agent 在这里只做一件事——等，然后如实说还剩多少。
-func (a *Agent) handleDrain(ctx context.Context, stream edgev1.EdgeTunnel_ChannelClient, d *edgev1.Drain) {
+func (a *Agent) handleDrain(ctx context.Context, out *tunnelWriter, d *edgev1.Drain) {
 	timeout := time.Duration(d.GetTimeoutMs()) * time.Millisecond
 	a.log.Info("开始排空连接", "timeout", timeout)
 
 	drained, remaining := waitDrained(ctx, a.metrics.countConns, timeout, drainPoll)
 	a.log.Info("排空结束", "drained", drained, "remaining", remaining)
 
-	if err := stream.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_DrainResult{
+	if err := out.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_DrainResult{
 		DrainResult: &edgev1.DrainResult{
 			Id: d.GetId(), Drained: drained, Remaining: remaining,
 		},

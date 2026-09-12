@@ -113,6 +113,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("打开隧道: %w", err)
 	}
+	// **这条流上的每一次发送都要经过 out。** 收发可以并发，同时发不行
+	// （issue #37）。握手这一条也走它——留一个例外就等于留一个先例。
+	out := newTunnelWriter(stream)
 
 	// **握手时就报能力。** 只在心跳里报的话，从「隧道连上」到「第一次心跳」
 	// 之间有一个窗口，那期间主控会把一台其实支持的节点判成不支持。
@@ -123,7 +126,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	if enrolling {
 		hello.Token = a.cfg.Token
 	}
-	if err := stream.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_Hello{Hello: hello}}); err != nil {
+	if err := out.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_Hello{Hello: hello}}); err != nil {
 		return fmt.Errorf("发送 Hello: %w", err)
 	}
 
@@ -145,8 +148,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.cfgVersion = enrolled.GetCfgVersion()
 	a.mu.Unlock()
 
-	go a.heartbeatLoop(ctx, stream)
-	go a.logLoop(ctx, stream)
+	go a.heartbeatLoop(ctx, out)
+	go a.logLoop(ctx, out)
 
 	for {
 		msg, err := stream.Recv()
@@ -155,16 +158,16 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 		switch m := msg.M.(type) {
 		case *edgev1.MasterMsg_Push:
-			a.handlePush(ctx, stream, m.Push)
+			a.handlePush(ctx, out, m.Push)
 		case *edgev1.MasterMsg_Probe:
-			a.handleProbe(ctx, stream, m.Probe)
+			a.handleProbe(ctx, out, m.Probe)
 		case *edgev1.MasterMsg_GeoDb:
 			a.applyGeoDB(m.GeoDb)
 
 		case *edgev1.MasterMsg_Drain:
 			// 排空要等，不能占着这条读循环 —— 占住的话主控这段时间
 			// 推不下来配置也探不了活，而排空可能要等几十秒。
-			go a.handleDrain(ctx, stream, m.Drain)
+			go a.handleDrain(ctx, out, m.Drain)
 		default:
 			// **主控发下来的每一种消息都有人接了，这里不该再有新分支。**
 			//
@@ -180,7 +183,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 }
 
-func (a *Agent) handlePush(ctx context.Context, stream edgev1.EdgeTunnel_ChannelClient, p *edgev1.PushConfig) {
+func (a *Agent) handlePush(ctx context.Context, out *tunnelWriter, p *edgev1.PushConfig) {
 	deadline := time.Duration(p.GetDeadlineMs()) * time.Millisecond
 	if deadline <= 0 {
 		deadline = 5 * time.Second
@@ -207,7 +210,7 @@ func (a *Agent) handlePush(ctx context.Context, stream edgev1.EdgeTunnel_Channel
 	if err := CheckVerifyAddr(p.GetCaddyJson(), a.cfg.VerifyListen); err != nil {
 		a.log.Error("校验端点地址不一致", "err", err)
 		res := &edgev1.PushResult{CfgVersion: p.GetCfgVersion(), Ok: false, Detail: err.Error()}
-		if sendErr := stream.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_PushResult{PushResult: res}}); sendErr != nil {
+		if sendErr := out.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_PushResult{PushResult: res}}); sendErr != nil {
 			a.log.Error("回报下发结果失败", "err", sendErr)
 		}
 		return
@@ -219,7 +222,7 @@ func (a *Agent) handlePush(ctx context.Context, stream edgev1.EdgeTunnel_Channel
 	if err := writeUpstreamCert(p); err != nil {
 		a.log.Error("写入回源证书失败", "err", err)
 		res := &edgev1.PushResult{CfgVersion: p.GetCfgVersion(), Ok: false, Detail: err.Error()}
-		if sendErr := stream.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_PushResult{PushResult: res}}); sendErr != nil {
+		if sendErr := out.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_PushResult{PushResult: res}}); sendErr != nil {
 			a.log.Error("回报下发结果失败", "err", sendErr)
 		}
 		return
@@ -236,7 +239,7 @@ func (a *Agent) handlePush(ctx context.Context, stream edgev1.EdgeTunnel_Channel
 	} else {
 		res.Ok = true
 		res.Detail = fmt.Sprintf("%dms", took.Milliseconds())
-		go a.reportCerts(context.WithoutCancel(ctx), stream, p.GetCaddyJson())
+		go a.reportCerts(context.WithoutCancel(ctx), out, p.GetCaddyJson())
 		a.mu.Lock()
 		a.cfgVersion = p.GetCfgVersion()
 		a.routes, a.rules = p.GetRoutes(), p.GetRules()
@@ -245,7 +248,7 @@ func (a *Agent) handlePush(ctx context.Context, stream edgev1.EdgeTunnel_Channel
 		a.log.Info("配置已应用", "cfg_version", p.GetCfgVersion(), "took", res.Detail)
 	}
 
-	if err := stream.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_PushResult{PushResult: res}}); err != nil {
+	if err := out.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_PushResult{PushResult: res}}); err != nil {
 		a.log.Error("回报下发结果失败", "err", err)
 	}
 }
@@ -253,7 +256,7 @@ func (a *Agent) handlePush(ctx context.Context, stream edgev1.EdgeTunnel_Channel
 // handleProbe 回一次探活。caddy_admin 是**本机 Caddy** 的可达性，
 // 与隧道可达性分开报：隧道通而 Admin 不通说明 Caddy 挂了而 Agent 还活着，
 // 这两种故障的处置完全不同。
-func (a *Agent) handleProbe(ctx context.Context, stream edgev1.EdgeTunnel_ChannelClient, p *edgev1.Probe) {
+func (a *Agent) handleProbe(ctx context.Context, out *tunnelWriter, p *edgev1.Probe) {
 	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
@@ -266,7 +269,7 @@ func (a *Agent) handleProbe(ctx context.Context, stream edgev1.EdgeTunnel_Channe
 		CaddyAdmin: a.caddy.Alive(pingCtx),
 		CfgVersion: ver,
 	}
-	if err := stream.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_ProbeResult{ProbeResult: res}}); err != nil {
+	if err := out.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_ProbeResult{ProbeResult: res}}); err != nil {
 		a.log.Error("回报探活失败", "err", err)
 	}
 }
@@ -299,12 +302,12 @@ func writeUpstreamCert(p *edgev1.PushConfig) error {
 // 契约要回答的是「下发到了之后节点有没有真的加载」，所以这里去回环上真握一次手
 // 读对端的证书，而不是复述主控下发的那份——后者只能证明「我收到了这些 PEM」。
 // 两者的区别正是 ADR-0004 复核时那个「幽灵监听」教过的：配置被接受不等于在服务。
-func (a *Agent) reportCerts(ctx context.Context, stream edgev1.EdgeTunnel_ChannelClient, caddyJSON []byte) {
+func (a *Agent) reportCerts(ctx context.Context, out *tunnelWriter, caddyJSON []byte) {
 	domains := certDomainsOf(caddyJSON)
 	if len(domains) == 0 {
 		// 没有内联证书就报一份空清单——**必须报**，否则节点上刚被撤掉的证书
 		// 会在主控这边一直显示为「已加载」。
-		if err := stream.Send(&edgev1.AgentMsg{
+		if err := out.Send(&edgev1.AgentMsg{
 			M: &edgev1.AgentMsg_Certs{Certs: &edgev1.CertList{}},
 		}); err != nil {
 			a.log.Debug("回报空证书清单失败", "err", err)
@@ -330,7 +333,7 @@ func (a *Agent) reportCerts(ctx context.Context, stream edgev1.EdgeTunnel_Channe
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
-	if err := stream.Send(&edgev1.AgentMsg{
+	if err := out.Send(&edgev1.AgentMsg{
 		M: &edgev1.AgentMsg_Certs{Certs: toProtoCerts(receipts)},
 	}); err != nil {
 		a.log.Debug("回报证书清单失败", "err", err)
@@ -343,7 +346,7 @@ func (a *Agent) reportCerts(ctx context.Context, stream edgev1.EdgeTunnel_Channe
 // 而 Agent 分不出来——放回去可能让主控收到重复的一批，丢掉则会让人在
 // 控制台上永远看不到那几条。两者之间选重复：**一条重复的日志读得出来是重复的，
 // 一条缺失的日志读起来跟「那时什么也没发生」一模一样。**
-func (a *Agent) logLoop(ctx context.Context, stream edgev1.EdgeTunnel_ChannelClient) {
+func (a *Agent) logLoop(ctx context.Context, out *tunnelWriter) {
 	if a.logs == nil {
 		return
 	}
@@ -358,7 +361,7 @@ func (a *Agent) logLoop(ctx context.Context, stream edgev1.EdgeTunnel_ChannelCli
 			if len(batch) == 0 {
 				continue
 			}
-			if err := stream.Send(&edgev1.AgentMsg{
+			if err := out.Send(&edgev1.AgentMsg{
 				M: &edgev1.AgentMsg_Logs{Logs: &edgev1.LogBatch{Lines: batch}},
 			}); err != nil {
 				a.logs.putBack(batch)
@@ -371,7 +374,7 @@ func (a *Agent) logLoop(ctx context.Context, stream edgev1.EdgeTunnel_ChannelCli
 	}
 }
 
-func (a *Agent) heartbeatLoop(ctx context.Context, stream edgev1.EdgeTunnel_ChannelClient) {
+func (a *Agent) heartbeatLoop(ctx context.Context, out *tunnelWriter) {
 	t := time.NewTicker(a.cfg.Heartbeat)
 	defer t.Stop()
 	send := func() {
@@ -397,7 +400,7 @@ func (a *Agent) heartbeatLoop(ctx context.Context, stream edgev1.EdgeTunnel_Chan
 			VerifyKinds: VerifyKinds(),
 		}
 		a.mu.Unlock()
-		if err := stream.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_Hb{Hb: hb}}); err != nil {
+		if err := out.Send(&edgev1.AgentMsg{M: &edgev1.AgentMsg_Hb{Hb: hb}}); err != nil {
 			a.log.Debug("心跳发送失败（隧道多半已断）", "err", err)
 		}
 	}
