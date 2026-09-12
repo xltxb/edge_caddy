@@ -1,0 +1,11 @@
+-- events 上按节点查询的索引。
+--
+-- 建表时只有 idx_events_created (created_at DESC)，而 CountReconnects /
+-- CountReconnectsByNode 的 WHERE 是 node_id + msg + created_at —— 无索引可用，
+-- 只能 Seq Scan。而 events 是只写不清的表（#34），行数随时间线性涨，
+-- 节点列表页又是常驻轮询的（#59）。
+--
+-- 列的顺序是 (node_id, created_at DESC)：node_id 是等值条件放在最前，
+-- created_at 是范围条件放在后面。msg 不进索引——它只有两个取值，
+-- 选择度太低，进去只会让索引变大而过滤不掉多少行。
+CREATE INDEX IF NOT EXISTS idx_events_node_created ON events (node_id, created_at DESC);

@@ -314,6 +314,50 @@ PROBES = [
         "./internal/agent/", "TestRequestTotalsCountEachRequestOnce",
         "origin_total 报的是",
     ),
+    Probe(
+        "草稿-必须是对象",
+        "丢掉 Unmarshal 的错误，非对象 JSON 就存得进 jsonb 列。代价不在写入这一步："
+        "之后 mergeInto 会失败，Deploy 与 Preview 双双 500，而人在界面上找不到"
+        "入口删它——一个从界面上解不开的死局（issue #58）",
+        "internal/store/drafts.go",
+        "\tm, err := asObject(patch)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"草稿 %s: %w\", resKey, err)\n\t}",
+        "\tvar m map[string]any\n\t_ = json.Unmarshal(patch, &m)",
+        "./internal/store/", "TestPutDraftRejectsNonObjectPatch",
+        "应当被拒，而它存进去了",
+    ),
+    Probe(
+        "DNSPod-服务商不回权重时也幂等",
+        "Weight 是 *int（权重是付费套餐特性）。写成 `!= nil && ==` 的话 nil 时恒假，"
+        "每一次自愈都对全部记录发一轮 Modify。症状离原因很远：撞上接口频率限制之后，"
+        "人看到的是「摘除偶尔失败」（issue #54）",
+        "internal/dnsctl/dnspod.go",
+        "if cur.Weight == nil || *cur.Weight == weight {",
+        "if cur.Weight != nil && *cur.Weight == weight {",
+        "./internal/dnsctl/", "TestDNSPodSyncIsIdempotentWhenProviderOmitsWeight",
+        "第二次 Sync 又写了",
+    ),
+    Probe(
+        "WS-会话没了就断开",
+        "鉴权只发生在升级那一刻的话，登出之后那条连接仍然在推节点状态与事件流，"
+        "直到浏览器自己关掉。ADR-0013 说控制台访问 = 网络 + 会话，"
+        "而会话那条腿在 WS 上只站了一瞬间（issue #64）",
+        "internal/ws/handler.go",
+        "\t\t\t\tif opt.StillValid != nil && !opt.StillValid(r) {",
+        "\t\t\t\tif false {",
+        "./internal/ws/", "TestConnectionClosesWhenTheSessionGoesAway",
+        "连接却还活着",
+    ),
+    Probe(
+        "重连次数-一次查回全体",
+        "逐台问是 N 个往返，而节点列表页是常驻轮询的；events 又只写不清，"
+        "行数随时间线性涨。ctx 一超时，reconnects_1h 会从某一行开始整片变 null"
+        "——恰好是这个字段最该说话的时候（issue #59）",
+        "internal/store/events.go",
+        "GROUP BY node_id`,",
+        "GROUP BY node_id LIMIT 1`,",
+        "./internal/store/", "TestCountReconnectsByNodeAnswersForEveryoneAtOnce",
+        "数出来是",
+    ),
 ]
 
 

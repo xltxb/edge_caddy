@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -207,7 +208,23 @@ func New(o Options) *gin.Engine {
 			Fail(c, CodeStateConflict, "实时通道未装配")
 			return
 		}
-		ws.Handler(o.Hub, o.Log)(c.Writer, c.Request)
+		ws.Handler(o.Hub, o.Log, ws.Options{
+			// **升级之后也得一直是登录着的**（ADR-0013：网络 + 会话）。
+			// 只在升级那一刻查的话，登出之后那条连接仍然在推节点状态与
+			// 事件流，直到浏览器自己关掉（issue #64）。
+			//
+			// 这里不区分「会话不存在」与「查库失败」：数据库抖一下就把所有
+			// 人的实时通道踢掉是过度反应，而下一个周期还会再问一次。
+			// 与 Auth 中间件那条 401 路径不同——那一侧不断开就等于放行。
+			StillValid: func(r *http.Request) bool {
+				sid, err := r.Cookie(sessionCookieName)
+				if err != nil || sid.Value == "" {
+					return false
+				}
+				_, err = o.Store.SessionOwner(r.Context(), sid.Value)
+				return !errors.Is(err, store.ErrNoSession)
+			},
+		})(c.Writer, c.Request)
 	})
 
 	authed.GET("/overview", s.handleOverview)

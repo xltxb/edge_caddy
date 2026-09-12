@@ -265,6 +265,58 @@ func TestDNSPodKeepsRecordsWhenNothingIsInRotation(t *testing.T) {
 	}
 }
 
+// TestDNSPodSyncIsIdempotentWhenProviderOmitsWeight：服务商不回 weight 时，
+// 同一份 Plan 反复 Sync 不该反复改写记录。
+//
+// Provider 接口把这条写成了硬约束（dnsctl.go）：「Sync **必须是幂等的**：
+// 同一份 Plan 反复 Sync 不该产生重复记录——自愈会在节点抖动时反复调它」。
+//
+// dnspodRecord.Weight 是 *int，作者自己预期它可能缺席（权重是 DNSPod 的付费
+// 套餐特性）。未开通的域名上它恒为 nil，于是 `cur.Weight != nil && *cur.Weight
+// == weight` 恒假，每一次自愈、每一次点开关都对**全部**记录发一轮
+// Record.Modify（issue #54）。
+//
+// 症状离原因很远：撞上服务商的接口频率限制之后，人看到的是「摘除偶尔失败」。
+func TestDNSPodSyncIsIdempotentWhenProviderOmitsWeight(t *testing.T) {
+	// **记录里没有 weight 字段**——未开通权重套餐的域名就是这样。
+	api := &fakeAPI{respond: map[string]string{
+		"/Record.List": `{"status":{"code":"1"},"records":[
+			{"id":"1","name":"cdn","line":"电信","type":"A","value":"1.1.1.1"},
+			{"id":"2","name":"cdn","line":"联通","type":"A","value":"1.1.1.1"},
+			{"id":"3","name":"cdn","line":"移动","type":"A","value":"1.1.1.1"},
+			{"id":"4","name":"cdn","line":"境外","type":"A","value":"1.1.1.1"},
+			{"id":"5","name":"cdn","line":"中国台湾","type":"A","value":"1.1.1.1"}]}`,
+		"/Record.Modify": `{"status":{"code":"1"}}`,
+		"/Record.Create": `{"status":{"code":"1"}}`,
+		"/Record.Remove": `{"status":{"code":"1"}}`,
+	}}
+	d := dnsctl.NewDNSPod("12345,tok", "example.com", "cdn")
+	d.Base = api.server(t)
+
+	plan := plainPlan(t, node("a", "1.1.1.1"))
+	if err := d.Sync(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	before := len(api.seen())
+
+	// **同一份 Plan 再来一次。** 第一次之后服务商那边已经是想要的样子了。
+	if err := d.Sync(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+
+	var wrote []string
+	for _, c := range api.seen()[before:] {
+		switch c.Path {
+		case "/Record.Modify", "/Record.Create", "/Record.Remove":
+			wrote = append(wrote, c.Path)
+		}
+	}
+	if len(wrote) > 0 {
+		t.Errorf("第二次 Sync 又写了 %d 次（%v）—— 服务商表达不了权重时，"+
+			"每一次自愈都会重写全部记录，而症状是「摘除偶尔失败」", len(wrote), wrote)
+	}
+}
+
 // 不认识的线路上的记录不动：别人手工加的东西不该被这套系统清掉。
 //
 // **这条计划里必须真有节点在轮换。** 原先它传的是「零个节点」，于是删除循环

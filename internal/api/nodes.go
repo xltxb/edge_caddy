@@ -150,6 +150,21 @@ func (s *Server) handleListNodes(c *gin.Context) {
 		masterGeoSHA = g.SHA256
 	}
 
+	// 重连次数**一次查回全体**，不在下面的循环里逐台问。
+	//
+	// 逐台问是 N 个往返，而这个页面是常驻轮询的；events 又是只写不清的表
+	// （#34），行数随时间线性涨。ctx 一超时，reconnects_1h 会从某一行开始
+	// 整片变 null ——恰好是这个字段最该说话的时候（issue #59）。
+	//
+	// 失败时整张表留 nil，下面那一列就是 null（「我们不知道」）。并且照样
+	// 进日志：日志给事后排查的人，null 给此刻在看界面的人，两个都要。
+	var reconnects map[string]int
+	if m, err := s.store.CountReconnectsByNode(ctx, time.Hour); err != nil {
+		s.log.Error("统计重连次数失败", "err", err)
+	} else {
+		reconnects = m
+	}
+
 	// 谁在解析轮换里、谁被人配过权重。**同一份计划，与解析页读的是同一个来源**
 	// —— 两处各算各的迟早会给出两个答案。
 	//
@@ -228,11 +243,8 @@ func (s *Server) handleListNodes(c *gin.Context) {
 			ok := n.GeoDBSha == masterGeoSHA
 			item.GeoDBOK = &ok
 		}
-		if c, err := s.store.CountReconnects(ctx, n.ID, time.Hour); err != nil {
-			// 留 null（零值就是 nil），并且照样进日志 ——
-			// 日志给事后排查的人，null 给此刻在看界面的人。两个都要。
-			s.log.Error("统计重连次数失败", "node", n.ID, "err", err)
-		} else {
+		if reconnects != nil {
+			c := reconnects[n.ID]
 			item.Reconnects1h = &c
 		}
 		item.DNSReason = n.DNSReason

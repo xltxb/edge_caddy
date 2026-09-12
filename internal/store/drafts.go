@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -43,8 +44,22 @@ func (s *Store) ListDrafts(ctx context.Context) ([]Draft, error) {
 // 去到最后一个键时留下的就是空对象。留着一行空草稿会让「有几处未下发改动」
 // 这个数字虚报，而那个数字正是工作台上蓝点的依据。
 func (s *Store) PutDraft(ctx context.Context, resKey string, patch json.RawMessage, by string) error {
-	var m map[string]any
-	if err := json.Unmarshal(patch, &m); err == nil && len(m) == 0 {
+	// **草稿必须是一个对象，写入时就拒。**
+	//
+	// 这里原先把 Unmarshal 的 err 丢掉，于是 `[1,2]` / `"x"` / `123` / `null`
+	// 这些合法 JSON 但不是对象的东西照样入库——jsonb 列只要求合法 JSON。
+	//
+	// 代价不在这一步：之后 deploy 的 mergeInto 把它 Unmarshal 进 map 会失败，
+	// Deploy 与 Preview 双双 500，**而人在界面上找不到入口删它**（issue #58）。
+	// 一个从界面上解不开的死局，而它本可以在入口处就被挡住。
+	//
+	// 草稿按 CONTEXT.md 的定义就是 Partial（对象）。
+	m, err := asObject(patch)
+	if err != nil {
+		return fmt.Errorf("草稿 %s: %w", resKey, err)
+	}
+	if len(m) == 0 {
+		// 空对象是**撤回**：最后一处改动被去掉了，这条草稿就不该存在。
 		return s.DeleteDraft(ctx, resKey)
 	}
 	return putDraft(ctx, s.Pool, resKey, patch, by)
@@ -119,4 +134,24 @@ func deleteDrafts(ctx context.Context, q querier, resKeys []string) error {
 func (s *Store) DeleteAllDrafts(ctx context.Context) error {
 	_, err := s.Pool.Exec(ctx, `DELETE FROM config_drafts`)
 	return err
+}
+
+// asObject 把一份 patch 解成对象，不是对象就报错。
+//
+// **一道闸，不是两道。** 原先这里是「Unmarshal 失败」与「解出来是 nil」两个
+// 分支，而它们对同一批输入互为兜底：单独破坏任何一个，另一个还接着，
+// 测试照样绿——探针把这件事抓了出来（domain.md「互为兜底的两层，让单点破坏
+// 证明不了任何事」）。
+//
+// `null` 是那两个分支重叠的地方：它能解进 map[string]any 而不报错，得到 nil，
+// 而 len(nil) 也是 0 —— 混进「空对象等于撤回」那条捷径里就成了一次静默删除。
+func asObject(patch json.RawMessage) (map[string]any, error) {
+	var m map[string]any
+	if err := json.Unmarshal(patch, &m); err != nil {
+		return nil, fmt.Errorf("不是一个对象：%w", err)
+	}
+	if m == nil {
+		return nil, errors.New("不能是 null")
+	}
+	return m, nil
 }

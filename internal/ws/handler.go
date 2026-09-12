@@ -14,14 +14,35 @@ const (
 	pingPeriod = 25 * time.Second
 )
 
+// Options 是这条连接的两个可调项。
+type Options struct {
+	// StillValid 在每个 ping 周期复核一次「这个人现在还登录着吗」。
+	//
+	// **升级那一刻的鉴权只管那一刻。** 之后登出、管理员删会话、或者 TTL 到期，
+	// 连接仍然活着：节点状态、事件流、下发进度继续送到那个浏览器，直到它自己
+	// 关掉（issue #64）。ADR-0013 说控制台访问 = 网络 + 会话，而会话那条腿
+	// 在 WS 上原先只站了一瞬间。
+	//
+	// 留空表示不复核——本地跑与单测里不关心会话时可以这样。
+	StillValid func(*http.Request) bool
+
+	// PingPeriod 留空即用默认的 25 秒。做成字段只为让复核能被单独测：
+	// 真等 25 秒的测试不会有人跑（与 deploy.RetryBackoff 同一条理由）。
+	PingPeriod time.Duration
+}
+
 // Handler 把一个已通过鉴权的 HTTP 请求升级成 WS 连接并泵送帧。
 //
-// 鉴权在这之前由 api 包的 Auth 中间件完成（契约 §0.6：WS 复用会话 Cookie，
-// 未登录直接 401，不升级）。因此这里的 CheckOrigin 只需要挡住跨站升级——
-// 同源部署下 Origin 必须与 Host 一致。
-func Handler(h *Hub, log *slog.Logger) http.HandlerFunc {
+// 升级那一刻的鉴权由 api 包的 Auth 中间件完成（契约 §0.6：WS 复用会话 Cookie，
+// 未登录直接 401，不升级）；此后由 opt.StillValid 每个 ping 周期复核一次。
+// 这里的 CheckOrigin 只需要挡住跨站升级——同源部署下 Origin 必须与 Host 一致。
+func Handler(h *Hub, log *slog.Logger, opt Options) http.HandlerFunc {
 	if log == nil {
 		log = slog.Default()
+	}
+	period := opt.PingPeriod
+	if period <= 0 {
+		period = pingPeriod
 	}
 	up := websocket.Upgrader{
 		ReadBufferSize:  1024,
@@ -62,7 +83,7 @@ func Handler(h *Hub, log *slog.Logger) http.HandlerFunc {
 			}
 		}()
 
-		ticker := time.NewTicker(pingPeriod)
+		ticker := time.NewTicker(period)
 		defer ticker.Stop()
 
 		for {
@@ -81,6 +102,16 @@ func Handler(h *Hub, log *slog.Logger) http.HandlerFunc {
 					return
 				}
 			case <-ticker.C:
+				// **顺着心跳复核会话**，不另起一个定时器：要问的是同一个
+				// 「这条连接还该活着吗」，而两个周期迟早会各自漂移。
+				if opt.StillValid != nil && !opt.StillValid(r) {
+					_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
+					// 用正常关闭帧而不是直接掐掉：前端据此跳登录页，
+					// 而一个异常断开会被它当成可重连的抖动，然后一直重连下去。
+					_ = conn.WriteMessage(websocket.CloseMessage,
+						websocket.FormatCloseMessage(websocket.CloseNormalClosure, "会话已失效"))
+					return
+				}
 				_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
 				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 					return

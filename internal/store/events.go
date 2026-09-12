@@ -39,6 +39,38 @@ const (
 // 而它的另一面就是这个：**去抖分不出「一次抖动」和「反复抖动」**。
 // 前者不该惊动人，后者是故障。区分它们需要的不是更灵敏的判定，
 // 是**一个跨时间的计数**。
+// CountReconnectsByNode 一次数回**全体**节点的重连次数。
+//
+// 逐台问的话，GET /nodes 就是 N 个往返（issue #59），而那个页面是常驻轮询的。
+// 更要紧的是 events 只写不清（#34），行数随时间线性涨——N 次全表扫在小集群上
+// 也会随时间变慢，而 ctx 一超时，reconnects_1h 会从某一行开始整片变 null，
+// **恰好是这个字段最该说话的时候**。
+//
+// 没重连过的节点不在返回的 map 里。调用方读 map 拿到的零值就是 0，
+// 在那一侧两者一样，这里因此不必为它们各造一个 0。
+func (s *Store) CountReconnectsByNode(ctx context.Context, within time.Duration) (map[string]int, error) {
+	rows, err := s.Pool.Query(ctx,
+		`SELECT node_id, count(*) FROM events
+		  WHERE msg = $1 AND created_at > now() - $2::interval AND node_id <> ''
+		  GROUP BY node_id`,
+		EventTunnelReconnected, within.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[string]int{}
+	for rows.Next() {
+		var node string
+		var n int
+		if err := rows.Scan(&node, &n); err != nil {
+			return nil, err
+		}
+		out[node] = n
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) CountReconnects(ctx context.Context, nodeID string, within time.Duration) (int, error) {
 	var n int
 	err := s.Pool.QueryRow(ctx,

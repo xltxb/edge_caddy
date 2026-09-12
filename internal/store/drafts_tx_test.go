@@ -97,3 +97,61 @@ func TestPutDraftsWritesThemAll(t *testing.T) {
 }
 
 var _ = store.ErrNotFound
+
+// TestPutDraftRejectsNonObjectPatch：草稿必须是一个对象，写入时就拒。
+//
+// PutDraft 原先这样判空：
+//
+//	var m map[string]any
+//	if err := json.Unmarshal(patch, &m); err == nil && len(m) == 0 { 删除 }
+//
+// **err 被丢掉了**，于是 `[1,2]` / `"x"` / `123` 这类合法 JSON 但不是对象的东西
+// 照样入库——jsonb 列只要求合法 JSON，不要求是对象（issue #58）。
+//
+// 它的代价不在这一步：之后 deploy 的 mergeInto 对它 Unmarshal 进 map 会失败，
+// Deploy 与 Preview 双双 500，**而人在界面上找不到入口删它**。一个从界面上
+// 解不开的死局。
+//
+// 草稿按 CONTEXT.md 的定义就是 Partial（对象），这个约束此前没有任何一处守。
+func TestPutDraftRejectsNonObjectPatch(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+
+	for _, bad := range []string{`[1,2]`, `"x"`, `123`, `true`, `null`, `{`} {
+		if err := st.PutDraft(ctx, "route:a.example.com", json.RawMessage(bad), "tester"); err == nil {
+			t.Errorf("patch=%s 应当被拒，而它存进去了", bad)
+		}
+	}
+
+	drafts, err := st.ListDrafts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(drafts) != 0 {
+		t.Errorf("一条都不该写进去，实际有 %d 条", len(drafts))
+	}
+}
+
+// TestPutDraftStillTreatsEmptyObjectAsDelete：空对象仍然等于删除。
+//
+// 那条捷径是有意的（把最后一处改动撤回 = 这条草稿不存在了），
+// 而上面那道新闸不该把它带坏。
+func TestPutDraftStillTreatsEmptyObjectAsDelete(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	const key = "route:a.example.com"
+
+	if err := st.PutDraft(ctx, key, json.RawMessage(`{"upstream":"127.0.0.1:1"}`), "tester"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutDraft(ctx, key, json.RawMessage(`{}`), "tester"); err != nil {
+		t.Fatalf("空对象是撤回，不是错误: %v", err)
+	}
+	drafts, err := st.ListDrafts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(drafts) != 0 {
+		t.Errorf("空对象应当把这条草稿删掉，实际还剩 %d 条", len(drafts))
+	}
+}

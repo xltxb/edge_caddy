@@ -118,7 +118,16 @@ func (d *DNSPod) Sync(ctx context.Context, plan dnssched.Plan) error {
 
 	for k, weight := range want {
 		if cur, ok := have[k]; ok {
-			if cur.Weight != nil && *cur.Weight == weight {
+			// **服务商表达不了权重时，记录在不在就是全部**。
+			//
+			// Weight 是 *int，因为权重是 DNSPod 的付费套餐特性——未开通的域名
+			// 上它恒为 nil。原先写的是 `cur.Weight != nil && *cur.Weight ==
+			// weight`，nil 时恒假，于是每一次自愈、每一次点开关都对全部记录
+			// 发一轮 Modify（issue #54）。Provider 接口要求 Sync 幂等，
+			// 而自愈会在节点抖动时反复调它。
+			//
+			// 症状离原因很远：撞上接口频率限制之后，人看到的是「摘除偶尔失败」。
+			if cur.Weight == nil || *cur.Weight == weight {
 				continue
 			}
 			if err := d.modify(ctx, cur.ID, k.line, k.value, weight); err != nil {
