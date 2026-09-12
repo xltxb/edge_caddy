@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -100,4 +102,122 @@ func TestServeStopsItsLoopsWhenTheTunnelDrops(t *testing.T) {
 		t.Errorf("serve 返回后流上又多了 %d 条消息——这次连接的循环没有停，"+
 			"而 main 已经在重连并再起一份了", got-settled)
 	}
+}
+
+// scriptedStream 先按剧本递出几条主控消息，然后一直挡着（直到被掐断）。
+type scriptedStream struct {
+	script chan *edgev1.MasterMsg
+	broken chan struct{}
+	once   sync.Once
+
+	mu   sync.Mutex
+	sent []*edgev1.AgentMsg
+}
+
+func newScriptedStream(msgs ...*edgev1.MasterMsg) *scriptedStream {
+	s := &scriptedStream{
+		script: make(chan *edgev1.MasterMsg, len(msgs)),
+		broken: make(chan struct{}),
+	}
+	for _, m := range msgs {
+		s.script <- m
+	}
+	return s
+}
+
+func (s *scriptedStream) Send(m *edgev1.AgentMsg) error {
+	s.mu.Lock()
+	s.sent = append(s.sent, m)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *scriptedStream) Recv() (*edgev1.MasterMsg, error) {
+	select {
+	case m := <-s.script:
+		return m, nil
+	case <-s.broken:
+		return nil, errors.New("隧道断开")
+	}
+}
+
+func (s *scriptedStream) breakIt() { s.once.Do(func() { close(s.broken) }) }
+
+// seen 回报已经发出去的消息里，各类型分别有几条。
+func (s *scriptedStream) seen() (probes, pushes int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, m := range s.sent {
+		switch m.M.(type) {
+		case *edgev1.AgentMsg_ProbeResult:
+			probes++
+		case *edgev1.AgentMsg_PushResult:
+			pushes++
+		}
+	}
+	return probes, pushes
+}
+
+// TestProbeIsAnsweredWhileADeployIsStillRunning：一次慢下发不该让探活失联。
+//
+// 下发原先在读循环里**同步**跑，上限是主控给的 DeadlineMs（5 秒）。那段时间里
+// 这条隧道读不到任何东西——主控推不下来配置，也探不了活，于是一台**正在正常
+// 下发**的机器被判成不可达（issue #61）。
+//
+// 紧邻的 Drain 分支早就因为完全相同的理由改成了 `go`，注释写着：「排空要等，
+// 不能占着这条读循环——占住的话主控这段时间推不下来配置也探不了活」。
+// **同一条理由应当得到同一种处置。**
+func TestProbeIsAnsweredWhileADeployIsStillRunning(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			// 探活走 GET，它必须一直答得动。
+			_, _ = w.Write([]byte(`{"apps":{}}`))
+			return
+		}
+		// 下发走写请求：卡在这里，模拟一次慢重载。
+		<-release
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer admin.Close()
+	defer releaseOnce.Do(func() { close(release) })
+
+	f := newScriptedStream(
+		&edgev1.MasterMsg{M: &edgev1.MasterMsg_Push{Push: &edgev1.PushConfig{
+			CfgVersion: "cfg-1", CaddyJson: []byte(`{"apps":{"http":{"servers":{}}}}`), DeadlineMs: 5000,
+		}}},
+		&edgev1.MasterMsg{M: &edgev1.MasterMsg_Probe{Probe: &edgev1.Probe{Id: "p1"}}},
+	)
+
+	a := New(Config{
+		NodeID:     "node-hk-01",
+		CaddyAdmin: admin.URL,
+		Heartbeat:  time.Hour, // 心跳发一次就够，别把断言搅浑
+		Log:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = a.serve(ctx, f, newTunnelWriter(f)) }()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if probes, _ := f.seen(); probes > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	probes, pushes := f.seen()
+	if probes == 0 {
+		t.Fatal("下发还没做完，探活就一直没人回 —— " +
+			"主控这段时间会把一台正在正常下发的机器判成不可达")
+	}
+	if pushes != 0 {
+		t.Fatalf("装置坏了：下发本该还卡着，却已经回了 %d 条结果", pushes)
+	}
+
+	releaseOnce.Do(func() { close(release) })
+	f.breakIt()
 }

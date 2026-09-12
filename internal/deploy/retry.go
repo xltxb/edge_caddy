@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/xltxb/edge_caddy/internal/store"
@@ -33,12 +34,13 @@ type Retrier struct {
 	sched *Scheduler
 
 	mu      sync.Mutex
-	running map[int64]context.CancelFunc // deploy_id → 取消
+	running map[int64]*retryHandle // deploy_id → 此刻在跑的那一个
+	seq     atomic.Uint64          // 给每次入队一个不重复的身份
 	wg      sync.WaitGroup
 }
 
 func newRetrier(s *Scheduler) *Retrier {
-	return &Retrier{sched: s, running: map[int64]context.CancelFunc{}}
+	return &Retrier{sched: s, running: map[int64]*retryHandle{}}
 }
 
 type retryJob struct {
@@ -57,11 +59,25 @@ func (r *Retrier) enqueue(job retryJob) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// **册子上记的是「哪一个」，不只是「有没有」。**
+	//
+	// 清理时原先只判 `r.running[deployID] != nil` 就删——同一次下发二次入队
+	// （enqueue 自己声明支持的场景）时，老任务退出会把**新任务**的 cancel
+	// 划掉，此后 CancelAll() 扫不到它（issue #60）。一次迟到的补推就能把
+	// 旧配置推给已经拿到新版的节点，而那正是 CancelAll 存在的全部理由。
+	//
+	// 身份用一个单调递增的序号。
+	//
+	// **不能用 new(struct{})**：零尺寸类型的指针，Go 规范允许不同分配返回
+	// 同一个地址——那样两个任务的「身份」会相等，老任务照样划掉新任务的那一条，
+	// 而这个 bug 与它要修的那个长得一模一样（这条是测试抓出来的）。
+	me := r.seq.Add(1)
+
 	r.mu.Lock()
 	if old := r.running[job.deployID]; old != nil {
-		old()
+		old.cancel()
 	}
-	r.running[job.deployID] = cancel
+	r.running[job.deployID] = &retryHandle{id: me, cancel: cancel}
 	r.mu.Unlock()
 
 	r.wg.Add(1)
@@ -69,7 +85,8 @@ func (r *Retrier) enqueue(job retryJob) {
 		defer r.wg.Done()
 		defer func() {
 			r.mu.Lock()
-			if r.running[job.deployID] != nil {
+			// 只划掉自己那一条。册子上已经换成别人了就别动它。
+			if cur := r.running[job.deployID]; cur != nil && cur.id == me {
 				delete(r.running, job.deployID)
 			}
 			r.mu.Unlock()
@@ -82,11 +99,17 @@ func (r *Retrier) enqueue(job retryJob) {
 // CancelAll 停掉全部在飞的补推。新的下发开始时调用。
 func (r *Retrier) CancelAll() {
 	r.mu.Lock()
-	for id, cancel := range r.running {
-		cancel()
+	for id, h := range r.running {
+		h.cancel()
 		delete(r.running, id)
 	}
 	r.mu.Unlock()
+}
+
+// retryHandle 是册子上的一条：谁，以及怎么叫停它。
+type retryHandle struct {
+	id     uint64
+	cancel context.CancelFunc
 }
 
 // Wait 等待全部补推结束。测试与优雅关停用。
@@ -118,6 +141,12 @@ func (r *Retrier) run(ctx context.Context, job retryJob) {
 
 		var still []string
 		for _, node := range pending {
+			// **每台机器之前都看一眼。** 被取消之后把整批推完，等于在
+			// CancelAll 已经说了「停」之后还往剩下的节点上推旧配置。
+			if ctx.Err() != nil {
+				r.abandon(job, pending, "已被新的下发取代")
+				return
+			}
 			r.sched.progress(job.deployID, job.cfgVersion, node, "run", "", true)
 			out := r.sched.Pusher.Push(ctx, node, job.cfgVersion, job.caddyJSON, job.verifyRules,
 				job.counts, r.sched.upstreamCertFor(node), PushDeadline)

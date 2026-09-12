@@ -358,6 +358,39 @@ PROBES = [
         "./internal/store/", "TestCountReconnectsByNodeAnswersForEveryoneAtOnce",
         "数出来是",
     ),
+    Probe(
+        "回源证书-两个文件一起落地",
+        "两次直接覆写的话，中间被打断就留下「新证书配旧私钥」。"
+        "Caddy 下次自启动会因为这对不上而整份失败，而报错与「上次写证书被打断」"
+        "毫无表面关联（issue #62）",
+        "internal/agent/agent.go",
+        "\t\t_ = os.Remove(certTmp)\n\t\treturn fmt.Errorf(\"写入回源私钥: %w\", err)",
+        "\t\t_ = os.Rename(certTmp, certPath)\n\t\treturn fmt.Errorf(\"写入回源私钥: %w\", err)",
+        "./internal/agent/", "TestUpstreamCertSurvivesAFailedWrite",
+        "两个文件没能都落地时",
+    ),
+    Probe(
+        "下发-不占读循环",
+        "下发同步跑的话，一次慢重载期间这条隧道读不到任何东西——"
+        "主控推不下来配置也探不了活，于是一台正在正常下发的机器被判成不可达。"
+        "紧邻的 Drain 分支早就因为同一条理由改成了 go（issue #61）",
+        "internal/agent/agent.go",
+        "\t\t\tgo a.handlePush(connCtx, out, m.Push)",
+        "\t\t\ta.handlePush(connCtx, out, m.Push)",
+        "./internal/agent/", "TestProbeIsAnsweredWhileADeployIsStillRunning",
+        "探活就一直没人回",
+    ),
+    Probe(
+        "补推-册子上记的是哪一个",
+        "清理时只判「有没有」不判「是不是自己」的话，老任务退出会把新任务的 "
+        "cancel 划掉，此后 CancelAll 扫不到它。一次迟到的补推就能把旧配置推给"
+        "已经拿到新版的节点（issue #60）",
+        "internal/deploy/retry.go",
+        "if cur := r.running[job.deployID]; cur != nil && cur.id == me {",
+        "if cur := r.running[job.deployID]; cur != nil {",
+        "./internal/deploy/", "TestCancelAllStopsTheJobThatIsActuallyRunning",
+        "CancelAll 之后又推了",
+    ),
 ]
 
 

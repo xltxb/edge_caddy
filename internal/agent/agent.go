@@ -57,6 +57,10 @@ type Agent struct {
 
 	logs *LogBuffer
 
+	// pushMu 串行化配置应用。它与 mu 分开：mu 护的是几个字段，
+	// 而这一把要握过一整次热重载（最长 5 秒），合在一起会让心跳也跟着等。
+	pushMu sync.Mutex
+
 	mu         sync.Mutex
 	cfgVersion string
 	// geoSHA 是本机 GeoIP 库的哈希，随心跳报上去。空表示没有库。
@@ -196,7 +200,14 @@ func (a *Agent) serve(ctx context.Context, stream tunnelStream, out *tunnelWrite
 		}
 		switch m := msg.M.(type) {
 		case *edgev1.MasterMsg_Push:
-			a.handlePush(connCtx, out, m.Push)
+			// **下发也不能占着这条读循环**，理由与紧邻的 Drain 分支一模一样：
+			// 占住的话主控这段时间推不下来配置也探不了活，而一次热重载的上限
+			// 是主控给的 DeadlineMs（5 秒）。于是一台**正在正常下发**的机器
+			// 会被探活超时判成不可达（issue #61）。
+			//
+			// 串行化由 pushMu 负责——要的是「一次只应用一份配置」，
+			// 不是「读循环停下来等」。这两件事此前被同一行代码顺带做了。
+			go a.handlePush(connCtx, out, m.Push)
 		case *edgev1.MasterMsg_Probe:
 			a.handleProbe(connCtx, out, m.Probe)
 		case *edgev1.MasterMsg_GeoDb:
@@ -222,6 +233,11 @@ func (a *Agent) serve(ctx context.Context, stream tunnelStream, out *tunnelWrite
 }
 
 func (a *Agent) handlePush(ctx context.Context, out *tunnelWriter, p *edgev1.PushConfig) {
+	// 一次只应用一份配置。两份同时往 Caddy 上灌，最终态取决于谁后到，
+	// 而回执会说两份都成功了。
+	a.pushMu.Lock()
+	defer a.pushMu.Unlock()
+
 	deadline := time.Duration(p.GetDeadlineMs()) * time.Millisecond
 	if deadline <= 0 {
 		deadline = 5 * time.Second
@@ -326,11 +342,42 @@ func writeUpstreamCert(p *edgev1.PushConfig) error {
 	if err := os.MkdirAll(filepath.Dir(certPath), 0o700); err != nil {
 		return fmt.Errorf("建立证书目录: %w", err)
 	}
-	if err := os.WriteFile(certPath, certPEM, 0o644); err != nil {
+
+	// **两个都先写 .tmp，都写成了再一起 rename。**
+	//
+	// rename 在同一个文件系统上是原子的，所以每个文件各自不会半新半旧；
+	// 而把两次 rename 排到最后，「两个文件没能都落地」这件事就退化成
+	// 「一个都没动」。同仓库的 geoip.writeGeoDB 是同一个范式。
+	//
+	// 直接覆写的代价：两次写之间进程被杀或机器掉电，磁盘上就是新证书配旧
+	// 私钥——Caddy 下次自启动按最后一份配置 provision 时会因为这对不上而整份
+	// 失败，而报错与「上次写证书被打断」毫无表面关联（issue #62）。
+	//
+	// **守着这条的是 TestUpstreamCertSurvivesAFailedWrite**：它让第二个 .tmp
+	// 写不成，然后断言磁盘上那一对还是原来那一对。改回两次直接覆写它就红。
+	certTmp, keyTmp := certPath+".tmp", keyPath+".tmp"
+	if err := os.WriteFile(certTmp, certPEM, 0o644); err != nil {
 		return fmt.Errorf("写入回源证书: %w", err)
 	}
-	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+	if err := os.WriteFile(keyTmp, keyPEM, 0o600); err != nil {
+		// 证书那份临时文件要收掉：留着的话下一次写入会撞上它，
+		// 而那时的报错说的是另一件事。
+		_ = os.Remove(certTmp)
 		return fmt.Errorf("写入回源私钥: %w", err)
+	}
+
+	// **先换私钥再换证书。** 私钥是两者里更该早一步就位的那个。
+	//
+	// 中间那一刻是「旧证书配新私钥」，而 Caddy 此刻还没有被要求加载这一对
+	// （配置随后才应用，见 handlePush 里紧随其后的 ApplyConfig），
+	// 所以两种顺序在这里都不会被看见——TestUpstreamCertWritesBothAndLeavesNoTemp
+	// 只钉住「两个都换掉、不留残骸」，顺序本身不在它的断言里，那是刻意的。
+	if err := os.Rename(keyTmp, keyPath); err != nil {
+		_ = os.Remove(certTmp)
+		return fmt.Errorf("落定回源私钥: %w", err)
+	}
+	if err := os.Rename(certTmp, certPath); err != nil {
+		return fmt.Errorf("落定回源证书: %w", err)
 	}
 	return nil
 }
