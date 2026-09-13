@@ -20,7 +20,25 @@ export interface EdgeSocket {
 export interface EdgeSocketOptions {
   onFrame: FrameHandler
   onState: StateHandler
+  /**
+   * 会话已经失效，别再重连了。
+   *
+   * 可选：不给就只是不重连——那仍然比一直重连强，但用户看不到原因。
+   */
+  onSessionLost?: () => void
 }
+
+/**
+ * 主控复核 Cookie 发现会话没了时发的关闭帧（契约 §2「服务端主动关闭」）。
+ *
+ * **它是 1000 正常关闭而不是直接掐掉，正是为了让这一侧能分辨。**
+ * 当成抖动的话前端会一直重连下去，每一次都在 401 上失败，
+ * 界面停在「正在重连…」，而人不知道自己已经被登出了。
+ *
+ * 1001 Going Away 是另一回事（主控关停、这条订阅积压超限），那时该重连——
+ * 把它也当成会话失效，一次主控重启就会把所有人踢到登录页。
+ */
+const SESSION_LOST_REASON = '会话已失效' 
 
 /**
  * 主控实时通道。
@@ -29,7 +47,7 @@ export interface EdgeSocketOptions {
  * 一屏静止的旧数据以为一切正常。这跟 ADR-0002 提醒的「界面不能给出兑现不了的
  * 承诺」是同一类错。降级后的 2s 轮询由调用方在 onState 里接。
  */
-export function createEdgeSocket({ onFrame, onState }: EdgeSocketOptions): EdgeSocket {
+export function createEdgeSocket({ onFrame, onState, onSessionLost }: EdgeSocketOptions): EdgeSocket {
   let sock: WebSocket | null = null
   let timer: ReturnType<typeof setTimeout> | null = null
   let backoff = BACKOFF_START
@@ -90,8 +108,13 @@ export function createEdgeSocket({ onFrame, onState }: EdgeSocketOptions): EdgeS
       ws.close()
     }
 
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       if (sock === ws) sock = null
+      if (ev.code === 1000 && ev.reason === SESSION_LOST_REASON) {
+        stopped = true
+        onSessionLost?.()
+        return
+      }
       scheduleReconnect()
     }
   }

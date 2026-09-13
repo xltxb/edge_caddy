@@ -149,6 +149,34 @@ describe('审计页的措辞与它拿到的数据', () => {
     expect(rows.some((r) => r.includes('bob'))).toBe(true)
   })
 
+  it('筛选着的时候不说「全部」—— 那时看到的是一个人的记录', async () => {
+    // 筛了操作人再翻到底，副标题原先照样说「全部写操作与登录记录（N 条）」。
+    // 那句话在此刻是假的：N 是 bob 的条数，而页面自称的是全景。
+    //
+    // 审计页的措辞是这一页唯一的可信度来源 —— 「查不到那次操作」和「那次
+    // 操作没发生」在界面上长得一模一样，全靠这句话区分。
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) =>
+        envelope({
+          items: [row(1, { operator: url.includes('bob') ? 'bob' : 'abiu' })],
+          next_before_id: null,
+        }),
+      ),
+    )
+    const w = mount(AuditView)
+    await flush()
+    ;(w.vm as unknown as { operator: string }).operator = 'bob'
+    await flush()
+    await flush()
+
+    const caption = w.find('[data-test="audit-scope"]').text()
+    expect(caption).not.toContain('全部写操作与登录记录')
+    // 正向的一半：它得说清这是**谁**的记录，否则「不说全部」可以靠
+    // 把整句话删掉来满足。
+    expect(caption).toContain('bob')
+  })
+
   it('到底之后不再给「加载更多」，措辞也不再含糊', async () => {
     vi.stubGlobal(
       'fetch',

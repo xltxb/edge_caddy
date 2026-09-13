@@ -58,6 +58,19 @@ async function load(): Promise<void> {
  *
  * 这一页的副标题没有像审计页那样说「全部」，所以只取第一页不算一句假话——
  * 但「查不到那次下发」和「那次下发没发生」在界面上仍然长得一样（issue #49）。
+ *
+ * # 为什么这里没有审计页那套 AbortController
+ *
+ * 看起来是同一个 items / nextBeforeId / loading 状态机，而**约束不同**：
+ * 审计页有操作人筛选，`watch(operator, load)` 能在 loadMore 还在飞的时候
+ * 再发一次 load，于是先发后回的那次会把旧筛选的旧页 append 进新结果
+ * （issue #76）。
+ *
+ * 这一页没有筛选：`load` 只有 onMounted 与「重试」两个入口，而重试按钮只在
+ * error 态渲染——那时没有请求在飞。loadMore 自己有 `if (loading.value) return`
+ * 和按钮的 `:disabled`。两次请求重叠不了，取消也就没有对象。
+ *
+ * 加筛选的那天这段话就不成立了，那时把审计页那套搬过来（或者届时一起抽出去）。
  */
 async function loadMore(): Promise<void> {
   if (nextBeforeId.value === null || loading.value) return

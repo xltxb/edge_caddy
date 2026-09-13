@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { RESOURCE_ID, RESOURCE_ID_HINT } from '@/ids'
 import { errorText } from '@/api/http'
 import { useNodesStore } from '@/stores/nodes'
 import type { NodeTokenWire } from '@/api/types'
@@ -13,21 +14,13 @@ const issued = ref<NodeTokenWire | null>(null)
 const busy = ref(false)
 const error = ref('')
 
-/**
- * 节点 ID 的格式。**与规则 ID 同一条**（NewRuleModal 里那个）。
- *
- * 这个框此前没有任何校验（issue #79），而 node_id 会被拼进九处 URL 路径、
- * 进 DNS 记录的比对键、进证书的 CN。带 `/` 或 `#` 的 id 在其中任何一处上
- * 都会安静地走偏——而它是在这里被人一次性敲进去的。
- *
- * 提前拦住，而不是等后端拒：这一步之后会签出一张绑定这台机器身份的
- * 一次性 Token，那不是一个「再试一次」代价为零的操作。
- */
-const NODE_ID = /^[a-z0-9][a-z0-9-]{1,39}$/
+
 
 async function submit(): Promise<void> {
-  if (!NODE_ID.test(form.value.node_id)) {
-    error.value = '节点 ID 只能用小写字母、数字和连字符，以字母或数字开头，2–40 个字符'
+  if (!RESOURCE_ID.test(form.value.node_id)) {
+    // 提前拦住，而不是等后端拒：这一步之后会签出一张绑定这台机器身份的
+    // 一次性 Token，那不是一个「再试一次」代价为零的操作。
+    error.value = `节点 ID ${RESOURCE_ID_HINT}`
     return
   }
   busy.value = true

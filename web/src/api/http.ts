@@ -64,6 +64,20 @@ export function setUnauthorizedHandler(fn: () => void): void {
   onUnauthorized = fn
 }
 
+/**
+ * 会话已经失效 —— 走与 HTTP 401 完全相同的处置。
+ *
+ * WS 那条路也会到这里：主控在心跳周期上复核 Cookie，发现会话没了就发一个
+ * 带「会话已失效」的 1000 关闭帧（契约 §2「服务端主动关闭」）。
+ *
+ * **两条路必须共用同一个出口。** 各写各的话，「被登出」在界面上会有两种
+ * 表现，而它们迟早分叉——比如一条清了 session 另一条没清，人就卡在
+ * issue #38 那个登录页与总览页互相弹的循环里。
+ */
+export function notifySessionExpired(): void {
+  onUnauthorized()
+}
+
 interface RequestOptions {
   method?: string
   body?: unknown

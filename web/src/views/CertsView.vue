@@ -30,7 +30,9 @@ const openRow = ref<string | null>(null)
  * 空态要说的两件事都在 `GET /settings` 里（契约 §9）：证书从哪来、那条链路通没通。
  *
  * **两者都只读**：`master_endpoint` 由主控启动配置决定，`cert_bot_token_configured`
- * 只从环境变量 `EC_OPS_BOT_TOKEN` 读 —— `PUT` 里发它会被严格绑定当场拒掉。
+ * 只从环境变量 `EC_CERT_BOT_TOKEN` 读 —— `PUT` 里发它会被严格绑定当场拒掉。
+ * （`EC_OPS_BOT_TOKEN` 是另一个：那是 ops-bot 的凭据，主控启动时会拒绝
+ * 两者取同一个值。）
  * 所以它们在界面上是**陈述**，不是入口。
  */
 const settings = ref<SettingsWire | null>(null)

@@ -1,3 +1,4 @@
+import { notifySessionExpired } from './api/http'
 import { createEdgeSocket, type EdgeSocket } from './api/ws'
 import type { WsFrame } from './api/types'
 import { useDeployStore } from './stores/deploy'
@@ -41,6 +42,13 @@ export function startRealtime(): void {
       // 不这么做的话，一次下发会永远停在「热重载中」，而且看不出来是断了。
       if (s === 'polling' || s === 'reconnecting') deploy.startPolling()
       else deploy.stopPolling()
+    },
+    onSessionLost: () => {
+      // **不重连，走与 HTTP 401 同一条处置。** 主控特意用 1000 正常关闭帧
+      // 说这件事（契约 §2），而把它当成抖动的话前端会一直重连下去，
+      // 每次都在 401 上失败，界面停在「正在重连…」——人不知道自己被登出了。
+      stopRealtime()
+      notifySessionExpired()
     },
   })
   socket.start()

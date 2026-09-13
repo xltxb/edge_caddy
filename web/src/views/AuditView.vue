@@ -112,14 +112,26 @@ watch(operator, load)
 /**
  * 副标题说的是**这一页此刻真的拿到了什么**。
  *
- * 「全部」是一句承诺，只有翻到底之后才兑现得了。没到底时说出条数与
- * 「还有更早的」，人就知道自己看到的是一个窗口而不是全景。
+ * 两个维度各管一句：
+ *
+ *   到没到底  「全部」是一句承诺，只有翻到底之后才兑现得了。没到底时说出
+ *             条数与「还有更早的」，人就知道自己看到的是一个窗口。
+ *   筛没筛     筛了操作人还说「全部写操作与登录记录」是假话——那个 N 是
+ *             这一个人的条数。**这一页的措辞是它唯一的可信度来源**：
+ *             「查不到那次操作」和「那次操作没发生」在界面上长得一模一样。
  */
-const scope = computed(() =>
-  nextBeforeId.value === null
-    ? `全部写操作与登录记录（${items.value.length} 条）· 倒序`
-    : `已加载最近 ${items.value.length} 条，还有更早的 · 倒序`,
-)
+const scope = computed(() => {
+  const n = items.value.length
+  const filtered = operator.value !== 'all'
+  if (nextBeforeId.value === null) {
+    return filtered
+      ? `${operator.value} 的全部操作记录（${n} 条）· 倒序`
+      : `全部写操作与登录记录（${n} 条）· 倒序`
+  }
+  return filtered
+    ? `已加载 ${operator.value} 最近 ${n} 条，还有更早的 · 倒序`
+    : `已加载最近 ${n} 条，还有更早的 · 倒序`
+})
 
 /** 操作人列表从当前结果里取，切到「全部」时才重算。 */
 const operators = ref<string[]>([])
@@ -159,7 +171,7 @@ function stamp(at: string): string {
   <section class="panel">
     <header class="head">
       <div class="title">审计日志</div>
-      <div class="sub">{{ scope }}</div>
+      <div class="sub" data-test="audit-scope">{{ scope }}</div>
       <select v-model="operator" class="select">
         <option value="all">全部操作人</option>
         <option v-for="o in operators" :key="o" :value="o">{{ o }}</option>

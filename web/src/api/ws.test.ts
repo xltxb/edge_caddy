@@ -16,7 +16,7 @@ class FakeSocket {
   onopen: (() => void) | null = null
   onmessage: ((ev: { data: string }) => void) | null = null
   onerror: (() => void) | null = null
-  onclose: (() => void) | null = null
+  onclose: ((ev: { code: number; reason: string }) => void) | null = null
   closed = false
 
   constructor(readonly url: string) {
@@ -28,9 +28,9 @@ class FakeSocket {
     this.onopen?.()
   }
 
-  drop(): void {
+  drop(code = 1006, reason = ''): void {
     this.readyState = 3
-    this.onclose?.()
+    this.onclose?.({ code, reason })
   }
 
   deliver(payload: unknown): void {
@@ -143,5 +143,63 @@ describe('createEdgeSocket', () => {
     const before = FakeSocket.instances.length
     vi.advanceTimersByTime(10_000)
     expect(FakeSocket.instances.length).toBe(before)
+  })
+})
+
+describe('服务端主动关闭的两种意思', () => {
+  beforeEach(() => {
+    FakeSocket.instances = []
+    vi.stubGlobal('WebSocket', FakeSocket)
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('会话失效时停手并跳登录，不再重连', () => {
+    // 主控在心跳周期上复核 Cookie，发现会话没了就发一个 **1000 正常关闭帧**，
+    // reason 是「会话已失效」（契约 §2「服务端主动关闭」）。它特意不直接掐掉，
+    // 就是为了让这一侧能与「抖动」区分开。
+    //
+    // 而 onclose 原先无条件 scheduleReconnect —— 于是会话过期之后前端每隔
+    // 几秒重连一次，每次都在 401 上失败，界面停在「正在重连…」，
+    // **人不知道自己已经被登出了**。
+    const states: LinkState[] = []
+    const onSessionLost = vi.fn()
+    const sock = createEdgeSocket({
+      onFrame: () => {},
+      onState: (s) => states.push(s),
+      onSessionLost,
+    })
+    sock.start()
+    latest().open()
+
+    const before = FakeSocket.instances.length
+    latest().drop(1000, '会话已失效')
+
+    expect(onSessionLost).toHaveBeenCalledTimes(1)
+    vi.advanceTimersByTime(30_000)
+    expect(FakeSocket.instances.length).toBe(before)
+  })
+
+  it('主控关停 / 积压超限照样重连', () => {
+    // 1001 Going Away 是「这条订阅没了，但你该回来」。把它也当成会话失效的话，
+    // 一次主控重启会把所有人踢到登录页 —— 而他们的会话完全有效。
+    const onSessionLost = vi.fn()
+    const sock = createEdgeSocket({
+      onFrame: () => {},
+      onState: () => {},
+      onSessionLost,
+    })
+    sock.start()
+    latest().open()
+
+    const before = FakeSocket.instances.length
+    latest().drop(1001, '')
+
+    expect(onSessionLost).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(30_000)
+    expect(FakeSocket.instances.length).toBeGreaterThan(before)
   })
 })

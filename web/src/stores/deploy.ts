@@ -194,13 +194,6 @@ export const useDeployStore = defineStore('deploy', () => {
   }
 
   /**
-   * 刷新后恢复进行中的下发。
-   *
-   * 没有这一步，`targets` 落库对前端就是白做的：正常路径下行是从
-   * POST /deploys 的响应来的，本来就完整；`targets` 唯一的用武之地
-   * 恰恰是「那次响应已经没了」的场景。
-   */
-  /**
    * 一次下发落定之后，**基线与总览四格都变了**，要重新取一次。
    *
    * 不取的话它们停在登录那一刻：顶栏的「基线 cfg-xxx」、总览 KPI，以及节点上
@@ -222,6 +215,13 @@ export const useDeployStore = defineStore('deploy', () => {
     if (overview.baseline) useNodesStore().setBaseline(overview.baseline)
   }
 
+  /**
+   * 刷新后恢复进行中的下发。
+   *
+   * 没有这一步，`targets` 落库对前端就是白做的：正常路径下行是从
+   * POST /deploys 的响应来的，本来就完整；`targets` 唯一的用武之地
+   * 恰恰是「那次响应已经没了」的场景。
+   */
   async function resume(): Promise<boolean> {
     if (current.value) return true
     const id = recallRunning()

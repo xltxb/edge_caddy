@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { RESOURCE_ID, RESOURCE_ID_HINT } from '@/ids'
 import { useRouter } from 'vue-router'
 import { errorText } from '@/api/http'
 import type { RuleType } from '@/api/types'
@@ -121,8 +122,8 @@ id.value = suggestedId.value
 const idError = computed(() => {
   const v = id.value.trim()
   if (!v) return ''
-  if (!/^[a-z0-9][a-z0-9-]{1,39}$/.test(v)) {
-    return '只能用小写字母、数字和连字符，2–40 个字符'
+  if (!RESOURCE_ID.test(v)) {
+    return RESOURCE_ID_HINT
   }
   if (config.rules.some((r) => r.id === v)) {
     return '已经有一条这个 ID 的规则 —— 用它保存会把那一条整个覆盖掉'
