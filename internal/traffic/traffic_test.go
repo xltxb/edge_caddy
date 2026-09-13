@@ -464,3 +464,59 @@ func TestSamplingSurvivesANodeBeingDown(t *testing.T) {
 			"而这些样本是「较昨日同时段」的分母，一次过夜故障会让第二天整天没有同比")
 	}
 }
+
+// TestStaleWindowFollowsTheConfiguredHeartbeat：「当下」的界线要跟着心跳配置走。
+//
+// staleAfter 原先写死 30 秒，注释的理由是「心跳默认 3 秒一次，离线判定要连续
+// 错过 9 秒，30 秒给足了抖动余量」。**那句话只在默认值上成立。**
+//
+// `PUT /settings` 允许 heartbeat_interval_s 到 60、offline_threshold_count
+// 到 20（internal/api/settings.go 的校验），也就是判离线最长要 1200 秒。
+// 把心跳间隔调到 30 秒——一个完全合法的设置——每一份样本在下一次心跳到达前
+// 都已经「超过 30 秒」，于是 reported 恒为 0，而 want 数的是活着的节点：
+//
+//	reported < want  →  每一分钟都跳过  →  **采样永久停摆**
+//
+// 而它是静默的：没有报错，只有总览上那个「较昨日同时段」一直空着，
+// 24 小时后也不会好——因为库里根本没有昨天那个点。
+//
+// 判据是「一份刚好在一个心跳周期内到达的样本算不算数」：那是这条界线
+// 唯一要回答的问题。
+func TestStaleWindowFollowsTheConfiguredHeartbeat(t *testing.T) {
+	// 运维把心跳调慢到 30 秒、阈值 3 次（判离线 90 秒）——都在允许范围内。
+	const interval, threshold = 30 * time.Second, 3
+
+	nodes := []store.Node{{ID: "node-hk-01", Status: "up"}}
+	h := fakeHealth{"node-hk-01": health.Sample{
+		// 上一次心跳是 40 秒前：比写死的 30 秒旧，但远没到判离线的 90 秒。
+		// 这台机器**活得好好的**，它只是心跳慢。
+		At: time.Now().Add(-40 * time.Second), Conns: 12, ReqTotal: 300, OriginTotal: 40,
+	}}
+
+	_, _, _, reported := traffic.TotalsWithin(nodes, h, traffic.StaleWindow(interval, threshold))
+	if reported != 1 {
+		t.Fatalf("reported = %d，想要 1 —— 心跳调到 %v 之后每一份样本都比写死的"+
+			"30 秒旧，reported 恒为 0，而 want 数的是活着的节点：采样每一分钟"+
+			"都跳过，且没有任何报错", reported, interval)
+	}
+}
+
+// 另一半：真的过期了还是要判出来，否则这条界线等于没有。
+//
+// 没有这一条，一个「永远不判陈旧」的实现也能让上面那条过——而那正是
+// issue #48 修掉的东西（掉线节点的旧数字被加进当下的汇总）。
+func TestStaleWindowStillCatchesARealStaleSample(t *testing.T) {
+	const interval, threshold = 3 * time.Second, 3
+
+	nodes := []store.Node{{ID: "node-hk-01", Status: "up"}}
+	h := fakeHealth{"node-hk-01": health.Sample{
+		At: time.Now().Add(-10 * time.Minute), Conns: 12,
+	}}
+
+	_, _, _, reported := traffic.TotalsWithin(nodes, h, traffic.StaleWindow(interval, threshold))
+	if reported != 0 {
+		t.Fatalf("reported = %d，想要 0 —— 十分钟前的样本不是「当下」，"+
+			"把它算进汇总就是 issue #48：一个偏低的数字在 24 小时后成为同比的分母",
+			reported)
+	}
+}

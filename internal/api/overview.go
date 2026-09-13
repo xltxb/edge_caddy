@@ -64,9 +64,17 @@ func (s *Server) handleOverview(c *gin.Context) {
 			driftCount++
 		}
 	}
-	// **与采样器同一份口径。** 两处各算一遍迟早在界面上给出两个对不上的数字，
-	// 而那比单个错数字更让人怀疑整个系统。
-	connsTotal, reqTotal, originTotal, _ := traffic.Totals(nodes, s.health)
+	// **与采样器同一份口径**，包括「当下」的那条界线：两处各算一遍迟早在
+	// 界面上给出两个对不上的数字，而那比单个错数字更让人怀疑整个系统。
+	//
+	// 界线跟着心跳配置走，不是写死的 30 秒——见 traffic.StaleWindow。
+	// 读不出配置就按默认界线判：总览失败比一个稍微保守的界线糟得多。
+	stale := time.Duration(0)
+	if sys, serr := s.store.GetSystemSettings(ctx); serr == nil {
+		stale = traffic.StaleWindow(
+			time.Duration(sys.HeartbeatInterval)*time.Second, sys.OfflineThreshold)
+	}
+	connsTotal, reqTotal, originTotal, _ := traffic.TotalsWithin(nodes, s.health, stale)
 
 	// 昨天这一分钟没采到（主控停机、或者报数节点不齐被跳过）时是 nil。
 	// 查不出来也给 nil：一个同比算不出来不该让整个总览失败。

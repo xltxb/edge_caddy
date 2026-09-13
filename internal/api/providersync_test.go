@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -44,7 +45,7 @@ func TestProviderSyncTellsEmptyRotationApartFromAFailure(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			ok, detail := providerSyncDetail(c.err)
+			ok, detail, _ := providerSyncDetail(c.err)
 			if ok != c.wantOK {
 				t.Fatalf("ok = %v，想要 %v", ok, c.wantOK)
 			}
@@ -59,5 +60,21 @@ func TestProviderSyncTellsEmptyRotationApartFromAFailure(t *testing.T) {
 				t.Fatal("说了没推上去就得说为什么 —— 契约那张表承诺 false 时给出理由")
 			}
 		})
+	}
+}
+
+// 「说 false 就得说为什么」这条也管 syncAfterProviderChange 自己那一档。
+//
+// providerSyncDetail 那层的断言守不到它：`s.dns == nil` 在进入分档之前就
+// return 了，而它原先回的是一个空 detail —— 界面上是一个没有下文的失败。
+// **这正是「兜底层错位」**：断言落在抽出来的那层，而漏的那一档在它上面。
+func TestNoOrchestratorStillSaysWhy(t *testing.T) {
+	var s Server // dns 为 nil，正是这一档
+	ok, detail := s.syncAfterProviderChange(context.Background())
+	if ok {
+		t.Fatal("没有编排器却说推上去了")
+	}
+	if detail == "" {
+		t.Fatal("说了没推上去却不说为什么 —— 契约那张表承诺 false 时给出理由")
 	}
 }

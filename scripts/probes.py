@@ -381,6 +381,17 @@ PROBES = [
         "探活就一直没人回",
     ),
     Probe(
+        "流量采样-当下的界线跟着心跳走",
+        "写死 30 秒的话，运维把 heartbeat_interval_s 调到 30 以上（校验允许到 60）"
+        "就会让每一份样本都判成陈旧：reported 恒为 0，而 want 数的是活着的节点，"
+        "于是每一分钟都跳过——采样永久停摆，没有任何报错，只有同比一直空着",
+        "internal/traffic/traffic.go",
+        "\tw := interval*time.Duration(threshold) + interval",
+        "\tw := defaultStaleAfter",
+        "./internal/traffic/", "TestStaleWindowFollowsTheConfiguredHeartbeat",
+        "采样每一分钟",
+    ),
+    Probe(
         "登录限速-成功不中和 IP 维度",
         "succeed 把 IP 那一档也清掉的话，攻击者拿自己的账号夹在中间就能把它"
         "中和：对 A 试 4 次、自己登一次、对 B 再试 4 次……IP 维度存在的全部"
