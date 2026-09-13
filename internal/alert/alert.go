@@ -77,9 +77,13 @@ func (n *Notifier) Notify(ctx context.Context, level, title, body string) {
 	ctx = context.WithoutCancel(ctx)
 
 	var wg sync.WaitGroup
-	results := make([]string, 0, 2)
+	results := make([]delivery, 0, 2)
 	var mu sync.Mutex
-	record := func(s string) { mu.Lock(); results = append(results, s); mu.Unlock() }
+	record := func(ok bool, detail string) {
+		mu.Lock()
+		results = append(results, delivery{ok: ok, detail: detail})
+		mu.Unlock()
+	}
 
 	if cfg.WebhookURL != "" {
 		wg.Add(1)
@@ -87,9 +91,9 @@ func (n *Notifier) Notify(ctx context.Context, level, title, body string) {
 			defer wg.Done()
 			if err := n.sendWebhook(ctx, cfg.WebhookURL, level, title, body); err != nil {
 				n.Log.Error("Webhook 投递失败", "err", err)
-				record("webhook 失败：" + err.Error())
+				record(false, "webhook 失败："+err.Error())
 			} else {
-				record("webhook 已投递")
+				record(true, "webhook 已投递")
 			}
 		}()
 	}
@@ -99,9 +103,9 @@ func (n *Notifier) Notify(ctx context.Context, level, title, body string) {
 			defer wg.Done()
 			if err := n.sendLark(ctx, cfg.LarkWebhook, level, title, body, cfg.AtAllOnCrit); err != nil {
 				n.Log.Error("Lark 投递失败", "err", err)
-				record("lark 失败：" + err.Error())
+				record(false, "lark 失败："+err.Error())
 			} else {
-				record("lark 已投递")
+				record(true, "lark 已投递")
 			}
 		}()
 	}
@@ -110,14 +114,12 @@ func (n *Notifier) Notify(ctx context.Context, level, title, body string) {
 	if len(results) == 0 {
 		return // 一条渠道都没配，不必留痕
 	}
-	result := "ok"
+	result := overallResult(results)
+	details := make([]string, 0, len(results))
 	for _, r := range results {
-		if containsFail(r) {
-			result = "fail"
-			break
-		}
+		details = append(details, r.detail)
 	}
-	detail := strings.Join(results, "；")
+	detail := strings.Join(details, "；")
 	if err := n.Store.InsertAudit(ctx, store.AuditRecord{
 		Operator: "system", Action: "发送告警", Target: title,
 		Result: result, Detail: detail,
@@ -126,7 +128,29 @@ func (n *Notifier) Notify(ctx context.Context, level, title, body string) {
 	}
 }
 
-func containsFail(s string) bool { return bytes.Contains([]byte(s), []byte("失败")) }
+// delivery 是一条渠道的投递结果：**成没成是一个布尔，文案是给人读的**。
+//
+// 这两件事原先合在一句中文里，随后再用 `bytes.Contains(s, "失败")` 从字符串
+// 搜回来（issue #77）。那句推理今天成立，只因为成功分支的文案恰好不含那两个
+// 字——改一次文案它就静默失效，而失效的样子是审计里全绿。
+type delivery struct {
+	ok     bool
+	detail string
+}
+
+// overallResult 把几条投递收成审计里的一个结果。
+//
+// 一条没成就是 partial 吗？不是：告警投递不是「N 个节点里 M 个成功」那种
+// 部分完成——两条渠道是**同一条消息的两个出口**，有一个没送到，这次通知
+// 就没有完整地发生。记 fail，让人去看 detail 里是哪一条。
+func overallResult(results []delivery) string {
+	for _, r := range results {
+		if !r.ok {
+			return "fail"
+		}
+	}
+	return "ok"
+}
 
 // sendWebhook 发通用 JSON，失败重试 3 次（后端文档 §7）。
 func (n *Notifier) sendWebhook(ctx context.Context, url, level, title, body string) error {

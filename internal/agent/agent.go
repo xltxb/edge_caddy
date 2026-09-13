@@ -10,10 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -622,8 +622,18 @@ func edgePorts(caddyJSON []byte) []uint32 {
 	var out []uint32
 	for _, srv := range cfg.Apps.HTTP.Servers {
 		for _, l := range srv.Listen {
-			_, port, found := strings.Cut(l, ":")
-			if !found {
+			// **用 SplitHostPort，不是按第一个冒号切。**
+			//
+			// `[::1]:443` 按第一个冒号切会得到 ":1]:443"，ParseUint 失败被
+			// 静默丢弃——那个端口上的连接从此不被统计，而症状是「一台正在
+			// 扛流量的机器报 0」（issue #75）。
+			//
+			// 这里读的是**运行中 Caddy 的整份配置**（见 metrics.go 的 ports），
+			// 那里的监听地址不由渲染器决定：人手工在节点上配了 v6 监听就会踩到。
+			//
+			// `:80` 这种省略主机的写法 SplitHostPort 也认，host 为空。
+			_, port, err := net.SplitHostPort(l)
+			if err != nil {
 				continue
 			}
 			if n, err := strconv.ParseUint(port, 10, 32); err == nil {

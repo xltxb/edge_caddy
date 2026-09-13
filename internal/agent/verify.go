@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -139,6 +141,12 @@ func (v *VerifyServer) RunSweeper(ctx context.Context, every time.Duration) {
 			v.mu.RUnlock()
 			if n := v.limit.sweepAll(rules); n > 0 {
 				v.log.Debug("清理限流桶", "清掉", n, "剩余", v.limit.size())
+			}
+			// **重放缓存也在这里清。** admit 不再扫表之后（issue #74），
+			// 一条再也不会被问到的过期签名没有任何别的路径会删掉它——
+			// 不接上这一行，那张表就只增不减，比原先更糟。
+			if n := v.seen.sweep(); n > 0 {
+				v.log.Debug("清理重放缓存", "清掉", n, "剩余", v.seen.size())
 			}
 		}
 	}
@@ -319,6 +327,10 @@ type replayCache struct {
 	// 清理就不需要知道任何规则的存在。
 	seen map[string]time.Time
 
+	// scans 是累计扫过的条目数，只为让「admit 不扫表」这件事可被断言。
+	// 生产路径上没人读它（与 commitFault / RetryBackoff 同一个惯例）。
+	scans int
+
 	// now 可注入，测试里不必真的等。与 limiter 同一个惯例。
 	now func() time.Time
 }
@@ -328,22 +340,59 @@ func newReplayCache() *replayCache {
 }
 
 // admit 返回 true 表示这个签名此前没出现过。
+// admit 是**热路径**：只查、只插，不扫表。
+//
+// 这里原先顺手遍历整张表清过期条目。表的规模是「窗口内的合法签名数」——
+// 高 QPS 的受保护域名上，每个请求都是一次 O(n) 的串行扫描，而且握着锁
+// （issue #74）。限流桶那边早就是另一条路：清理交给 RunSweeper 定期做。
+//
+// **过期判断仍然在这里做**，只是只判被问到的那一条：一条过了窗口的签名
+// 要重新放行，否则它永远用不了第二次——而那件事不能等到下一次 sweep。
 func (c *replayCache) admit(key string, ttl time.Duration) bool {
 	now := c.now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// 顺手清掉过期的。规模是「窗口内的请求数」，不需要 LRU。
-	for k, dies := range c.seen {
-		if now.After(dies) {
-			delete(c.seen, k)
-		}
-	}
-	if _, dup := c.seen[key]; dup {
+	c.scans++ // 只为测试能问「刚才扫了几条」，生产路径上没人读它
+	if dies, seen := c.seen[key]; seen && !now.After(dies) {
 		return false
 	}
 	c.seen[key] = now.Add(ttl)
 	return true
+}
+
+// sweep 清掉已经过期的条目，由 RunSweeper 定期调。
+//
+// **不跑它的话那张表只增不减**：admit 不再扫表之后，一条再也不会被问到的
+// 过期签名就没有任何路径会删掉它。与限流桶的 sweepAll 是同一件事、同一个
+// 理由——「一个能被它要防的攻击撑爆的防护，是放大器不是防线」。
+func (c *replayCache) sweep() int {
+	now := c.now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for k, dies := range c.seen {
+		c.scans++
+		if now.After(dies) {
+			delete(c.seen, k)
+			n++
+		}
+	}
+	return n
+}
+
+// size / scanned 供测试与日志。scanned 是**累计扫过的条目数**——
+// 判据取它而不是耗时：耗时看机器快慢，扫描量是确定的。
+func (c *replayCache) size() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.seen)
+}
+
+func (c *replayCache) scanned() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.scans
 }
 
 // CheckVerifyAddr 确认主控渲染进配置的校验端点地址，与本机实际监听的一致。
@@ -421,8 +470,37 @@ func forwardAuthDials(caddyJSON []byte) []string {
 	return out
 }
 
-// normalizeAddr 让 unix/ 前缀与 host:port 两种写法可比。
-func normalizeAddr(a string) string { return strings.TrimSpace(a) }
+// normalizeAddr 把一个校验端点地址收成可比的形式。
+//
+// **它真的要做归一化。** 这个函数曾经只是 strings.TrimSpace，而注释承诺的
+// 两件事一件都没做——于是 EC_VERIFY_LISTEN 写成 `:2020` 或 `0.0.0.0:2020`
+// （与主控渲染的 `127.0.0.1:2020` 实际等价、连得通），CheckVerifyAddr 照样
+// 整份拒绝下发，并给出一条「请让两边一致」的错误，而人已经认为它们一致了
+// （issue #63）。
+//
+// 归一化只做两件事，都是**同一台机器上的同一个端点**的不同写法：
+//
+//   - unix socket：路径 Clean 一下。它不与任何 tcp 地址相等。
+//   - host:port：空 host、`0.0.0.0`、`::`、`localhost` 一律收成回环——
+//     它们在「Caddy 连得到本机这个端口吗」这个问题上是同一个答案。
+//     别的 host（比如 192.168.1.9）**不收**：那可能真是另一台机器。
+func normalizeAddr(a string) string {
+	a = strings.TrimSpace(a)
+	if p, ok := strings.CutPrefix(a, "unix/"); ok {
+		return "unix/" + path.Clean(p)
+	}
+	host, port, err := net.SplitHostPort(a)
+	if err != nil {
+		// 认不出来就原样比。宁可报一次「两边不一致」，
+		// 也不要把两个真不同的地址归一成同一个。
+		return a
+	}
+	switch host {
+	case "", "0.0.0.0", "::", "[::]", "localhost":
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
+}
 
 // itoaSec 把等待时长写成 Retry-After 要的整秒数。
 func itoaSec(d time.Duration) string {

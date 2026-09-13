@@ -33,6 +33,11 @@ func TestReplayEntryLivesByItsOwnTTL(t *testing.T) {
 //
 // 少了这条，上面那条可以用「永不清理」达成 —— 那会让缓存随流量无限长，
 // 而时间戳检查在窗口外本来就会拒绝，留着只是泄漏。
+//
+// **触发器是 sweep，不再是 admit。** admit 是热路径，它顺手扫全表意味着
+// 每个请求一次 O(n) 且握着锁（issue #74）。清理因此交给 RunSweeper——
+// 而这条测试要验的「按各自的死期清，不是按当前调用的 ttl 一刀切」
+// 没有变，它只是换了一个触发点。
 func TestReplayEntryIsEvictedAfterItsOwnTTL(t *testing.T) {
 	c := newReplayCache()
 	now := time.Now()
@@ -40,9 +45,15 @@ func TestReplayEntryIsEvictedAfterItsOwnTTL(t *testing.T) {
 
 	c.admit("A:sig1", time.Minute)
 	now = now.Add(2 * time.Minute)
-	c.admit("B:sigX", 10*time.Minute) // 任何一次 admit 都该顺手清掉过期的
+	c.admit("B:sigX", 10*time.Minute) // B 的窗口 10 分钟，还没到期
+
+	c.sweep()
 
 	if len(c.seen) != 1 {
 		t.Fatalf("A 的签名过了自己的窗口还留在缓存里（缓存 %d 条，想要 1：清掉 A、只剩 B）", len(c.seen))
+	}
+	if _, ok := c.seen["B:sigX"]; !ok {
+		t.Error("B 还在自己的窗口内，却被这次清理带走了 —— " +
+			"那正是 issue #27 修掉的那个形状（按当前调用的 ttl 一刀切）")
 	}
 }

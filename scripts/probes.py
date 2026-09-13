@@ -501,6 +501,48 @@ PROBES = [
         "./internal/e2e/", "TestAllZeroWeightsAreStillSaved",
         "却被拒了",
     ),
+    Probe(
+        "边缘端口-IPv6 也解析得出来",
+        "按第一个冒号切的话，[::1]:443 得到 port=\":1]:443\"，ParseUint 失败被静默"
+        "丢弃——那个端口上的连接从此不被统计，而症状是「一台正在扛流量的机器报 0」"
+        "（issue #75）",
+        "internal/agent/agent.go",
+        "\t\t\t_, port, err := net.SplitHostPort(l)",
+        "\t\t\tif len(l) > 0 && l[0] == '[' {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\t_, port, err := net.SplitHostPort(l)",
+        "./internal/agent/", "TestEdgePortsHandlesIPv6AndBareColon",
+        "丢掉的那些端口上的连接不会被统计",
+    ),
+    Probe(
+        "校验端点-等价写法互相认",
+        "normalizeAddr 只是 TrimSpace 的话，EC_VERIFY_LISTEN 写成 :2020 会被整份"
+        "拒绝下发，并给出一条「请让两边一致」的错误——而人已经认为它们一致了"
+        "（issue #63）",
+        "internal/agent/verify.go",
+        "\tcase \"\", \"0.0.0.0\", \"::\", \"[::]\", \"localhost\":\n\t\thost = \"127.0.0.1\"",
+        "\tcase \"__never__\":\n\t\thost = \"127.0.0.1\"",
+        "./internal/agent/", "TestVerifyAddrAcceptsEquivalentSpellings",
+        "指向同一个端点，却被拒了",
+    ),
+    Probe(
+        "重放缓存-热路径不扫表",
+        "admit 顺手扫全表的话，高 QPS 的受保护域名上每个请求都是一次 O(n)，"
+        "而且握着锁。表的规模是「窗口内的合法签名数」（issue #74）",
+        "internal/agent/verify.go",
+        "\tc.scans++ // 只为测试能问「刚才扫了几条」，生产路径上没人读它",
+        "\tfor k, dies := range c.seen {\n\t\tc.scans++\n\t\tif now.After(dies) {\n\t\t\tdelete(c.seen, k)\n\t\t}\n\t}",
+        "./internal/agent/", "TestAdmitDoesNotScanTheWholeTable",
+        "这是每请求一次的 O(n)",
+    ),
+    Probe(
+        "告警-成败是布尔不是文案",
+        "把布尔拼进中文再用 Contains 搜回来的话，改一次文案它就静默失效，"
+        "而失效的样子是审计里全绿（issue #77）",
+        "internal/alert/alert.go",
+        "\t\tif !r.ok {",
+        "\t\tif strings.Contains(r.detail, \"失败\") {",
+        "./internal/alert/", "TestDeliveryResultDoesNotComeFromWording",
+        "记成了",
+    ),
 ]
 
 
