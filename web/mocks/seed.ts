@@ -483,6 +483,7 @@ export const settings: SettingsWire & Record<string, unknown> = {
     },
   },
   ops_bot_token_configured: true,
+  cert_bot_token_configured: true,
 }
 
 export const alerts: AlertsWire = {

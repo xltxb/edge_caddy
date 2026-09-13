@@ -142,7 +142,6 @@ describe('policyReadable', () => {
       http3: true,
       hsts: true,
       hsts_max_age: 63072000,
-      ocsp: false,
       ...over,
     },
   })

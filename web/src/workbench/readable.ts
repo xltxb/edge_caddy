@@ -165,7 +165,6 @@ export function policyReadable(p: PolicyWire): unknown {
               },
             }
           : {},
-        must_staple: s.ocsp,
       },
     }
   }

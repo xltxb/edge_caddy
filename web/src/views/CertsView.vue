@@ -29,7 +29,7 @@ const openRow = ref<string | null>(null)
 /**
  * 空态要说的两件事都在 `GET /settings` 里（契约 §9）：证书从哪来、那条链路通没通。
  *
- * **两者都只读**：`master_endpoint` 由主控启动配置决定，`ops_bot_token_configured`
+ * **两者都只读**：`master_endpoint` 由主控启动配置决定，`cert_bot_token_configured`
  * 只从环境变量 `EC_OPS_BOT_TOKEN` 读 —— `PUT` 里发它会被严格绑定当场拒掉。
  * 所以它们在界面上是**陈述**，不是入口。
  */
@@ -206,7 +206,7 @@ const mismatched = computed(() => items.value.filter((c) => c.loaded_nodes < c.e
         **这两行是陈述，不是入口。**
 
         `master_endpoint` 由主控启动配置决定（它进了服务端证书的 SAN，运行时改不了）；
-        `ops_bot_token_configured` 只从环境变量 `EC_OPS_BOT_TOKEN` 读，`PUT` 里
+        `cert_bot_token_configured` 只从环境变量 `EC_CERT_BOT_TOKEN` 读，`PUT` 里
         发它会被严格绑定当场拒掉。两者在控制台里都改不了。
 
         所以**不能做成看起来能点的样子** —— 一个标出来却点不动的东西，第一次让人
@@ -220,15 +220,15 @@ const mismatched = computed(() => items.value.filter((c) => c.loaded_nodes < c.e
         </dd>
         <dt>推送认证</dt>
         <dd>
-          <span :class="settings?.ops_bot_token_configured ? 'okc' : 'warn'">
-            {{ settings?.ops_bot_token_configured ? '已配置' : '未配置' }}
+          <span :class="settings?.cert_bot_token_configured ? 'okc' : 'warn'">
+            {{ settings?.cert_bot_token_configured ? '已配置' : '未配置' }}
           </span>
           <span class="ro">只读 · 从环境变量读，控制台改不了</span>
           <!--
             未配置时这条链路是断的 —— 而症状是「证书一直不来」，
             那句话本身不会指向这里。
           -->
-          <p v-if="settings && !settings.ops_bot_token_configured" class="warn small">
+          <p v-if="settings && !settings.cert_bot_token_configured" class="warn small">
             没配的话外部平台推不进来，而症状只是「证书一直没出现」。
           </p>
         </dd>

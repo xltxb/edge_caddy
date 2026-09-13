@@ -84,7 +84,6 @@ export interface TlsPolicy extends PolicyWire {
     http3: boolean
     hsts: boolean
     hsts_max_age: number
-    ocsp: boolean
   }
 }
 export interface LogPolicy extends PolicyWire {
@@ -544,13 +543,6 @@ export const TLS_FIELDS = fieldsOf<TlsPolicy>([
     width: '160px',
     numeric: true,
     visible: (v) => v.spec.hsts === true,
-  },
-  {
-    kind: 'switch',
-    field: 'spec.ocsp',
-    label: 'OCSP Must-Staple',
-    onText: '开启后 OCSP 响应器故障会导致握手失败，谨慎使用。',
-    offText: '关闭。由客户端自行查询 OCSP。',
   },
 ])
 

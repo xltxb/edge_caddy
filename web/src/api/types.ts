@@ -1300,6 +1300,8 @@ export interface SettingsWire {
    */
   dns_provider_requirements: Record<string, Record<string, string[]>>
   ops_bot_token_configured: boolean
+  /** 证书推送那条链路的钥匙（契约 §0.6 的 cert-bot）。ops-bot 配着不代表它通。 */
+  cert_bot_token_configured: boolean
 }
 
 export type NotifyLevel = 'all' | 'warn' | 'crit'
