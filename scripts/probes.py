@@ -561,8 +561,8 @@ PROBES = [
         "后端不拒的话，它把已有那条整个换掉还回 code: 0——静默覆盖别人配好的"
         "规则，两边都没有提示（issue #70）",
         "internal/api/config_res.go",
-        "\tif c.GetHeader(\"If-None-Match\") == \"*\" {",
-        "\tif false {",
+        "\tonlyCreate := c.GetHeader(\"If-None-Match\") == \"*\"",
+        "\tonlyCreate := false",
         "./internal/api/", "TestPutRuleRefusesToOverwriteWhenAskedNotTo",
         "原规则被覆盖了",
     ),
