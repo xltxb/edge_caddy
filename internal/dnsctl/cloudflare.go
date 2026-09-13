@@ -99,7 +99,16 @@ func (c *Cloudflare) Sync(ctx context.Context, plan dnssched.Plan) error {
 		}
 		id, err := c.syncPool(ctx, plan.Domain+"-"+name, groups[name])
 		if err != nil {
-			return err
+			// **说清做到哪一步了。**
+			//
+			// 只回叶子错误的话，账号里此刻是「cn 的 pool 是新的、load balancer
+			// 还指着旧 pool」，而同步状态只说「失败」——人不知道该去收拾什么
+			// （issue #57）。「什么都没做就失败」和「做了一半」要人做的事
+			// 完全不同。
+			//
+			// 这个包别处已经是这个标准了：dnsops.Sync 的「N 个域名里 M 个成功」。
+			return fmt.Errorf("%s：已更新 %s，load balancer 未改动（仍指向旧 pool）：%w",
+				name, doneSoFar(poolIDs), err)
 		}
 		poolIDs[name] = id
 	}
@@ -410,4 +419,12 @@ func hint(code int, path string) string {
 		return "请求路径里有空的一段 —— 多半是某个 ID 没填"
 	}
 	return ""
+}
+
+// doneSoFar 把已经建好的那些分组名排出来，供中途失败时说清进度。
+func doneSoFar(poolIDs map[string]string) string {
+	if len(poolIDs) == 0 {
+		return "（尚未更新任何分组）"
+	}
+	return strings.Join(sortedKeys(poolIDs), " / ")
 }

@@ -39,6 +39,11 @@ type Orchestrator struct {
 	BaseOverride string
 
 	mu sync.Mutex
+
+	// coalesceMu 护着 pending：它是「已经有一次同步排在后面了」这件事。
+	// 与 mu 分开——mu 要握过一整次推送，而这里只是登记一下。
+	coalesceMu sync.Mutex
+	pending    *coalesced
 }
 
 // ErrNoProvider 表示还没有配置 DNS 服务商。
@@ -222,7 +227,12 @@ func (o *Orchestrator) Sync(ctx context.Context, weights dnssched.Weights) error
 	// 会让服务商上留下一个谁也没打算要的中间状态。
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	return o.syncLocked(ctx, weights)
+}
 
+// syncLocked 是 Sync 的锁内那一段。拆出来是为了让 syncCoalesced 能在自己
+// 安排好「谁在排队」之后再进这一段，而不必把锁的语义复制一份。
+func (o *Orchestrator) syncLocked(ctx context.Context, weights dnssched.Weights) error {
 	results, err := o.syncOnce(ctx, weights)
 
 	// **每次同步都记下结果**，无论成败。界面上那个「已退出解析」徽标是常驻的，
@@ -356,12 +366,64 @@ func (o *Orchestrator) syncOnce(ctx context.Context, weights dnssched.Weights) (
 // 这里只负责让服务商侧跟上。
 func (o *Orchestrator) Detach(ctx context.Context, nodeID string) error {
 	o.logger().Info("摘除解析", "node", nodeID)
-	return o.Sync(ctx, nil)
+	return o.syncCoalesced(ctx)
 }
 
 func (o *Orchestrator) Attach(ctx context.Context, nodeID string) error {
 	o.logger().Info("恢复解析", "node", nodeID)
-	return o.Sync(ctx, nil)
+	return o.syncCoalesced(ctx)
+}
+
+// syncCoalesced 把同一阵子里的多次「按库里的现状推一遍」折成一次。
+//
+// # 为什么需要折
+//
+// Detach / Attach 都是 `Sync(ctx, nil)`——**按库里的现状推一遍**，与是哪个
+// 节点触发的无关。6 台节点在同一个 tick 里被判离线，markDown 就串行调 6 次，
+// 于是服务商那边收到 6 次内容完全相同的全量同步（issue #55）。恢复时
+// recover 是 go 起的，6 个 goroutine 排队再推 6 次。服务商侧既没有退避
+// 也没有调用上限。
+//
+// # 折成几次
+//
+// 一次在跑 + 最多一次补跑。**补跑那一次不能省**：在飞的那次读库时，后面
+// 几台可能还没被标记下来，省掉它会让服务商停在一个过时的安排上。而补跑
+// 读的是届时最新的库状态，所以再多的并发请求也只需要这一次。
+//
+// 等在后面的调用拿到的是那一次补跑的结果——它们要的本来就是「库里的现状
+// 被推上去了」，而那正是补跑做的事。
+func (o *Orchestrator) syncCoalesced(ctx context.Context) error {
+	o.coalesceMu.Lock()
+	if o.pending != nil {
+		// 已经有人排在后面了，跟着它一起等。
+		done := o.pending
+		o.coalesceMu.Unlock()
+		<-done.ready
+		return done.err
+	}
+	done := &coalesced{ready: make(chan struct{})}
+	o.pending = done
+	o.coalesceMu.Unlock()
+
+	// Sync 自己有一把锁，在飞的那次会把我们挡在这里——而挡住的这段时间里
+	// 来的请求都会挂到 done 上。
+	o.mu.Lock()
+	o.coalesceMu.Lock()
+	o.pending = nil
+	o.coalesceMu.Unlock()
+
+	err := o.syncLocked(ctx, nil)
+	o.mu.Unlock()
+
+	done.err = err
+	close(done.ready)
+	return err
+}
+
+// coalesced 是「排在后面的那一次」：它的结果会被所有等它的人共用。
+type coalesced struct {
+	ready chan struct{}
+	err   error
 }
 
 // Caps 说明当前服务商能做到什么。没配时返回一个空能力，

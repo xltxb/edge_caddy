@@ -124,8 +124,7 @@ func (s *Server) handleUpdateRoute(c *gin.Context) {
 	r.Domain = domain
 
 	ctx := c.Request.Context()
-	if _, err := s.store.GetRoute(ctx, domain); errors.Is(err, store.ErrNotFound) {
-		Fail(c, CodeNotFound, "没有这条路由")
+	if _, err := s.store.GetRoute(ctx, domain); !s.mustExist(c, err, "没有这条路由", "读取路由失败") {
 		return
 	}
 	if issues := render.Validate([]model.Route{r}, nil); len(issues) > 0 {
@@ -148,8 +147,7 @@ func (s *Server) handleDeleteRoute(c *gin.Context) {
 	setAuditTarget(c, domain)
 	ctx := c.Request.Context()
 
-	if _, err := s.store.GetRoute(ctx, domain); errors.Is(err, store.ErrNotFound) {
-		Fail(c, CodeNotFound, "没有这条路由")
+	if _, err := s.store.GetRoute(ctx, domain); !s.mustExist(c, err, "没有这条路由", "读取路由失败") {
 		return
 	}
 	unbound, err := s.store.UnbindDomain(ctx, domain)
@@ -190,8 +188,7 @@ func (s *Server) handleDeleteRule(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	// sealer 传 nil：只是确认它存在，不需要解密共享密钥。
-	if _, err := s.store.GetRule(ctx, id); errors.Is(err, store.ErrNotFound) {
-		Fail(c, CodeNotFound, "没有这条访问规则")
+	if _, err := s.store.GetRule(ctx, id); !s.mustExist(c, err, "没有这条访问规则", "读取访问规则失败") {
 		return
 	}
 	if err := s.store.DeleteRule(ctx, id); err != nil {
@@ -411,4 +408,28 @@ func fillPolicyDefaults(id string, spec json.RawMessage) (json.RawMessage, error
 		return json.Marshal(pol.Log)
 	}
 	return spec, nil
+}
+
+// mustExist 把「这条资源在不在」问清楚：不在就 404，问不出来就如实说问不出来。
+//
+// **三种结果，不是两种。** 原先只判 ErrNotFound，其余 err 直接往下走
+// （issue #66）——数据库抖一下，「这条路由存在」这个前提就没被验证过。
+// 走下去之后那次写入同样会失败，所以人看得到一个错，但那个错说的是
+// 「修改路由失败」，而真正倒下的是它前面那次读（domain.md「一个只报叶子的
+// 错误信息，会让所有人只看叶子」）。更糟的是读**瞬时**失败而随后的写成功：
+// PUT 是 upsert，「改」会变成「建」。
+//
+// 抽成一个助手是因为这个形状在这个文件里有四处，而此前三处漏了同一支。
+// 下次加第五处时它漏不掉——调用方拿到的是一个必须处理的 error。
+func (s *Server) mustExist(c *gin.Context, err error, what, readFailed string) bool {
+	switch {
+	case err == nil:
+		return true
+	case errors.Is(err, store.ErrNotFound):
+		Fail(c, CodeNotFound, what)
+	default:
+		s.log.Error(readFailed, "err", err)
+		Fail(c, CodeDownstream, readFailed)
+	}
+	return false
 }

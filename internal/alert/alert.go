@@ -41,6 +41,11 @@ type Notifier struct {
 	Sealer *secret.Sealer
 	Log    *slog.Logger
 	HTTP   *http.Client
+
+	// retryBase 是第一次重试前的等待，此后按次数递增。留空即用默认的 1 秒。
+	// 做成字段只为让重试策略能被单独测——真跑 1+2 秒的测试不会有人跑
+	// （与 deploy.RetryBackoff 同一条理由）。
+	retryBase time.Duration
 }
 
 func New(st *store.Store, sealer *secret.Sealer, log *slog.Logger) *Notifier {
@@ -177,7 +182,7 @@ func (n *Notifier) postWithRetry(ctx context.Context, url string, payload []byte
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(time.Duration(i) * time.Second):
+			case <-time.After(time.Duration(i) * n.backoffBase()):
 			}
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
@@ -197,8 +202,37 @@ func (n *Notifier) postWithRetry(ctx context.Context, url string, payload []byte
 		}
 		// 下游的原文是排查 webhook 配错的唯一线索，原样带上。
 		last = fmt.Errorf("HTTP %d: %s", resp.StatusCode, bytes.TrimSpace(msg))
+
+		// **只重试时间能修好的那些。**
+		//
+		// 404 / 401 / 400 说的是「地址写错了 / 凭证不对 / 载荷被拒」——
+		// 再发两遍只是把同一句拒绝再听两遍，而代价是一个配错的 Webhook
+		// 每条告警都打三遍（issue #56）。
+		//
+		// 这条判据与 ADR-0005 是同一个：「同一份字节喂给同一个 Caddy 必然
+		// 得到同一个拒绝，能修它的是人改配置，不是时间」。**要挑明**：
+		// 那条 ADR 的字面范围是 Caddy 配置下发，不覆盖 Webhook 投递，
+		// 所以这里不是在执行它，是在复用它的理由。
+		if !worthRetrying(resp.StatusCode) {
+			return last
+		}
 	}
 	return last
+}
+
+func (n *Notifier) backoffBase() time.Duration {
+	if n.retryBase <= 0 {
+		return time.Second
+	}
+	return n.retryBase
+}
+
+// worthRetrying 说明这个状态码值不值得再试一次。
+//
+// 5xx 是「下游此刻不行」，429 是「慢点」——两者时间都修得好。
+// 其余的 4xx 要人去改配置。
+func worthRetrying(status int) bool {
+	return status >= 500 || status == http.StatusTooManyRequests
 }
 
 // Test 发一张测试卡片，供 POST /alerts/test 使用。

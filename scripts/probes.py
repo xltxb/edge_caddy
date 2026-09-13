@@ -391,6 +391,61 @@ PROBES = [
         "./internal/deploy/", "TestCancelAllStopsTheJobThatIsActuallyRunning",
         "CancelAll 之后又推了",
     ),
+    Probe(
+        "告警-只重试时间修得好的",
+        "对任何非 2xx 都重试的话，一个配错的 Webhook 每条告警打三遍。"
+        "404 / 401 / 400 说的是「地址写错了 / 凭证不对 / 载荷被拒」——"
+        "再发两遍只是把同一句拒绝再听两遍（issue #56）",
+        "internal/alert/alert.go",
+        "\t\tif !worthRetrying(resp.StatusCode) {\n\t\t\treturn last\n\t\t}",
+        "",
+        "./internal/alert/", "TestOnlyRetryWhatTimeCanFix",
+        "打了 3 次，想要 1",
+    ),
+    Probe(
+        "解析同步-同一批离线只推一次",
+        "Detach/Attach 都是「按库里的现状推一遍」，与是哪个节点触发的无关。"
+        "6 台同时掉线就推 6 次内容完全相同的全量同步，而服务商侧既没有退避"
+        "也没有调用上限（issue #55）",
+        "internal/dnsops/orchestrator.go",
+        "\treturn o.syncCoalesced(ctx)\n}\n\nfunc (o *Orchestrator) Attach",
+        "\treturn o.Sync(ctx, nil)\n}\n\nfunc (o *Orchestrator) Attach",
+        "./internal/dnsops/", "TestConcurrentDetachesCollapseIntoOneSync",
+        "推了 6 次全量同步",
+    ),
+    Probe(
+        "主控-收到信号走关停路径",
+        "gin 的 Run 是 ListenAndServe，没有关停钩子。原先出错直接 os.Exit(1)，"
+        "于是 defer st.Close() / tun.Stop() 一次也不会执行，而重启是例行操作"
+        "（issue #65）",
+        "cmd/master/serve.go",
+        "\t\tif onShutdown != nil {",
+        "\t\tif false {",
+        "./cmd/master/", "TestServeShutsDownGracefully",
+        "关停动作跑了",
+    ),
+    Probe(
+        "CF-中途失败说清做到哪一步",
+        "只回叶子错误的话，账号里此刻是「cn 的 pool 是新的、load balancer 还指着"
+        "旧 pool」，而同步状态只说「失败」——人不知道该去收拾什么。"
+        "「什么都没做就失败」和「做了一半」要人做的事完全不同（issue #57）",
+        "internal/dnsctl/cloudflare.go",
+        "\t\t\treturn fmt.Errorf(\"%s：已更新 %s，load balancer 未改动（仍指向旧 pool）：%w\",\n\t\t\t\tname, doneSoFar(poolIDs), err)",
+        "\t\t\treturn err",
+        "./internal/dnsctl/", "TestCloudflareLBFailureSaysHowFarItGot",
+        "报错没说做到哪一步了",
+    ),
+    Probe(
+        "存在性检查-报错说出哪一步失败",
+        "只判 ErrNotFound、其余 err 往下走的话，数据库抖一下「这条路由存在」"
+        "这个前提就没被验证过。走下去那次写入同样会失败，但那个错说的是"
+        "「修改路由失败」，而真正倒下的是它前面那次读（issue #66）",
+        "internal/api/config_res.go",
+        "\tcase err == nil:\n\t\treturn true",
+        "\tcase !errors.Is(err, store.ErrNotFound):\n\t\treturn true",
+        "./internal/api/", "TestExistenceChecksSayWhichStepFailed",
+        "那是下一步的措辞",
+    ),
 ]
 
 

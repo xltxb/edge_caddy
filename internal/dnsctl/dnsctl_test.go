@@ -36,6 +36,10 @@ type fakeAPI struct {
 	// respond 按 "方法 路径" 索引。**不能只按路径**：Cloudflare 的 list 与 create
 	// 是同一个路径的不同方法，一个要数组一个要对象，只按路径会喂错形状。
 	respond map[string]string
+	// handler 在查 respond 之前插一手，返回 true 表示这一次它自己答完了。
+	// 用来制造「第 N 次调用才失败」这类按次数变化的行为——respond 是一张
+	// 静态表，表达不了它。
+	handler func(http.ResponseWriter, *http.Request) bool
 }
 
 func (f *fakeAPI) server(t *testing.T) string {
@@ -55,6 +59,14 @@ func (f *fakeAPI) server(t *testing.T) string {
 
 		f.mu.Lock()
 		f.calls = append(f.calls, c)
+		if f.handler != nil {
+			h := f.handler
+			f.mu.Unlock()
+			if h(w, r) {
+				return
+			}
+			f.mu.Lock()
+		}
 		resp, ok := f.respond[r.Method+" "+r.URL.Path]
 		if !ok {
 			resp, ok = f.respond[r.URL.Path]
@@ -812,6 +824,67 @@ func TestCloudflareDNSSaysNothingWhenLinesAgree(t *testing.T) {
 	}
 	if n := cf.Note(); n != "" {
 		t.Errorf("五条线本来就一致，不该附注：%q", n)
+	}
+}
+
+// TestCloudflareLBFailureSaysHowFarItGot：中途失败要说清做到哪一步了。
+//
+// syncPool 对 cn / tw / ov 逐个调用，任一失败就地 return err——已建的 pool 留在
+// 账号里，syncLoadBalancer 完全没跑。于是账号里 cn 的 pool 是新的、
+// load balancer 还指着旧 pool，而同步状态只说「失败」，**没说做到哪一步了**
+// （issue #57）。
+//
+// 这个包别处已经是这个标准了：dnsops.Sync 的「N 个域名里 M 个成功」。
+//
+// 判据是**报错里能不能读出进度**，不是「有没有报错」——后者在一个什么都没做
+// 就失败的实现下同样为真，而那两种情形要人做的事完全不同。
+func TestCloudflareLBFailureSaysHowFarItGot(t *testing.T) {
+	// 第一个 pool 建得成，第二个撞上配额。
+	var pools int
+	api := &fakeAPI{handler: func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/load_balancers/pools") {
+			pools++
+			if pools >= 2 {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"success":false,"errors":[{"message":"quota exceeded"}]}`))
+				return true
+			}
+		}
+		return false
+	}, respond: map[string]string{
+		"GET /accounts/acct/load_balancers/pools":  `{"success":true,"result":[]}`,
+		"POST /accounts/acct/load_balancers/pools": `{"success":true,"result":{"id":"pool-1"}}`,
+		"GET /zones/zone/load_balancers":           `{"success":true,"result":[]}`,
+		"POST /zones/zone/load_balancers":          `{"success":true,"result":{"id":"lb-1"}}`,
+	}}
+	cf := dnsctl.NewCloudflare("acct", "zone", "cdn.example.com")
+	cf.Token = "tok"
+	cf.Base = api.server(t)
+
+	// 两个分组都要有节点：cn 建得成，tw 撞配额。
+	w := dnssched.Weights{}
+	for _, l := range []string{"ct", "cu", "cm"} {
+		w[l] = map[string]int{"hk-01": 100}
+	}
+	w["tw"] = map[string]int{"tw-01": 100}
+	plan := dnssched.Build("cdn.example.com", w,
+		[]dnssched.NodeState{node("hk-01", "1.1.1.1"), node("tw-01", "2.2.2.2")})
+
+	err := cf.Sync(context.Background(), plan)
+	for _, c := range api.seen() {
+		t.Logf("CALL %s %s", c.Method, c.Path)
+	}
+	if err == nil {
+		t.Fatal("第二个 pool 撞了配额，应当报错")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "已更新") {
+		t.Errorf("报错没说做到哪一步了：%q —— "+
+			"「什么都没做就失败」和「做了一半」要人做的事完全不同", msg)
+	}
+	if !strings.Contains(msg, "load balancer") {
+		t.Errorf("报错没说 load balancer 动没动：%q —— "+
+			"那是此刻账号里最要紧的一件事", msg)
 	}
 }
 

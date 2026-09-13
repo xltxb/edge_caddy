@@ -9,8 +9,10 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/xltxb/edge_caddy/internal/alert"
@@ -97,7 +99,12 @@ func main() {
 		log.Info("控制台静态文件", "web_root", cfg.WebRoot)
 	}
 
-	ctx := context.Background()
+	// **收到信号要走关停路径**，而不是被 systemd 掐掉。
+	// 重启是例行操作（health.go 记着「主控每重启一次，所有节点都被自动摘掉」），
+	// 而原先那条路上 defer 一个都不会跑（issue #65）。
+	ctx, stopSignals := signal.NotifyContext(context.Background(),
+		os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
 	st, err := store.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
 		log.Error("打开数据库失败", "err", err)
@@ -290,8 +297,18 @@ func main() {
 	})
 
 	log.Info("HTTP 监听", "addr", cfg.HTTPAddr, "mtls", cfg.MTLSEnabled, "ca_pin", caPin)
-	if err := srv.Run(cfg.HTTPAddr); err != nil {
+	err = serve(ctx, cfg.HTTPAddr, srv, func() {
+		// 要主动通知对端的那两件事，**在这里做而不是靠 defer**：
+		// defer 只在函数正常返回时跑，而这条路上直到 serve 出现之前，
+		// 它根本不返回（issue #65，TestServeShutsDownGracefully 钉着）。
+		log.Info("收到关停信号，正在断开实时通道与隧道")
+		hub.CloseAll(context.Background())
+		tun.Stop()
+	})
+	if err != nil {
 		log.Error("HTTP 服务退出", "err", err)
 		os.Exit(1)
 	}
+	// 到这里是**被要求**关停的正常出口，defer 的 st.Close() 会真的跑。
+	log.Info("主控已退出")
 }
