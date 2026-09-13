@@ -21,3 +21,7 @@ web/playwright-report/
 
 # CodeGraph 本地索引，机器生成
 .codegraph/
+
+# 顺手丢在 docs/ 下的截图。写进文档的图应当有个说得出名字的名字，
+# 而 SCR-<日期>-<随机> 是截图工具起的——它进不了任何一篇文档。
+docs/SCR-*.png
