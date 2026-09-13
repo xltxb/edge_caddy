@@ -462,3 +462,42 @@ describe('漂移跟着版本号走（ADR-0002）', () => {
     expect(store.items[1]!.drift).toBe(true)
   })
 })
+
+/**
+ * **基线没到位时，不要把服务端报的 drift 抹掉。**
+ *
+ * `driftOf` 在 `baseline === ''` 时返回 false，而 `applyHeartbeat` 每一帧都用它
+ * 覆写 `n.drift`。`App.vue` 的 `overview.fetch().catch(() => {})` 失败一次，
+ * baseline 就整个会话停在空串——于是节点列表一片干净、漂移 KPI 归零，
+ * 而真相是「没拿到基线」。
+ *
+ * 这正是这个仓库反复记的那句：「**『还不知道』被显示成『没问题』**」。
+ * 服务端那份 drift 是 REST 拿回来的真话，没有理由用一个算不出来的值盖掉它。
+ */
+describe('基线还没到位时的漂移', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    getMock.mockReset()
+  })
+
+  it('心跳不覆盖服务端报的 drift', async () => {
+    const store = useNodesStore()
+    // 服务端说它漂移了，而前端还没拿到基线。
+    getMock.mockResolvedValue({ items: [wire('node-a', 'cfg-old', { drift: true })] })
+    await store.fetchAll()
+    expect(store.items[0]!.drift).toBe(true)
+
+    store.applyHeartbeat(hb({ id: 'node-a', cfg_version: 'cfg-old' }))
+
+    expect(store.items[0]!.drift).toBe(true)
+  })
+
+  it('基线到位之后照常自己算', async () => {
+    const store = useNodesStore()
+    getMock.mockResolvedValue({ items: [wire('node-a', 'cfg-old', { drift: true })] })
+    await store.fetchAll()
+
+    store.setBaseline('cfg-old') // 其实一致，服务端那份是旧的
+    expect(store.items[0]!.drift).toBe(false)
+  })
+})

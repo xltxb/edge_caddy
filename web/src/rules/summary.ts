@@ -10,7 +10,15 @@
 
 import type { RuleIssue, RuleWire, RuleType } from '@/api/types'
 
-export const TYPE_LABEL: Record<string, string> = {
+/**
+ * 类型 → 中文标签。
+ *
+ * **键类型必须是 `RuleType` 而不是 `string`。** `dispatch.test.ts` 拿这张表当
+ * 「有哪几种规则」的权威清单去遍历，而 `Record<string, …>` 允许漏掉一种类型
+ * 也允许多出一个不存在的键——那时清单本身是错的，遍历得再全也证明不了什么
+ * （issue #68）。收窄之后，新增一种 RuleType 而忘了给标签，tsc 当场就报。
+ */
+export const TYPE_LABEL: Record<RuleType, string> = {
   ip_whitelist: 'IP 白名单',
   ip_blacklist: 'IP 黑名单',
   request_filter: '请求特征',

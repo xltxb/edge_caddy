@@ -246,7 +246,7 @@ export const rules: RuleWire[] = [
 ]
 
 export const policies: PolicyWire[] = [
-  { id: 'tls', name: 'TLS / 证书策略', version: 3, spec: { min_version: '1.2', hsts: true, hsts_max_age: 63072000, http3: true, ocsp: false } },
+  { id: 'tls', name: 'TLS / 证书策略', version: 3, spec: { min_version: '1.2', hsts: true, hsts_max_age: 63072000, http3: true } },
   // rate_limit 关掉时 rate_rps / rate_burst 是**条件字段**，spec 里可以不存在。
   // 这里跟真主控一样是 false —— 官方 Caddy 没有限流模块，true 是个下发一定会被拒的
   // 状态。让 mock 里躺着一份「能成功下发的 true」，等于把真实的失败藏起来。

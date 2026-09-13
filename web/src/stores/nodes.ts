@@ -93,7 +93,11 @@ export const useNodesStore = defineStore('nodes', () => {
     // 那个触发器不存在（issue #50），于是 drift 停在登录那一刻的值，
     // 两个方向都会错：刚下发成功的节点继续挂着「未收到最近下发」，
     // 真漂移的节点一片干净。
-    n.drift = driftOf(n.cfgVersion)
+    // **基线没到位时不动它。** `driftOf` 那时返回 false，而用它覆写等于把
+    // 服务端 REST 报的那份真话换成一个算不出来的值——节点列表一片干净、
+    // 漂移 KPI 归零，而真相是「还没拿到基线」。
+    // 「『还不知道』被显示成『没问题』」是这个仓库反复记的那一族。
+    if (baseline.value) n.drift = driftOf(n.cfgVersion)
 
     const next = [...n.cpuSeries, Math.round(d.cpu)]
     n.cpuSeries = next.slice(-SERIES_LEN)
