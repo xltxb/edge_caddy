@@ -172,6 +172,116 @@ def check_backlinks(paths):
     return bad
 
 
+# 引用的三种写法，按仓库里 274 处的实际形态定的（不是想当然）：
+#   契约 §0.7 / api-contract.md §0.7 / ADR-0009
+CITE_SECTION = re.compile(r"(?:契约|api-contract\.md)\s*§\s*(\d+(?:\.\d+)*)")
+CITE_ADR = re.compile(r"ADR-(\d{4})")
+
+# 同一句里的**具体数字**。引文比对试过，废掉了：仓库里「」不只用于引契约
+# 原文（任何强调都用它），照着扫 23 处里 20 处是误报——正是本文件开头
+# 那句「词表太贴近会撞上正常措辞」。
+#
+# 数字不会意译：说「契约 §0.7 拒 1001」就是 1001，对不上就是对不上。
+#
+# 只看三位以上的整数。两位数太容易撞上序号、倍数、版本号；而**前后挂着
+# 连字符的也要排掉** —— `0001-01-01` 里的 `0001` 不是一个值，是日期的一截
+# （第一版在这里误报了一次）。
+#
+# 反引号标识符那一层试过，去掉了：注释里写 `dns_actor`、契约里可能写在一张
+# 表的单元格里或者换了行，对不上的多半是排版而不是事实，吵得不值。
+NUMBER = re.compile(r"(?<![\d.\-])(\d{3,})(?![\d.\-])")
+
+def _norm(t):
+    """比对前把两边都磨平：强调符号、空白、以及换行造成的断字。"""
+    return re.sub(r"[\s*`＊]", "", t)
+
+
+def contract_sections():
+    """api-contract.md 的小节 -> 正文。
+
+    标题形如 `## 2. WebSocket` / `### 0.2.1 未知字段一律拒绝`，
+    编号后面跟点或空格都有，所以两种都认。
+    """
+    doc = (ROOT / "docs/api-contract.md").read_text(encoding="utf-8")
+    lines = doc.split("\n")
+    heads = []  # (编号, 行号)
+    for i, ln in enumerate(lines):
+        m = re.match(r"#{2,4}\s+(\d+(?:\.\d+)*)\.?\s+\S", ln)
+        if m:
+            heads.append((m.group(1), i))
+    out = {}
+    for k, (num, i) in enumerate(heads):
+        end = heads[k + 1][1] if k + 1 < len(heads) else len(lines)
+        out[num] = "\n".join(lines[i:end])
+
+    # **父节要包含子节。** 引 §0 说的是「§0 那一整章」，而 404 写在 §0.2 里
+    # —— 按标题切开之后 §0 的正文只到 §0.1 之前，于是一次正确的引用被报成
+    # 对不上（第一版在这里误报了一次）。
+    for num in list(out):
+        kids = [v for k, v in out.items() if k.startswith(num + ".")]
+        if kids:
+            out[num] = out[num] + "\n" + "\n".join(kids)
+    return out
+
+
+def check_citations(paths):
+    """注释里引的契约小节与 ADR 必须存在；引号里的话必须真的在那儿。
+
+    **这一族是「对外的陈述没人能替你核对」的自动化版本。**
+
+    三次同型的事故促成了它：一句「后端目前不校验格式」在后端补上校验之后
+    仍留在注释里；一句「契约那张表承诺 detail 非空」引用了一张自己没去更新
+    的表；一句「契约 §0.7 说拒 1002」而实现回的是 1001。每一次那句话写下时
+    都是真的，而**被引的那一方变了，引用的这一方不会收到任何通知**。
+
+    存在性那一层零误报，直接报。引文那一层只在「引号里的话一个字都对不上
+    被引小节」时才报——意译和节选都放过，宁可漏也不要吵（一个天天误报的
+    检查等于没有检查）。
+    """
+    secs = contract_sections()
+    adrs = {f.name[:4] for f in (ROOT / "docs/adr").glob("*.md")}
+    bad = 0
+
+    for f in paths:
+        for ln, text in blocks(f):
+            where = f"{f.relative_to(ROOT)}:{ln}"
+
+            for num in set(CITE_SECTION.findall(text)):
+                if num not in secs:
+                    print(f"  ✗ {where}\n     引了契约 §{num}，而它不存在")
+                    bad += 1
+                    continue
+                body = _norm(secs[num])
+                # 只查**同一句**里的数字：跨句的那个多半讲的是别的事。
+                #
+                # **分句不按换行切。** 注释里的换行是排版（一行 80 列），
+                # 不是句子边界——`契约 §0.7 写明拒的是` / `1001，……` 正好被
+                # 折成两行，于是第一版漏掉了我真正犯过的那个错：注释说 1001、
+                # 契约写 1002，而它一声不吭。先把换行压成空格再分句。
+                flat = re.sub(r"\s*\n\s*", "", text)
+                for sent in re.split(r"[。；]", flat):
+                    if not re.search(rf"§\s*{re.escape(num)}(?![\d.])", sent):
+                        continue
+                    for lit in NUMBER.findall(sent):
+                        if _norm(lit) not in body:
+                            print(f"  ✗ {where}\n     说契约 §{num} 里有 "
+                                  f"`{lit}`，而那一节里没有这个值"
+                                  f"\n     {sent.strip()[:80]}")
+                            bad += 1
+
+            for num in set(CITE_ADR.findall(text)):
+                if num not in adrs:
+                    print(f"  ✗ {where}\n     引了 ADR-{num}，而 docs/adr/ 下没有它")
+                    bad += 1
+
+    if not bad:
+        print("  ✓ 注释里引的契约小节与 ADR 都在，引文也对得上")
+    else:
+        print("\n  被引的那一方变了，引用的这一方不会收到通知 —— "
+              "所以这件事得让脚本替你记着。")
+    return bad
+
+
 def check_index():
     """scripts/README.md 那份索引必须与真实存在的脚本**双向**一致。
 
@@ -256,8 +366,43 @@ def self_test():
             print("  ✗ 历史写在后面的被误报了 —— 那是允许的写法"); ok = False
         else:
             print("  ✓ 历史写在后面的不误报")
+    ok = _self_test_citations() and ok
     print(f"\n  自检 {'通过' if ok else '失败'}")
     return 0 if ok else 1
+
+
+def _self_test_citations():
+    """引用那一族也要自证不瞎。
+
+    **装置坏了看起来跟「全都对」一模一样**：contract_sections 要是解析不出
+    任何小节，每一处引用都会被判成「不存在」而全红；要是它把整篇当成一节，
+    每个数字都找得到而全绿。两种坏法都不该静默过去。
+    """
+    ok = True
+    secs = contract_sections()
+    if len(secs) < 20:
+        print(f"  ✗ 只解析出 {len(secs)} 个契约小节 —— 引用检查的结果没有意义")
+        return False
+    print(f"  ✓ 解析出 {len(secs)} 个契约小节")
+
+    # 父节要吃到子节：§0 里应当找得到写在 §0.3 的错误码。
+    if "0" in secs and "0.3" in secs and "1002" not in secs["0"]:
+        print("  ✗ §0 没包含子节的正文 —— 引 §0 而值写在 §0.2 的会被误报")
+        ok = False
+    else:
+        print("  ✓ 父节包含子节")
+
+    # 换行不当句子边界：被 80 列折行切开的引用与数字仍要算同一句。
+    folded = "契约 §0.7 写明拒的是\n1009，而不是别的"
+    flat = re.sub(r"\s*\n\s*", "", folded)
+    hit = [x for x in re.split(r"[。；]", flat)
+           if re.search(r"§\s*0\.7(?![\d.])", x) and "1009" in x]
+    if not hit:
+        print("  ✗ 折行把引用和数字切成了两句 —— 真正犯过的那个错会漏掉")
+        ok = False
+    else:
+        print("  ✓ 排版折行不当句子边界")
+    return ok
 
 
 def main():
@@ -283,6 +428,8 @@ def main():
     print()
     bad += check_backlinks(files)
     print()
+    bad += check_citations(files)
+    print()
     bad += check_index()
 
     # **判词放最后一行。**
@@ -299,7 +446,7 @@ def main():
     total = len(found) + bad
     print()
     if total:
-        print(f"  ✗ 共 {total} 处要改（首句讲历史 / 理由没锚 / 索引对不上）")
+        print(f"  ✗ 共 {total} 处要改（首句讲历史 / 理由没锚 / 引文对不上 / 索引对不上）")
     else:
         print(f"  ✓ 全部通过（扫了 {len(files)} 个文件）")
     return 1 if total else 0
