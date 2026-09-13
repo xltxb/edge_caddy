@@ -61,3 +61,39 @@ func TestServeShutsDownGracefully(t *testing.T) {
 			"隧道不通知节点、WS 客户端只能等 TCP 超时", closed.Load())
 	}
 }
+
+// TestServeReturnsWhenItCannotListen：端口起不来时要**报错返回**，不是挂住。
+//
+// serve 起了一个 goroutine 等 ctx 结束再关停，而主流程在 ListenAndServe 之后
+// 无条件 `<-idle`。bind 阶段就失败时（端口被占、地址非法）ListenAndServe
+// 立刻返回，而那个 goroutine 还堵在 `<-ctx.Done()` 上——于是 serve 永远不返回：
+// **主控既不退出也不报错，systemd 看到的是一个「活着」的进程**。
+//
+// 原先那条 `srv.Run` 至少会 os.Exit(1)。这是关停路径改造引入的（issue #65）。
+//
+// TestServeShutsDownGracefully 特意在 Listen 之后 Close 才用那个地址，
+// 恰好绕开了这条路径——**修复只在测试造的那条路上成立**。
+func TestServeReturnsWhenItCannotListen(t *testing.T) {
+	// 占住一个端口，让 serve 绑不上。
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- serve(context.Background(), busy.Addr().String(),
+			http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), nil)
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("绑不上端口却回了 nil —— 调用方会以为是正常关停")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("端口被占，serve 没有返回 —— 主控既不退出也不报错，" +
+			"而 systemd 看到的是一个活着的进程")
+	}
+}

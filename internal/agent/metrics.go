@@ -106,7 +106,12 @@ func (m *metricsCollector) collect(ctx context.Context) Metrics {
 		// 收在一处是因为「一个数字是怎么算出来的」应该只有一个地方知道——
 		// 限流那一半原先在 heartbeatLoop 里拼，读心跳的人看不出 ReqTotal 与
 		// BlockedTotal 是不是同一个口径。
-		out.OriginTotal = origin - m.verifyDenied()
+		// **减法要夹住下界。** 两个计数器的生命周期不同：origin 来自 Caddy 的
+		// /metrics（Caddy 进程重启即归零），denied 是 Agent 进程内的累计值
+		// （Agent 不重启就不归零）。节点上重启一次 Caddy，这里就是「小 − 大」，
+		// uint64 绕成约 1.8e19 —— 而这个文件开头写着「拿不到的一律留零，
+		// **不编数字**」，下溢编的正是最大的那一个。TestOriginNeverUnderflows 钉着这条。
+		out.OriginTotal = subFloor(origin, m.verifyDenied())
 		out.BlockedTotal = blocked + m.verifyRateLimited()
 	}
 	return out
@@ -256,4 +261,17 @@ func metricValue(line string) (float64, bool) {
 
 func round1(v float64) float64 {
 	return float64(int(v*10+0.5)) / 10
+}
+
+// subFloor 是夹在 0 上的无符号减法。
+//
+// 存在的理由不是「防御性编程」，是**这两个数本来就会错位**：Caddy 可以在
+// Agent 不重启的情况下重启，那一刻 origin 归零而 denied 不归零。留零比编一个
+// 天文数字诚实——后者会算出荒谬的回源率，还会进 traffic_samples，
+// 24 小时后当一次同比的分母（TestOriginNeverUnderflows）。
+func subFloor(a, b uint64) uint64 {
+	if a < b {
+		return 0
+	}
+	return a - b
 }

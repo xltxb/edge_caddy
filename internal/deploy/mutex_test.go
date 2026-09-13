@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/xltxb/edge_caddy/internal/pki"
 )
 
 // TestConcurrentDeploysDoNotInterleave：两次下发不会交错推送。
@@ -66,5 +68,59 @@ func TestConcurrentDeploysDoNotInterleave(t *testing.T) {
 		if got := p.lastVersionFor(node); got != baseline {
 			t.Errorf("%s 上跑的是 %s，而基线是 %s", node, got, baseline)
 		}
+	}
+}
+
+// TestRenewalDoesNotInterleaveWithADeploy：续期循环也要排在同一条队里。
+//
+// #32 给 Deploy 加了 deployMu，而**这批改动里我自己新开的第二条推送路径
+// （#39 的续期循环）没有拿它**——`renewUpstreamCerts` 整份渲染、逐节点 Push，
+// 一个字都没锁。
+//
+// 于是 #32 的竞态原样回来了，只是发起方从「第二个人」换成了定时器：
+// 节点上 pushMu 只保证一次应用一份配置，**谁后到谁生效**。若续期推的那份
+// （旧基线）后到，节点跑旧配置，而 Deploy 已经把该节点的 cfg_version 写成新版
+// ——ADR-0002 的漂移只比版本号，界面显示「全部一致」，实际不是。
+//
+// 判据与 #32 那条一样：两条推送路径的窗口不该重叠。
+func TestRenewalDoesNotInterleaveWithADeploy(t *testing.T) {
+	p := newFakePusher("node-a", "node-b", "node-c")
+	p.delay = 150 * time.Millisecond
+	s, st := newSched(t, p)
+	ctx := context.Background()
+
+	ca, err := pki.GenerateCA(pki.KindUpstream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.UpstreamCA = ca
+	s.Render.UpstreamClientCert = "/etc/caddy/upstream/client.crt"
+	s.Render.UpstreamClientKey = "/etc/caddy/upstream/client.key"
+
+	// 先立起基线，续期循环才有东西可推。
+	if _, _, err := s.Deploy(ctx, "abiu", []string{"route:api.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	p.forget()
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go s.RunUpstreamRenewal(runCtx, 20*time.Millisecond)
+
+	// 续期跑起来之后，人点一次下发。
+	time.Sleep(30 * time.Millisecond)
+	if err := st.PutDraft(ctx, "route:api.example.com",
+		json.RawMessage(`{"upstream":"127.0.0.77:7777"}`), "tester"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Deploy(ctx, "tester", []string{"route:api.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	time.Sleep(200 * time.Millisecond)
+
+	if a, b, yes := p.overlappingVersions(); yes {
+		t.Errorf("%s 与 %s 的推送在时间上重叠了 —— 续期循环没有排在 deployMu 那条队里，"+
+			"#32 的竞态换了个发起方又回来了", a, b)
 	}
 }

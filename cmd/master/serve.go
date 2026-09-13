@@ -32,10 +32,23 @@ const shutdownGrace = 10 * time.Second
 func serve(ctx context.Context, addr string, h http.Handler, onShutdown func()) error {
 	srv := &http.Server{Addr: addr, Handler: h}
 
+	// stopped 在**服务自己先退了**的时候关上。
+	//
+	// 不给关停 goroutine 这条出路的话，它会一直堵在 <-ctx.Done() 上，而主流程
+	// 无条件 <-idle —— 于是 bind 阶段就失败（端口被占、地址非法）时 serve
+	// 永远不返回：主控既不退出也不报错，systemd 看到的是一个活着的进程。
+	// 原先那条 srv.Run 至少会 os.Exit(1)（issue #65 改造引入）。
+	stopped := make(chan struct{})
+
 	idle := make(chan struct{})
 	go func() {
 		defer close(idle)
-		<-ctx.Done()
+		select {
+		case <-ctx.Done():
+		case <-stopped:
+			// 服务已经自己退了，没有什么要优雅关停的。
+			return
+		}
 
 		if onShutdown != nil {
 			// **先通知对端，再停止接受新连接。** 反过来的话，那些还连着的
@@ -50,6 +63,7 @@ func serve(ctx context.Context, addr string, h http.Handler, onShutdown func()) 
 	}()
 
 	err := srv.ListenAndServe()
+	close(stopped)
 	<-idle
 	if errors.Is(err, http.ErrServerClosed) {
 		// 这是**被要求**关停的正常出口，不是故障。

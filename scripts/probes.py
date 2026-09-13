@@ -309,7 +309,7 @@ PROBES = [
         "而它一个字节都没到源站。Caddy 的计数器分不出这两件事，"
         "校验端点自己分得出（issue #41）",
         "internal/agent/metrics.go",
-        "out.OriginTotal = origin - m.verifyDenied()",
+        "out.OriginTotal = subFloor(origin, m.verifyDenied())",
         "out.OriginTotal = origin",
         "./internal/agent/", "TestRequestTotalsCountEachRequestOnce",
         "origin_total 报的是",
@@ -587,6 +587,39 @@ PROBES = [
         "`DELETE FROM sessions WHERE expires_at > now()`",
         "./internal/store/", "TestPruneKeepsWhatIsStillUseful",
         "没过期的会话被清掉了",
+    ),
+    Probe(
+        "主控-端口起不来要报错不要挂住",
+        "关停 goroutine 只等 ctx.Done()，而主流程无条件等它——bind 阶段就失败时"
+        "serve 永远不返回：主控既不退出也不报错，systemd 看到一个活着的进程。"
+        "原先那条 srv.Run 至少会 os.Exit(1)（#65 的改造引入）",
+        "cmd/master/serve.go",
+        "\t\tcase <-stopped:\n\t\t\t// 服务已经自己退了，没有什么要优雅关停的。\n\t\t\treturn",
+        "\t\tcase <-make(chan struct{}):\n\t\t\treturn",
+        "./cmd/master/", "TestServeReturnsWhenItCannotListen",
+        "serve 没有返回",
+    ),
+    Probe(
+        "回源数-不下溢",
+        "origin 来自 Caddy（重启即归零），denied 是 Agent 进程内的累计值"
+        "（不重启就不归零）。节点上重启一次 Caddy，uint64 减法绕成 1.8e19，"
+        "而这个数会进 traffic_samples 并在 24 小时后当同比的分母（#41 的改造引入）",
+        "internal/agent/metrics.go",
+        "\tif a < b {\n\t\treturn 0\n\t}",
+        "\tif false {\n\t\treturn 0\n\t}",
+        "./internal/agent/", "TestOriginNeverUnderflows",
+        "uint64 减法下溢了",
+    ),
+    Probe(
+        "续期-与下发同一条队",
+        "续期循环也是整份渲染、逐节点推——与一次下发在节点上没有区别。"
+        "不拿 deployMu 的话 #32 的竞态原样成立，只是发起方换成了定时器"
+        "（#39 新开的推送路径，修 #32 时没覆盖到）",
+        "internal/deploy/renew.go",
+        "\ts.deployMu.Lock()\n\tdefer s.deployMu.Unlock()\n",
+        "",
+        "./internal/deploy/", "TestRenewalDoesNotInterleaveWithADeploy",
+        "的推送在时间上重叠了",
     ),
 ]
 

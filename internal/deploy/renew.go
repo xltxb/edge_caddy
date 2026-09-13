@@ -63,6 +63,18 @@ func (s *Scheduler) RunUpstreamRenewal(ctx context.Context, every time.Duration)
 // 会让「已重推基线」这句话失去它原本的意思——那是一个人点出来的动作的措辞。
 // 失败要记：一次推不下去意味着这台机器正在走向回源失效，而那是没人会主动去看的。
 func (s *Scheduler) renewUpstreamCerts(ctx context.Context) {
+	// **排进与 Deploy 同一条队。**
+	//
+	// 这里也是整份渲染、逐节点推——与一次下发在节点上没有区别。不拿这把锁的话
+	// #32 的竞态原样成立，只是发起方从「第二个人」换成了定时器：节点上 pushMu
+	// 只保证一次应用一份，**谁后到谁生效**。若续期推的那份（旧基线）后到，
+	// 节点跑旧配置，而 Deploy 已经把它的 cfg_version 写成新版——ADR-0002 的漂移
+	// 只比版本号，于是界面说「全部一致」而实际不是。
+	//
+	// 不会死锁：这个函数不重入 Deploy，锁只在这里取一次。
+	s.deployMu.Lock()
+	defer s.deployMu.Unlock()
+
 	if s.UpstreamCA == nil || s.Render.UpstreamClientCert == "" {
 		// 没配回源 mTLS，就没有要续的东西。这里必须真的空转：
 		// 照样推全网等于每 8 小时给每台节点安排一次没有理由的热重载。
