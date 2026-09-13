@@ -177,12 +177,17 @@ func (a *Agent) serve(ctx context.Context, stream tunnelStream, out *tunnelWrite
 	// connCtx 是**这次连接**的生命周期，与调用方那个进程级 ctx 分开。
 	connCtx, cancel := context.WithCancel(ctx)
 
-	// **serve 返回时，它起的循环已经停了。**
+	// **serve 返回时，它起的每一个 goroutine 都结束了。**
 	//
 	// 只 cancel 不等的话，契约就退化成「它们迟早会停」——而「迟早」在
 	// main 那个重连循环里是没有意义的：下一次连接可能已经建起来了，
 	// 那一刻两份心跳同时活着，只是其中一份很快会走。真正要保证的是
 	// 「一次连接对应一份循环」，那需要等。
+	//
+	// 「每一个」包括下面读循环里 go 起的 handlePush 与 handleDrain：
+	// 这两句 wg.Add 在读循环内，而 Wait 在读循环退出之后，两者不重叠。
+	// 漏掉它们的话，一次断连后仍有一份下发在往 Caddy 上灌配置，而那时
+	// 新连接的下发已经在路上——两份配置同时在应用，最终态取决于谁后到。
 	//
 	// defer 是后进先出：cancel 先跑，wg.Wait 后跑。
 	var wg sync.WaitGroup
@@ -207,7 +212,8 @@ func (a *Agent) serve(ctx context.Context, stream tunnelStream, out *tunnelWrite
 			//
 			// 串行化由 pushMu 负责——要的是「一次只应用一份配置」，
 			// 不是「读循环停下来等」。这两件事此前被同一行代码顺带做了。
-			go a.handlePush(connCtx, out, m.Push)
+			wg.Add(1)
+			go func() { defer wg.Done(); a.handlePush(connCtx, out, m.Push) }()
 		case *edgev1.MasterMsg_Probe:
 			a.handleProbe(connCtx, out, m.Probe)
 		case *edgev1.MasterMsg_GeoDb:
@@ -216,7 +222,8 @@ func (a *Agent) serve(ctx context.Context, stream tunnelStream, out *tunnelWrite
 		case *edgev1.MasterMsg_Drain:
 			// 排空要等，不能占着这条读循环 —— 占住的话主控这段时间
 			// 推不下来配置也探不了活，而排空可能要等几十秒。
-			go a.handleDrain(connCtx, out, m.Drain)
+			wg.Add(1)
+			go func() { defer wg.Done(); a.handleDrain(connCtx, out, m.Drain) }()
 		default:
 			// **主控发下来的每一种消息都有人接了，这里不该再有新分支。**
 			//
@@ -242,7 +249,17 @@ func (a *Agent) handlePush(ctx context.Context, out *tunnelWriter, p *edgev1.Pus
 	if deadline <= 0 {
 		deadline = 5 * time.Second
 	}
-	applyCtx, cancel := context.WithTimeout(ctx, deadline)
+	// **应用配置这一步不跟着隧道走。**
+	//
+	// 它前面两步——SetRules 与 writeUpstreamCert——都已经改了本机状态，
+	// 而两者都没有回滚。半途被取消的结果是「新校验规则 + 新回源证书 +
+	// 旧 Caddy 配置」，三者对不上账，且 a.cfgVersion 仍是旧值，于是
+	// 重连后心跳报的也是旧版本：**真正在跑的那套东西没有任何一处记着**。
+	//
+	// 上界是主控给的 DeadlineMs，所以这不是「不受控地跑下去」；
+	// serve 的 wg 会等它，代价是断连后最多晚 DeadlineMs 才重连。
+	// 由 TestApplyFinishesEvenIfTheTunnelDrops 守着。
+	applyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), deadline)
 	defer cancel()
 
 	// 先装规则再应用配置。反过来的话，配置生效的那一瞬间校验端点还不认识

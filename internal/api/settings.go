@@ -329,11 +329,26 @@ func (s *Server) handlePutSettings(c *gin.Context) {
 //	推上去了       什么都不用做
 //	推不上去       看 detail 里服务商回的原话
 //	没东西可推      解析轮换是空的 —— 去把节点的解析开回来，不是去查凭证
-func (s *Server) syncAfterProviderChange(ctx context.Context) (bool, string) {
-	if s.dns == nil {
-		return false, ""
-	}
-	switch err := s.dns.Sync(ctx, nil); {
+//
+// providerSyncDetail 把「改完服务商之后那一次同步」的结果翻译成一句给人看的话。
+//
+// 抽出来是为了**能被证伪**：这四句每一句都在指挥人接下来去做什么，而写在
+// switch 里的措辞只有人照着界面排查一次才会被检查。
+//
+//	err == nil              (true, "")   —— 那一档的措辞要用到实际写入的记录名，
+//	                                        由调用方拼
+//	ErrNoProvider           去把服务商配上
+//	ErrNothingInRotation    去把节点的解析开回来 —— 凭证和网络都没问题
+//	ErrCapability           这家服务商表达不了这份安排
+//	其它                     看服务商回的原话
+//
+// 由 TestProviderSyncTellsEmptyRotationApartFromAFailure 守着。
+func providerSyncDetail(err error) (bool, string) {
+	var emptyRotation *dnsctl.ErrNothingInRotation
+	var capErr *dnsctl.ErrCapability
+	switch {
+	case err == nil:
+		return true, ""
 	case errors.Is(err, dnsops.ErrNoProvider):
 		// 配到一半（缺必填项）在上面就被拦下了，走到这里说明配置是空的
 		// ——刚清空，或者从来没配过而这次只改了别的。
@@ -346,32 +361,60 @@ func (s *Server) syncAfterProviderChange(ctx context.Context) (bool, string) {
 		// 说一句是对的：这次确实动了 dns_provider（没动的话根本走不到这里），
 		// 而结果是「什么也没推」——那是个值得说的结果，不是「无事发生」。
 		return false, "服务商设置已保存，而当前没有可用的 DNS 服务商配置，解析未变动"
-	case err != nil:
-		var capErr *dnsctl.ErrCapability
-		if errors.As(err, &capErr) {
-			// **能力不足要与「下游失败」分开。** 后者会让人去查网络、查凭证，
-			// 而「没有节点在轮换里」要做的是去把节点的解析开回来。
-			return false, "服务商设置已保存，但这次没能推上去：" + capErr.Reason
-		}
-		s.log.Error("改完服务商后同步解析失败", "err", err)
-		return false, "服务商设置已保存，但同步到服务商失败：" + err.Error()
+	case errors.As(err, &emptyRotation):
+		// **「轮换是空的」不是失败。** 说成「同步失败」会把人送去查凭证、查网络、
+		// 翻服务商的状态页，而那边什么毛病也没有——要做的是把节点的解析开回来。
+		// #36 给它分了单独的错误类型正是为了这个，而这条路上原先没按它分档
+		// （issue #81）。
+		return false, "服务商设置已保存，而当前解析轮换里没有任何节点，解析未变动"
+	case errors.As(err, &capErr):
+		// **能力不足要与「下游失败」分开。** 后者会让人去查网络、查凭证，
+		// 而问题在于这份安排这家服务商表达不了。
+		return false, "服务商设置已保存，但这次没能推上去：" + capErr.Reason
 	default:
-		// **把实际写入的名字说出来。**
-		//
-		// domain 填 `cdn.example.com`、sub 又填 `cdn` 的话，记录会建到
-		// `cdn.cdn.example.com`——推送成功、这里回 true，而人在服务商面板上
-		// 永远看不到它。服务商也不会拦：那是它 zone 里一个合法的子域名。
-		//
-		// **一次成功里唯一能揭穿这件事的，就是把那个名字印出来。**
-		// 多域名之后更要紧：少推一个的症状是那个域名静默不被管。
-		//
-		// 名字从落库的同步结果里读，**与解析页那个徽标同源** ——
-		// 自己再拼一遍的话，两处迟早对不上账，而那时人会先怀疑没推上去。
-		if sync, err := s.store.GetDNSSync(ctx); err == nil && sync.Detail != "" {
-			return true, "服务商设置已保存，" + sync.Detail
-		}
-		return true, "服务商设置已保存，当前解析已推到服务商"
+		return false, "服务商设置已保存，但同步到服务商失败：" + err.Error()
 	}
+}
+
+// isExpectedSyncOutcome 说这个错该不该进 error 日志。
+//
+// 「没配服务商」「轮换是空的」「这家服务商表达不了」都是**结果**，不是故障：
+// 它们各自对应一个人做过的决定。把它们记成 error 会让日志里的 error 变得
+// 不值得看，而那正是真出事那次没人注意到的原因。
+func isExpectedSyncOutcome(err error) bool {
+	var emptyRotation *dnsctl.ErrNothingInRotation
+	var capErr *dnsctl.ErrCapability
+	return errors.Is(err, dnsops.ErrNoProvider) ||
+		errors.As(err, &emptyRotation) ||
+		errors.As(err, &capErr)
+}
+
+func (s *Server) syncAfterProviderChange(ctx context.Context) (bool, string) {
+	if s.dns == nil {
+		return false, ""
+	}
+	err := s.dns.Sync(ctx, nil)
+	if ok, detail := providerSyncDetail(err); !ok {
+		if !isExpectedSyncOutcome(err) {
+			s.log.Error("改完服务商后同步解析失败", "err", err)
+		}
+		return false, detail
+	}
+	// **把实际写入的名字说出来。**
+	//
+	// domain 填 `cdn.example.com`、sub 又填 `cdn` 的话，记录会建到
+	// `cdn.cdn.example.com`——推送成功、这里回 true，而人在服务商面板上
+	// 永远看不到它。服务商也不会拦：那是它 zone 里一个合法的子域名。
+	//
+	// **一次成功里唯一能揭穿这件事的，就是把那个名字印出来。**
+	// 多域名之后更要紧：少推一个的症状是那个域名静默不被管。
+	//
+	// 名字从落库的同步结果里读，**与解析页那个徽标同源** ——
+	// 自己再拼一遍的话，两处迟早对不上账，而那时人会先怀疑没推上去。
+	if sync, err := s.store.GetDNSSync(ctx); err == nil && sync.Detail != "" {
+		return true, "服务商设置已保存，" + sync.Detail
+	}
+	return true, "服务商设置已保存，当前解析已推到服务商"
 }
 
 func (s *Server) handleGetAlerts(c *gin.Context) {

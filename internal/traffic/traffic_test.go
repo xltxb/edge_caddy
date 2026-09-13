@@ -422,3 +422,45 @@ func TestStaleSamplesDoNotCountAsReported(t *testing.T) {
 		t.Errorf("请求数是 %d，想要 1000", req)
 	}
 }
+
+// TestSamplingSurvivesANodeBeingDown：一台机器宕着，采样不能整个停摆。
+//
+// `want` 是「未下线的全部节点」（`CountUndrainedNodes`：`drained_at IS NULL`），
+// 而 #48 之后一台**宕机但没被删、也没走下线流程**的机器永远进不了 `reported`
+// ——于是 `reported < want` 恒成立，**整个集群一个样本都不再入库**，
+// 直到人把那台机器删掉或下线。
+//
+// 那些样本正是「较昨日同时段」的分母：一次过夜故障之后，第二天整天没有同比。
+// 而日志只有 Debug 级，没有任何地方会说出来。
+//
+// 「报数不齐就不记」这条闸本身是对的，它拦的是「数字偏低」；一台 health 已经
+// 判成 down 的机器不该被算进「应该报数的节点」——它**本来就不该报**。
+func TestSamplingSurvivesANodeBeingDown(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+
+	for _, id := range []string{"node-a", "node-b"} {
+		if err := st.UpsertNode(ctx, store.NodeSpec{
+			NodeID: id, City: "香港", Vendor: "v", Line: "l", PublicIP: "203.0.113.7",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// b 宕了：health 把它标成 down，但没人删它、也没人点下线。
+	if err := st.SetNodeDown(ctx, "node-b"); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &traffic.Sampler{
+		Store: st,
+		// 只有 a 在报数，而它是唯一该报数的那台。
+		Health:   fakeHealth{"node-a": fresh(health.Sample{Conns: 5, ReqTotal: 100})},
+		Interval: 10 * time.Millisecond, Warmup: time.Nanosecond,
+	}
+	runFor(t, s, 120*time.Millisecond)
+
+	if n := countSamples(t, st); n == 0 {
+		t.Error("一台机器宕着，整个集群就再也不记样本了 —— " +
+			"而这些样本是「较昨日同时段」的分母，一次过夜故障会让第二天整天没有同比")
+	}
+}

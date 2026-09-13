@@ -80,6 +80,23 @@ func (s *Store) CountUndrainedNodes(ctx context.Context) (int, error) {
 	return n, err
 }
 
+// CountExpectedReporters 数「此刻**应该**报数的节点」。
+//
+// 与 CountUndrainedNodes 的区别是它还排除 status='down' 的机器。采样那条
+// 「报数不齐就不记」的闸拦的是**数字偏低**——而一台 health 已经判成 down 的
+// 机器本来就不该报数，把它算进分母会让闸恒关：一台宕机但没被删、也没走下线
+// 流程的机器，会让整个集群再也不记样本，直到有人去动它（issue #48 的修复引入）。
+//
+// 下线（drained）与宕机（down）都排除，但理由不同：前者是**意图**（人说它
+// 不该承载流量），后者是**事实**（它此刻报不出数）。CONTEXT.md 把这两件事
+// 分开记，这里也分开写。
+func (s *Store) CountExpectedReporters(ctx context.Context) (int, error) {
+	var n int
+	err := s.Pool.QueryRow(ctx,
+		`SELECT count(*) FROM edge_nodes WHERE drained_at IS NULL AND status <> 'down'`).Scan(&n)
+	return n, err
+}
+
 // EarliestTrafficSample 返回最早那条样本的时刻，一条都没有时返回 false。
 //
 // 用来分辨「历史还不够长」与「昨天那一分钟正好没采到」——两者都表现为

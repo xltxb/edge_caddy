@@ -375,10 +375,53 @@ PROBES = [
         "主控推不下来配置也探不了活，于是一台正在正常下发的机器被判成不可达。"
         "紧邻的 Drain 分支早就因为同一条理由改成了 go（issue #61）",
         "internal/agent/agent.go",
-        "\t\t\tgo a.handlePush(connCtx, out, m.Push)",
+        "\t\t\twg.Add(1)\n\t\t\tgo func() { defer wg.Done(); a.handlePush(connCtx, out, m.Push) }()",
         "\t\t\ta.handlePush(connCtx, out, m.Push)",
         "./internal/agent/", "TestProbeIsAnsweredWhileADeployIsStillRunning",
         "探活就一直没人回",
+    ),
+    Probe(
+        "整批写草稿-非对象也要拦",
+        "`[1,2]` / `null` 是合法 JSON，jsonb 列放行——而它们入库之后 mergeInto "
+        "会失败，Deploy 与 Preview 双双 500，人在界面上找不到入口删它。"
+        "PutDraft 早就在入口挡了（issue #58），PutDrafts 是同一张表的另一个入口",
+        "internal/store/drafts.go",
+        "\t\tif _, err := asObject(patch); err != nil {\n\t\t\treturn fmt.Errorf(\"写回草稿 %s: %w\", resKey, err)\n\t\t}",
+        "\t\t_ = patch\n\t\t_ = resKey",
+        "./internal/store/", "TestPutDraftsRejectsNonObjects",
+        "整批应当被拒",
+    ),
+    Probe(
+        "改服务商-轮换空了不算失败",
+        "说成「同步到服务商失败」会把人送去查凭证、查网络、翻服务商状态页，"
+        "而那边什么毛病也没有——要做的是把节点的解析开回来。#36 给它分了"
+        "单独的错误类型正是为了这个（issue #81）",
+        "internal/api/settings.go",
+        '\t\treturn false, "服务商设置已保存，而当前解析轮换里没有任何节点，解析未变动"',
+        '\t\treturn false, "服务商设置已保存，但同步到服务商失败：" + err.Error()',
+        "./internal/api/", "TestProviderSyncTellsEmptyRotationApartFromAFailure",
+        "不该出现",
+    ),
+    Probe(
+        "下发-断连不掐半途",
+        "applyCtx 跟着隧道走的话，断连会把下发停在 SetRules 与 writeUpstreamCert "
+        "之后、ApplyConfig 之前——新校验规则配旧 Caddy 配置，而 cfg_version 还是"
+        "旧值，于是重连后主控看到的是「这台没跟上」，不是「这台状态不自洽」",
+        "internal/agent/agent.go",
+        "context.WithTimeout(context.WithoutCancel(ctx), deadline)",
+        "context.WithTimeout(ctx, deadline)",
+        "./internal/agent/", "TestApplyFinishesEvenIfTheTunnelDrops",
+        "想要 cfg-1",
+    ),
+    Probe(
+        "serve-等它起的下发跑完",
+        "wg 漏掉 handlePush 的话，serve 返回时那份下发还在灌配置，而 main 立刻"
+        "重连——两次连接的两份配置同时在应用，最终态取决于谁后到，两份回执都说成功",
+        "internal/agent/agent.go",
+        "\t\t\twg.Add(1)\n\t\t\tgo func() { defer wg.Done(); a.handlePush(connCtx, out, m.Push) }()",
+        "\t\t\tgo a.handlePush(connCtx, out, m.Push)",
+        "./internal/agent/", "TestServeWaitsForThePushItStarted",
+        "serve 就返回了",
     ),
     Probe(
         "补推-册子上记的是哪一个",

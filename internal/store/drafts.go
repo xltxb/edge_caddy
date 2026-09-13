@@ -73,9 +73,22 @@ func (s *Store) PutDraft(ctx context.Context, resKey string, patch json.RawMessa
 //
 // 这里不走 PutDraft 里那条「空对象等于删除」的捷径：回滚写的是快照与 live
 // 的差异，空差异本来就不会进这张表。
+//
+// **但 #58 那道闸这里也要有**：它是同一张表的另一个入口。`{` 那样的非法 JSON
+// 会被 jsonb 列拦下，而 `[1,2]` / `"x"` / `123` / `null` 是合法 JSON——数据库
+// 那一关放行，它们却正是 #58 要挡的那一批：入库之后 mergeInto 失败，Deploy
+// 与 Preview 双双 500，而人在界面上找不到入口删它。
+// 由 TestPutDraftsRejectsNonObjects 守着。
 func (s *Store) PutDrafts(ctx context.Context, patches map[string]json.RawMessage, by string) error {
 	if len(patches) == 0 {
 		return nil
+	}
+	// **在开事务之前先验完一遍。** 边写边验也能挡住，但那样「整批被拒」
+	// 就要靠回滚兜着——而入口处拦下的话，坏的那条根本没机会挨到数据库。
+	for resKey, patch := range patches {
+		if _, err := asObject(patch); err != nil {
+			return fmt.Errorf("写回草稿 %s: %w", resKey, err)
+		}
 	}
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {

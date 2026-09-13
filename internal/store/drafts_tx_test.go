@@ -155,3 +155,42 @@ func TestPutDraftStillTreatsEmptyObjectAsDelete(t *testing.T) {
 		t.Errorf("空对象应当把这条草稿删掉，实际还剩 %d 条", len(drafts))
 	}
 }
+
+// TestPutDraftsRejectsNonObjects：整批写入也要过 #58 那道闸。
+//
+// PutDraft 在入口处拒非对象，理由是那些东西入库之后 deploy 的 mergeInto 会
+// 失败，Deploy 与 Preview 双双 500，**而人在界面上找不到入口删它**。
+//
+// PutDrafts 是同一张表的另一个入口，而它直接走 putDraft。`{` 那样的非法 JSON
+// 会被 PostgreSQL 的 jsonb 列拦下（TestPutDraftsIsAllOrNothing 靠的就是它），
+// 但 `[1,2]` / `"x"` / `123` / `null` 都是合法 JSON —— **数据库那一关放行，
+// 而它们正是 #58 要挡的那一批**。
+//
+// 回滚是 PutDrafts 唯一的调用方，它写的是快照与 live 的差异。差异算错一次，
+// 留下的就是一个从界面上解不开的死局。
+func TestPutDraftsRejectsNonObjects(t *testing.T) {
+	for _, bad := range []string{`[1,2]`, `"x"`, `123`, `null`} {
+		t.Run(bad, func(t *testing.T) {
+			st := testdb.New(t)
+			ctx := context.Background()
+
+			err := st.PutDrafts(ctx, map[string]json.RawMessage{
+				"route:a.example.com": json.RawMessage(`{"upstream":"127.0.0.1:8080"}`),
+				"route:b.example.com": json.RawMessage(bad),
+			}, "tester")
+			if err == nil {
+				t.Fatalf("%s 不是一个对象，整批应当被拒", bad)
+			}
+
+			// **整批被拒，就一条都不该留下。** 只断言报错的话，一个「先写好的、
+			// 撞到坏的才回滚」的实现与一个「入口就拦」的实现看起来一样。
+			drafts, err := st.ListDrafts(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(drafts) != 0 {
+				t.Fatalf("这一批被拒了，表里却留下 %d 条", len(drafts))
+			}
+		})
+	}
+}

@@ -140,7 +140,7 @@ func (s *Sampler) sampleOnce(ctx context.Context, now time.Time) error {
 	}
 	conns, req, origin, reported := Totals(nodes, s.Health)
 
-	want, err := s.Store.CountUndrainedNodes(ctx)
+	want, err := s.Store.CountExpectedReporters(ctx)
 	if err != nil {
 		return err
 	}
