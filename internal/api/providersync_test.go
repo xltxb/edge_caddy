@@ -28,24 +28,30 @@ func TestProviderSyncTellsEmptyRotationApartFromAFailure(t *testing.T) {
 		wantOK bool
 		want   string // detail 里必须出现的那个词
 		avoid  string // 不能出现的那个词 —— 它会把人送错方向
+		// expected 说这是不是一个「有人做过的决定」。它决定要不要记 error
+		// 日志：把配置选择记成 error，日志里的 error 就变得不值得看，
+		// 而那正是真出事那次没人注意到的原因。
+		wantExpected bool
 	}{
-		{"推上去了", nil, true, "", ""},
-		{"没配服务商", dnsops.ErrNoProvider, false, "没有可用的 DNS 服务商配置", ""},
+		{"推上去了", nil, true, "", "", true},
+		{"没配服务商", dnsops.ErrNoProvider, false, "没有可用的 DNS 服务商配置", "", true},
 		{
 			"轮换是空的",
 			&dnsctl.ErrNothingInRotation{Reason: "没有任何节点在解析轮换里，本次不改动 DNS 记录"},
-			false, "解析轮换里", "失败",
+			false, "解析轮换里", "失败", true,
 		},
 		{
 			"这家服务商表达不了",
 			&dnsctl.ErrCapability{Reason: "DNSPod 不支持按权重分配"},
-			false, "DNSPod 不支持按权重分配", "",
+			false, "DNSPod 不支持按权重分配", "", true,
 		},
-		{"服务商那边出错了", errors.New("502 Bad Gateway"), false, "502 Bad Gateway", ""},
+		// **只有这一档是 false。** 网络、凭证、服务商挂了——没有人做过导致
+		// 它的决定，所以它该进 error 日志。
+		{"服务商那边出错了", errors.New("502 Bad Gateway"), false, "502 Bad Gateway", "", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			ok, detail, _ := providerSyncDetail(c.err)
+			ok, detail, expected := providerSyncDetail(c.err)
 			if ok != c.wantOK {
 				t.Fatalf("ok = %v，想要 %v", ok, c.wantOK)
 			}
@@ -58,6 +64,14 @@ func TestProviderSyncTellsEmptyRotationApartFromAFailure(t *testing.T) {
 			}
 			if !ok && detail == "" {
 				t.Fatal("说了没推上去就得说为什么 —— 契约那张表承诺 false 时给出理由")
+			}
+			// **这一档是不是「有人做过的决定」。** 没有这条断言的话，
+			// 把默认档改成 true（真故障不再进 error 日志）全仓没人会红，
+			// 而那正是「登记表是上界」说的事。
+			if expected != c.wantExpected {
+				t.Errorf("expected = %v，想要 %v —— 它决定这一档要不要进 error 日志，"+
+					"把配置选择记成 error 会让日志里的 error 变得不值得看，"+
+					"而真出事那次就没人注意得到", expected, c.wantExpected)
 			}
 		})
 	}

@@ -315,6 +315,10 @@ func (s *Server) handlePutSettings(c *gin.Context) {
 // 每一句都在指挥人接下来去做什么，而写在 switch 里的措辞只有人照着界面
 // 排查一次才会被检查。
 //
+// **这五档不是全部**：调用方 syncAfterProviderChange 在 s.dns == nil 时
+// 还有一档，那时连 Sync 都没调。契约 §PUT /settings 那张表列的是六档，
+// 与这里加那一档对得上。
+//
 //	err == nil              (true, "")   —— 那一档的措辞要用到实际写入的记录名，
 //	                                        由调用方拼
 //	ErrNoProvider           去把服务商配上
@@ -374,8 +378,11 @@ func providerSyncDetail(err error) (ok bool, detail string, expected bool) {
 // 没接到最该接的那个输入上**。而它每次的症状都一样——
 // 每一步都成功，而什么也没发生。
 //
-// 那一次同步有五种结果，各自该让人去做什么，由 providerSyncDetail 说；
-// 这里只负责成功那一档的措辞——它要用到实际写入的记录名。
+// 那一次同步的结果该让人去做什么，由 providerSyncDetail 说（契约
+// §PUT /settings 那张表是同一份口径）；这里在它之外还多一档——
+// **本机根本没装 DNS 编排器**，那一档在下面第一行，进不了 providerSyncDetail
+// 因为那时连 Sync 都没调。成功那一档的措辞也留在这里：它要用到实际写入
+// 的记录名，而那个名字只有这一层拿得到。
 func (s *Server) syncAfterProviderChange(ctx context.Context) (bool, string) {
 	if s.dns == nil {
 		// **说 false 就得说为什么**（契约那张表承诺 detail 非空）。

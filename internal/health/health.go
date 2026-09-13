@@ -243,6 +243,23 @@ func (m *Monitor) CPUSeries(nodeID string) []int {
 	return append([]int(nil), st.cpu...)
 }
 
+// StaleAfter 是「一份心跳样本旧到这个程度，这台机器在我这儿已经是 down 了」。
+//
+// **它是判离线那套判据的对外说法，不是另一个数。** 采样要判一份样本还算不算
+// 「当下」，而那个判断必须与判离线同源——两边各读一份 system_settings 的话，
+// 改完设置到主控重启之间必然分叉（这份配置只在 cmd/master 启动时读一次），
+// 而分叉的方向正是 issue #48：样本还算数、节点已经被判 down。
+//
+// 取 Interval×(Threshold+1)：tick 每 Interval 跑一次、misses 满 Threshold 才判
+// down，而 **tick 的相位与心跳到达的时刻无关**——心跳刚落地就 tick 的话，
+// 那一次看到的间隔不够一个周期，misses 不增，最坏要多等一个周期。
+//
+// 由 TestStaleAfterCoversTheWorstCaseBeforeDown（它驱动真的 tick 去量）
+// 与 TestStaleAfterIsNotAbsurdlyLarge 一起守着。
+func (m *Monitor) StaleAfter() time.Duration {
+	return m.Interval * time.Duration(m.Threshold+1)
+}
+
 func (m *Monitor) Latest(nodeID string) (Sample, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

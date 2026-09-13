@@ -13,6 +13,12 @@ import (
 // Latester 是采样需要的那一点点观测面。
 type Latester interface {
 	Latest(nodeID string) (health.Sample, bool)
+	// StaleAfter 是「样本旧到这个程度，这台机器在 health 那儿已经是 down 了」。
+	//
+	// **判据由 health 给，采样不自己算。** 这里原先读一遍 system_settings
+	// 再自己套公式，而 health 的那份配置只在 cmd/master 启动时读一次——
+	// 改完设置到重启之间两边分叉，方向正是 issue #48。
+	StaleAfter() time.Duration
 }
 
 // Totals 汇总当前全局流量，并回报**有几台节点报了数**。
@@ -23,19 +29,10 @@ type Latester interface {
 // reported 是判断这份汇总可不可信的依据——一个「conns=0」在
 // 「三台都报了 0」和「一台都没报」之间完全不同，而两者的和都是 0。
 func Totals(nodes []store.Node, h Latester) (conns, req, origin uint64, reported int) {
-	return TotalsWithin(nodes, h, defaultStaleAfter)
-}
-
-// TotalsWithin 是 Totals 加一个显式的「当下」界线。
-//
-// **界线必须跟着心跳配置走。** 写死一个常数的话，运维把 heartbeat_interval_s
-// 调大（`PUT /settings` 允许到 60 秒）就会让每一份样本都落在界线之外——
-// reported 恒为 0，而 want 数的是活着的节点，于是采样每一分钟都跳过，
-// 没有任何报错。见 StaleWindow。
-func TotalsWithin(nodes []store.Node, h Latester, staleAfter time.Duration) (conns, req, origin uint64, reported int) {
 	if h == nil {
 		return 0, 0, 0, 0
 	}
+	staleAfter := h.StaleAfter()
 	if staleAfter <= 0 {
 		staleAfter = defaultStaleAfter
 	}
@@ -68,44 +65,12 @@ func TotalsWithin(nodes []store.Node, h Latester, staleAfter time.Duration) (con
 	return conns, req, origin, reported
 }
 
-// defaultStaleAfter 是没有配置可依时的兜底界线。
+// defaultStaleAfter 只在 health 说不出话时兜底（Latester 为 nil、
+// 或者它回了一个非正数）。正常路径上界线来自 Monitor.StaleAfter。
 //
-// 取 30 秒：心跳默认 3 秒一次，离线判定要连续错过 9 秒。30 秒给足了抖动的
-// 余量，又远短于一分钟一次的采样周期。
-//
-// **它只是兜底，正常路径走 StaleWindow。** 这个数原先是写死的常量，而那句
-// 「心跳默认 3 秒一次」是全部理由——一旦运维改了心跳间隔，理由就不成立了，
-// 而代码不会跟着变。
+// 取 30 秒：心跳默认 3 秒一次、判离线要连续错过 3 次，30 秒给足了余量，
+// 又远短于一分钟一次的采样周期。
 const defaultStaleAfter = 30 * time.Second
-
-// StaleWindow 按心跳配置算出「当下」的界线。
-//
-// 判据与 health 判离线同源：一份样本只要还没旧到让 health 把这台机器判成
-// down，它就仍是当下的。两套判据不同源的话，中间那段窗口里
-// **样本算陈旧、节点算活着**——reported < want，整分钟的采样被跳过。
-//
-// `PUT /settings` 允许 heartbeat_interval_s 到 60、offline_threshold_count
-// 到 20（internal/api/settings.go 的校验），上界因此是 1200 秒。心跳间隔
-// 只要超过 30 秒，写死的那个常量就会把每一份样本都判成陈旧。
-//
-// 多给一个心跳周期的余量：health 判 down 要连续错过 threshold 次，而样本
-// 的时间戳是**上一次**心跳到达的时刻——两者天然差一个周期。
-//
-// 由 TestStaleWindowFollowsTheConfiguredHeartbeat 与
-// TestStaleWindowStillCatchesARealStaleSample 守着。
-func StaleWindow(interval time.Duration, threshold int) time.Duration {
-	if interval <= 0 || threshold <= 0 {
-		return defaultStaleAfter
-	}
-	w := interval*time.Duration(threshold) + interval
-	if w < defaultStaleAfter {
-		// 心跳很快时不要把界线收得比 30 秒还紧：那会让一次寻常的抖动
-		// 就丢掉一整分钟的样本，而 issue #48 要防的是「旧数字混进来」，
-		// 不是「宁缺毋滥到极致」。
-		return defaultStaleAfter
-	}
-	return w
-}
 
 // warmup 是主控启动后不采样的那段。
 //
@@ -183,17 +148,7 @@ func (s *Sampler) sampleOnce(ctx context.Context, now time.Time) error {
 	if err != nil {
 		return err
 	}
-	// **「当下」的界线每次都按现配置算。** 启动时读一次固化的话，运维改完
-	// 心跳间隔要重启主控才生效——而在那之前采样是静默停摆的，没有任何
-	// 迹象说明这件事。一分钟一次，多读一行设置不值得心疼。
-	stale := defaultStaleAfter
-	if sys, serr := s.Store.GetSystemSettings(ctx); serr == nil {
-		stale = StaleWindow(
-			time.Duration(sys.HeartbeatInterval)*time.Second, sys.OfflineThreshold)
-	} else {
-		s.log().Warn("读取心跳配置失败，样本新鲜度按默认界线判", "err", serr)
-	}
-	conns, req, origin, reported := TotalsWithin(nodes, s.Health, stale)
+	conns, req, origin, reported := Totals(nodes, s.Health)
 
 	want, err := s.Store.CountExpectedReporters(ctx)
 	if err != nil {

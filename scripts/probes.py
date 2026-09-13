@@ -381,15 +381,37 @@ PROBES = [
         "探活就一直没人回",
     ),
     Probe(
-        "流量采样-当下的界线跟着心跳走",
-        "写死 30 秒的话，运维把 heartbeat_interval_s 调到 30 以上（校验允许到 60）"
-        "就会让每一份样本都判成陈旧：reported 恒为 0，而 want 数的是活着的节点，"
-        "于是每一分钟都跳过——采样永久停摆，没有任何报错，只有同比一直空着",
+        "改服务商-真故障要进 error 日志",
+        "把「下游真出事了」也算成预期结果的话，网络、凭证、服务商挂了都不再"
+        "进 error 日志——而把配置选择记成 error 同样有害：日志里的 error 变得"
+        "不值得看，真出事那次就没人注意得到",
+        "internal/api/settings.go",
+        'return false, "服务商设置已保存，但同步到服务商失败：" + err.Error(), false',
+        'return false, "服务商设置已保存，但同步到服务商失败：" + err.Error(), true',
+        "./internal/api/", "TestProviderSyncTellsEmptyRotationApartFromAFailure",
+        "要不要进 error 日志",
+    ),
+    Probe(
+        "流量采样-当下的界线由 health 给",
+        "自己写死一个常数的话，它与 health 判 down 的窗口就是两套判据："
+        "界线紧了，样本算陈旧而节点还在 want 里，整分钟的采样被静默跳过；"
+        "松了，已判离线的机器的旧数字被加进当下的汇总（issue #48）",
         "internal/traffic/traffic.go",
-        "\tw := interval*time.Duration(threshold) + interval",
-        "\tw := defaultStaleAfter",
-        "./internal/traffic/", "TestStaleWindowFollowsTheConfiguredHeartbeat",
-        "采样每一分钟",
+        "\tstaleAfter := h.StaleAfter()",
+        "\tstaleAfter := defaultStaleAfter",
+        "./internal/traffic/", "TestFreshnessComesFromHealthNotAConstant",
+        "整分钟的采样被静默跳过",
+    ),
+    Probe(
+        "判离线-对外说的窗口要盖得住",
+        "StaleAfter 少算一个周期的话，采样会在 health 判 down 之前就把样本"
+        "当成陈旧——reported < want，整分钟的采样被跳过，而没有任何报错。"
+        "tick 的相位与心跳到达的时刻无关，最坏要多等一个周期",
+        "internal/health/health.go",
+        "\treturn m.Interval * time.Duration(m.Threshold+1)",
+        "\treturn m.Interval * time.Duration(m.Threshold)",
+        "./internal/health/", "TestStaleAfterIsTheTightBoundOnGoingDown",
+        "采样被静默跳过",
     ),
     Probe(
         "登录限速-成功不中和 IP 维度",

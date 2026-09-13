@@ -34,6 +34,9 @@ type Tunneler interface {
 type Healther interface {
 	CPUSeries(nodeID string) []int
 	Latest(nodeID string) (health.Sample, bool)
+	// StaleAfter 是「样本旧到这个程度，这台机器已经是 down 了」。
+	// 总览的流量汇总拿它判样本还算不算当下，与采样器同一个来源。
+	StaleAfter() time.Duration
 	// Forget 丢掉一个节点的内存观测状态。删除节点时要调 ——
 	// 不调的话那份 CPU 序列会一直占着，而节点已经不存在了。
 	Forget(nodeID string)

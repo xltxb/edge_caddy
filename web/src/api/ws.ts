@@ -1,31 +1,31 @@
-import type { LinkState, WsFrame } from "./types";
+import type { LinkState, WsFrame } from './types'
 
-const WS_PATH = import.meta.env.VITE_WS_PATH ?? "/api/v1/ws";
+const WS_PATH = import.meta.env.VITE_WS_PATH ?? '/api/v1/ws'
 
 /** 重连退避：140ms 起，翻倍，上限 8s。 */
-const BACKOFF_START = 140;
-const BACKOFF_MAX = 8_000;
+const BACKOFF_START = 140
+const BACKOFF_MAX = 8_000
 /** 连续失败到这个次数就承认「实时挂了」，转入轮询降级并告诉用户。 */
-const DEGRADE_AFTER = 3;
+const DEGRADE_AFTER = 3
 
-type FrameHandler = (frame: WsFrame) => void;
-type StateHandler = (state: LinkState) => void;
+type FrameHandler = (frame: WsFrame) => void
+type StateHandler = (state: LinkState) => void
 
 export interface EdgeSocket {
-  start(): void;
-  stop(): void;
-  readonly state: LinkState;
+  start(): void
+  stop(): void
+  readonly state: LinkState
 }
 
 export interface EdgeSocketOptions {
-  onFrame: FrameHandler;
-  onState: StateHandler;
+  onFrame: FrameHandler
+  onState: StateHandler
   /**
    * 会话已经失效，别再重连了。
    *
    * 可选：不给就只是不重连——那仍然比一直重连强，但用户看不到原因。
    */
-  onSessionLost?: () => void;
+  onSessionLost?: () => void
 }
 
 /**
@@ -38,7 +38,7 @@ export interface EdgeSocketOptions {
  * 1001 Going Away 是另一回事（主控关停、这条订阅积压超限），那时该重连——
  * 把它也当成会话失效，一次主控重启就会把所有人踢到登录页。
  */
-const SESSION_LOST_REASON = "会话已失效";
+const SESSION_LOST_REASON = '会话已失效' 
 
 /**
  * 主控实时通道。
@@ -47,96 +47,92 @@ const SESSION_LOST_REASON = "会话已失效";
  * 一屏静止的旧数据以为一切正常。这跟 ADR-0002 提醒的「界面不能给出兑现不了的
  * 承诺」是同一类错。降级后的 2s 轮询由调用方在 onState 里接。
  */
-export function createEdgeSocket({
-  onFrame,
-  onState,
-  onSessionLost,
-}: EdgeSocketOptions): EdgeSocket {
-  let sock: WebSocket | null = null;
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  let backoff = BACKOFF_START;
-  let failures = 0;
-  let stopped = false;
-  let state: LinkState = "connecting";
+export function createEdgeSocket({ onFrame, onState, onSessionLost }: EdgeSocketOptions): EdgeSocket {
+  let sock: WebSocket | null = null
+  let timer: ReturnType<typeof setTimeout> | null = null
+  let backoff = BACKOFF_START
+  let failures = 0
+  let stopped = false
+  let state: LinkState = 'connecting'
 
   const setState = (next: LinkState) => {
-    if (state === next) return;
-    state = next;
-    onState(next);
-  };
+    if (state === next) return
+    state = next
+    onState(next)
+  }
 
   const url = () => {
-    const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    return `${proto}//${location.host}${WS_PATH}`;
-  };
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
+    return `${proto}//${location.host}${WS_PATH}`
+  }
 
   const scheduleReconnect = () => {
-    if (stopped) return;
-    failures += 1;
-    setState(failures >= DEGRADE_AFTER ? "polling" : "reconnecting");
-    timer = setTimeout(connect, backoff);
-    backoff = Math.min(backoff * 2, BACKOFF_MAX);
-  };
+    if (stopped) return
+    failures += 1
+    setState(failures >= DEGRADE_AFTER ? 'polling' : 'reconnecting')
+    timer = setTimeout(connect, backoff)
+    backoff = Math.min(backoff * 2, BACKOFF_MAX)
+  }
 
   function connect(): void {
-    if (stopped) return;
-    if (state !== "polling" && state !== "reconnecting") setState("connecting");
+    if (stopped) return
+    if (state !== 'polling' && state !== 'reconnecting') setState('connecting')
 
-    let ws: WebSocket;
+    let ws: WebSocket
     try {
-      ws = new WebSocket(url());
+      ws = new WebSocket(url())
     } catch {
-      scheduleReconnect();
-      return;
+      scheduleReconnect()
+      return
     }
-    sock = ws;
+    sock = ws
 
     ws.onopen = () => {
-      backoff = BACKOFF_START;
-      failures = 0;
-      setState("live");
-    };
+      backoff = BACKOFF_START
+      failures = 0
+      setState('live')
+    }
 
     ws.onmessage = (ev) => {
-      let frame: WsFrame;
+      let frame: WsFrame
       try {
-        frame = JSON.parse(ev.data as string) as WsFrame;
+        frame = JSON.parse(ev.data as string) as WsFrame
       } catch {
-        return; // 坏帧就丢掉，不该让一条脏数据打断整条连接
+        return // 坏帧就丢掉，不该让一条脏数据打断整条连接
       }
-      onFrame(frame);
-    };
+      onFrame(frame)
+    }
 
     ws.onerror = () => {
       // onerror 之后浏览器一定会再给一次 onclose，重连统一在那里做。
-      ws.close();
-    };
+      ws.close()
+    }
 
     ws.onclose = (ev) => {
-      if (sock === ws) sock = null;
+      if (sock === ws) sock = null
       if (ev.code === 1000 && ev.reason === SESSION_LOST_REASON) {
-        stopped = true;
-        onSessionLost?.();
-        return;
+        stopped = true
+        onSessionLost?.()
+        return
       }
-      scheduleReconnect();
-    };
+      scheduleReconnect()
+    }
   }
 
   return {
     start() {
-      stopped = false;
-      connect();
+      stopped = false
+      connect()
     },
     stop() {
-      stopped = true;
-      if (timer) clearTimeout(timer);
-      timer = null;
-      sock?.close();
-      sock = null;
+      stopped = true
+      if (timer) clearTimeout(timer)
+      timer = null
+      sock?.close()
+      sock = null
     },
     get state() {
-      return state;
+      return state
     },
-  };
+  }
 }
