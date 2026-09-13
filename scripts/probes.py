@@ -381,6 +381,27 @@ PROBES = [
         "探活就一直没人回",
     ),
     Probe(
+        "登录限速-成功不中和 IP 维度",
+        "succeed 把 IP 那一档也清掉的话，攻击者拿自己的账号夹在中间就能把它"
+        "中和：对 A 试 4 次、自己登一次、对 B 再试 4 次……IP 维度存在的全部"
+        "理由就是挡这个。破坏点在 handleLogin 传什么 key，不在限速器内部",
+        "internal/api/auth.go",
+        "\ts.logins.succeed(userKey)",
+        "\ts.logins.succeed(ipKey)",
+        "./internal/api/", "TestASuccessfulLoginDoesNotNeutralizeTheIPCounter",
+        "中和掉了",
+    ),
+    Probe(
+        "登录限速-表不能只增不减",
+        "recent 过滤完不写回、空了不删键的话，每个来过的 IP 永久占一格——"
+        "而登录端点不需要鉴权，这张表是一条没人看的内存曲线",
+        "internal/api/loginrate.go",
+        "\tif len(kept) == 0 {\n\t\tdelete(l.fails, k)\n\t\treturn nil\n\t}\n\tl.fails[k] = kept",
+        "\tl.fails[k] = kept",
+        "./internal/api/", "TestLimiterDoesNotGrowOnEveryAttempt",
+        "无界增长",
+    ),
+    Probe(
         "节点ID-格式后端也要拦",
         "node_id 会被写进隧道证书的 CN（ADR-0009）、拼进九处 URL 路径、"
         "进 DNS 记录的比对键。控制台挡这一条，而直改路（ops-bot、批量脚本）"

@@ -3,6 +3,8 @@ package api_test
 import (
 	"net/http"
 	"testing"
+
+	"github.com/xltxb/edge_caddy/internal/api"
 )
 
 // **资源 ID 的格式是接口的一部分，不是界面偏好**（契约 §0.7）。
@@ -35,9 +37,14 @@ func TestTokenRefusesMalformedNodeID(t *testing.T) {
 				"line": "CN2 GIA", "public_ip": "203.0.113.7",
 			}, func(req *http.Request) { req.AddCookie(ck) })
 
-			if env.Code == 0 {
-				t.Fatalf("node_id %q 被接受了 —— 它会进证书的 CN 与九处 URL 路径，"+
-					"而签发 Token 之后人就去跑安装脚本了", id)
+			// **断言落在具体的 code 上，不是「非 0」。** 契约 §0.7 写明拒的是
+			// 1001，而「非 0」放得过 1002——那一档在 §0.3 里必须带结构化
+			// errors、data 不为 null，与这里回的形状不是一回事。一条比意图宽的
+			// 断言挡不住契约与实现分叉，而契约是前端照着写的那一份。
+			if env.Code != api.CodeBadParam {
+				t.Fatalf("node_id %q 得到 code=%d，契约 §0.7 说拒 1001 —— "+
+					"它会进证书的 CN 与九处 URL 路径，而签发 Token 之后"+
+					"人就去跑安装脚本了", id, env.Code)
 			}
 		})
 	}
@@ -73,9 +80,9 @@ func TestPutRuleRefusesMalformedID(t *testing.T) {
 				"spec": map[string]any{"ips": []string{"203.0.113.0/24"}},
 			}, func(req *http.Request) { req.AddCookie(ck) })
 
-			if env.Code == 0 {
-				t.Fatalf("规则 id %q 被接受了 —— 它会被拼进 URL 路径，"+
-					"而删除那条路走的是同一个路径", id)
+			if env.Code != api.CodeBadParam {
+				t.Fatalf("规则 id %q 得到 code=%d，契约 §0.7 说拒 1001 —— "+
+					"它会被拼进 URL 路径，而删除那条路走的是同一个路径", id, env.Code)
 			}
 		})
 	}
