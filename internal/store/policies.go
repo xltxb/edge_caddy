@@ -101,8 +101,3 @@ func IsPolicyID(id string) bool {
 	}
 	return false
 }
-
-func (s *Store) DeleteRoute(ctx context.Context, domain string) error {
-	_, err := s.Pool.Exec(ctx, `DELETE FROM proxy_routes WHERE domain = $1`, domain)
-	return err
-}

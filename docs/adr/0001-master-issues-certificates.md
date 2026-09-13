@@ -1,5 +1,8 @@
 # 证书由主控集中签发，经隧道下发
 
+- 状态：**已被 [ADR-0015](0015-master-does-not-issue-certificates.md) 取代**（主控不再签发证书，只管理外部签好的；签发那一半移出了这个系统）
+
+
 PRD §4 写的是「Caddy 全生命周期自动管理（Let's Encrypt / ZeroSSL），DNS-01 校验走
 Cloudflare / DNSPod」。字面照做意味着每个边缘节点都要跑一个自建 Caddy 二进制——
 Caddy 的 DNS provider 全部是插件（官方包索引里 81 个 `caddy-dns/*`，无一内置），

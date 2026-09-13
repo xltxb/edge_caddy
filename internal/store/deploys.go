@@ -13,16 +13,15 @@ import (
 
 // Deploy 是一次下发的记录。snapshot 是本次全量渲染的快照，回滚以它为源。
 type Deploy struct {
-	ID         int64           `json:"id"`
-	CfgVersion string          `json:"cfg_version"`
-	Operator   string          `json:"operator"`
-	ResKeys    []string        `json:"res_keys"`
-	OKCount    int             `json:"ok_count"`
-	FailCount  int             `json:"fail_count"`
-	Targets    []string        `json:"targets"`
-	IsBaseline bool            `json:"is_baseline"`
-	CreatedAt  time.Time       `json:"created_at"`
-	Snapshot   json.RawMessage `json:"-"`
+	ID         int64     `json:"id"`
+	CfgVersion string    `json:"cfg_version"`
+	Operator   string    `json:"operator"`
+	ResKeys    []string  `json:"res_keys"`
+	OKCount    int       `json:"ok_count"`
+	FailCount  int       `json:"fail_count"`
+	Targets    []string  `json:"targets"`
+	IsBaseline bool      `json:"is_baseline"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // DeployResult 是一次下发在单个节点上的结果。

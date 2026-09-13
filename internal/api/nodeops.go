@@ -341,13 +341,6 @@ func step(name string, ok bool, detail string) gin.H {
 	return gin.H{"step": name, "ok": ok, "detail": detail}
 }
 
-func detailOf(err error, okMsg string) string {
-	if err != nil {
-		return err.Error()
-	}
-	return okMsg
-}
-
 func (s *Server) isOnline(nodeID string) bool {
 	if s.tunnel == nil {
 		return false

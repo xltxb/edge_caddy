@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -15,12 +14,7 @@ import (
 	"github.com/xltxb/edge_caddy/internal/store"
 )
 
-var (
-	errEmptyEndpoint = errors.New("主控地址不能为空")
-	// PRD §5：强制域名而非 IP。IP 一旦变更，全部已接入的节点都要重新接入，
-	// 而域名换个 A 记录就行。
-	errEndpointIsIP = errors.New("请填域名而不是 IP —— IP 变更会导致全部节点需要重新接入")
-)
+var ()
 
 func (s *Server) handleGetSettings(c *gin.Context) {
 	sys, err := s.store.GetSystemSettings(c.Request.Context())
@@ -483,21 +477,6 @@ func (s *Server) handleTestAlert(c *gin.Context) {
 		return
 	}
 	OK(c, gin.H{"sent": true, "detail": "已投递"})
-}
-
-// validateEndpointIsDomain 拒绝 IP 形式的主控地址（PRD §5）。
-func validateEndpointIsDomain(endpoint string) error {
-	host := endpoint
-	if h, _, err := net.SplitHostPort(endpoint); err == nil {
-		host = h
-	}
-	if host == "" {
-		return errEmptyEndpoint
-	}
-	if net.ParseIP(host) != nil {
-		return errEndpointIsIP
-	}
-	return nil
 }
 
 func assign(dst *string, src *string) {

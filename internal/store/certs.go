@@ -84,10 +84,17 @@ func (s *Store) GetCert(ctx context.Context, domain string, sealer *secret.Seale
 	var c Cert
 	var sealed []byte
 	err := s.Pool.QueryRow(ctx,
-		`SELECT domain, issuer, challenge, auto_renew, cert_pem, key_pem, not_after, updated_at
+		// **列清单与 ListCerts 保持一致，由 TestGetCertAndListCertsAgreeOnFields 钉着。**
+		//
+		// 这里原先少一个 expiry_alerted_at，于是 GetCert 返回的 ExpiryAlertedAt
+		// 恒为 nil——读起来是「从没告警过」。告警扫描走的是 ListCerts，所以一直
+		// 没出事；哪天有人改用 GetCert，症状是每天重复告警而代码看着完全正常
+		// （issue #80）。
+		`SELECT domain, issuer, challenge, auto_renew, cert_pem, key_pem,
+		        not_after, updated_at, expiry_alerted_at
 		 FROM certs WHERE domain = $1`, domain).
 		Scan(&c.Domain, &c.Issuer, &c.Challenge, &c.AutoRenew,
-			&c.CertPEM, &sealed, &c.NotAfter, &c.UpdatedAt)
+			&c.CertPEM, &sealed, &c.NotAfter, &c.UpdatedAt, &c.ExpiryAlertedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return c, ErrNotFound
 	}

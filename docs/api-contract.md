@@ -334,7 +334,10 @@ Upgrade: websocket
 }
 ```
 
-- `dns_sync` 是**最近一次**把解析安排推给服务商的结果，`GET /nodes` 上也有一份。
+- `dns_sync` **不在这个端点上**：它在 `GET /nodes` 与 `GET /dns/weights` 的响应里。
+  这一条曾经挂在 §3 `GET /overview` 的样例下面，而那个样例里没有这个键——
+  照它实现总览的人会去找一个不存在的字段（issue #73）。它是**最近一次**把解析
+  安排推给服务商的结果。
 
   > 它与 `lines` 里的 `share` 是两件事：`share` 是**我们打算**怎么分，
   > `dns_sync` 说的是**服务商那边真的这样了没有**。
@@ -1134,7 +1137,10 @@ Agent 断了就重连，只断开是个假动作：三秒后隧道又开了，�
 那台机器**还不是一个节点**——把事件挂到一个不存在的 node_id 上，
 会让事件流里出现一行点不开的节点名。
 | 签发接入 Token | `签发接入Token` |
-| 证书续期 | `续期证书` |
+| 重推配置 | `重推配置` |
+| 删除证书 | `删除证书` |
+| 修改草稿 | `修改草稿` |
+| 放弃草稿 | `放弃草稿` |
 | 修改系统设置 / 告警 | `修改系统设置` / `修改告警设置` |
 | 发送告警测试 | `发送告警测试` |
 | 登录 / 登出 | `登录` / `登出` |
@@ -1920,8 +1926,10 @@ cursor 分页（§0.5）。
   // 从来没同步过时：{ "ok": false, "at": null, "detail": "尚未向 DNS 服务商同步过" }
   "lines": [
     { "code": "ct", "name": "电信", "entries": [
-        { "node": "node-hk-01", "weight": 60, "share": 60.0, "dns_enabled": true,  "status": "ok" },
-        { "node": "node-us-01", "weight": 40, "share": 0.0,  "dns_enabled": false, "status": "down" }
+        { "node": "node-hk-01", "weight": 60, "share": 60.0, "dns_enabled": true,  "status": "ok",
+          "in_rotation": true,  "weight_set": true },
+        { "node": "node-us-01", "weight": 40, "share": 0.0,  "dns_enabled": false, "status": "down",
+          "in_rotation": false, "weight_set": true }
     ] }
   ],
   "capabilities": {

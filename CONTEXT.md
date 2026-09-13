@@ -127,8 +127,15 @@ _Avoid_: 鉴权服务、auth sidecar
 ### 证书
 
 **证书签发**:
-由**主控**集中完成（DNS-01），签发结果经 gRPC 隧道下发到各边缘节点。
-边缘节点不持有 DNS 服务商凭据，也不自行申请证书（见 [ADR-0001](docs/adr/0001-master-issues-certificates.md)）。
+**不在这个系统里。** 证书由外部证书平台签发与续期，签好之后经
+`PUT /certs/:domain` 推给主控（用 cert-bot 那个 token，契约 §0.6），
+再由主控经 gRPC 隧道内联下发到各边缘节点。
+边缘节点不持有 DNS 服务商凭据，也不自行申请证书。
+
+见 [ADR-0015](docs/adr/0015-master-does-not-issue-certificates.md)——它**推翻了
+[ADR-0001](docs/adr/0001-master-issues-certificates.md)** 的核心决定（主控跑
+DNS-01 集中签发）。这一条曾经照 ADR-0001 写，而代码里早就没有 ACME 了：
+照它去找那段「丢失」的实现是找不到的。
 
 **证书清单**:
 Agent 上报的、本机 Caddy 当前真正加载的证书。它是**回执**，不是账本——

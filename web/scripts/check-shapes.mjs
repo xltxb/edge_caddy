@@ -533,6 +533,47 @@ const unaccounted = Object.keys(shapes.endpoints).filter(
   (k) => !comparedWrites.has(norm(k)) && !excused.has(norm(k)),
 )
 
+/*
+ * **读端点也要交账。**
+ *
+ * 上面那笔账只对 request-shapes.json 里的**写端点**闭合——而读端点根本不在
+ * 那份清单里，于是漏掉一个不会有任何地方问起（issue #72）。
+ *
+ * GET /dns/weights 是最吃亏的那个：in_rotation / weight_set / capabilities /
+ * domains 都在它身上，字段最新最厚、mock 最容易分叉，而它既不在比对表里、
+ * 也不需要写一句为什么。
+ *
+ * READ_ENDPOINTS 是这份账的**上界**（domain.md「登记表是上界」）：这里漏登记
+ * 的端点这条检查看不见。它由 requests.ts 与 CASES 之外的人工维护，
+ * 而那正是它需要被写下来的理由——写下来至少能被 review 看见。
+ */
+const READ_ENDPOINTS = [
+  'GET /overview',
+  'GET /nodes',
+  'GET /routes',
+  'GET /rules',
+  'GET /drafts',
+  'GET /deploys',
+  'GET /deploys/:id',
+  'GET /audit',
+  'GET /certs',
+  'GET /settings',
+  'GET /alerts',
+  'GET /dns/weights',
+  'GET /policies/:id',
+  'GET /nodes/:id/logs',
+]
+const comparedReads = new Set(
+  CASES.filter((c) => !c.init?.method).map((c) => norm(`GET ${c.path}`)),
+)
+const NOT_COMPARED_READS = {
+  'GET /nodes/:id/logs': '要先有一台真节点在上报日志，dev 环境里是空的',
+}
+const excusedReads = new Set(Object.keys(NOT_COMPARED_READS).map(norm))
+const unaccountedReads = READ_ENDPOINTS.filter(
+  (k) => !comparedReads.has(norm(k)) && !excusedReads.has(norm(k)),
+)
+
 /* ── 报告 ──────────────────────────────────────────────────────────── */
 
 let bad = 0
@@ -614,6 +655,14 @@ if (unaccounted.length) {
   for (const k of unaccounted) console.log(`    ${k}`)
   console.log('  加进 CASES，或者在 NOT_COMPARED 里写一句理由。')
   console.log('  **两样都没有的时候，它在输出里跟「比过了没问题」长得一样。**')
+}
+
+if (unaccountedReads.length) {
+  bad += unaccountedReads.length
+  console.log('')
+  console.log('✗ 这些读端点既没比、也没写明为什么不比：')
+  for (const k of unaccountedReads) console.log(`    ${k}`)
+  console.log('  加进 CASES，或者在 NOT_COMPARED_READS 里写一句理由。')
 }
 
 console.log('')

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xltxb/edge_caddy/internal/dnsctl"
@@ -170,23 +171,11 @@ func (s *Server) handlePutDNSWeights(c *gin.Context) {
 }
 
 func fieldPath(a string, i int, b string) string {
-	return a + "[" + itoaN(i) + "]." + b
+	return a + "[" + strconv.Itoa(i) + "]." + b
 }
 
 func fieldPath2(a string, i int, b string, j int, c string) string {
-	return a + "[" + itoaN(i) + "]." + b + "[" + itoaN(j) + "]." + c
-}
-
-func itoaN(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var out []byte
-	for n > 0 {
-		out = append([]byte{byte('0' + n%10)}, out...)
-		n /= 10
-	}
-	return string(out)
+	return a + "[" + strconv.Itoa(i) + "]." + b + "[" + strconv.Itoa(j) + "]." + c
 }
 
 // dnsTargets 读出当前配置里的目标清单。读不到时回 nil ——
