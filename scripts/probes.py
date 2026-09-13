@@ -381,6 +381,27 @@ PROBES = [
         "探活就一直没人回",
     ),
     Probe(
+        "节点ID-格式后端也要拦",
+        "node_id 会被写进隧道证书的 CN（ADR-0009）、拼进九处 URL 路径、"
+        "进 DNS 记录的比对键。控制台挡这一条，而直改路（ops-bot、批量脚本）"
+        "绕过控制台——签发 Token 之后人就去跑安装脚本了，那不是代价为零的重来",
+        "internal/api/nodes.go",
+        "\tif !model.ValidResourceID(req.NodeID) {",
+        "\tif false {",
+        "./internal/api/", "TestTokenRefusesMalformedNodeID",
+        "被接受了",
+    ),
+    Probe(
+        "规则ID-格式后端也要拦",
+        "PUT 是 upsert，这条路会创建规则，而 id 会被拼进 URL 路径——"
+        "删除走的是同一个路径。契约 §0.7 把格式定成接口的一部分",
+        "internal/api/config_res.go",
+        "\tif !model.ValidResourceID(id) {",
+        "\tif false {",
+        "./internal/api/", "TestPutRuleRefusesMalformedID",
+        "被接受了",
+    ),
+    Probe(
         "只建不覆盖-要原子",
         "先查再写的话两句之间有窗口：两个人同时新建同一个 id，两句查询都说没有，"
         "后写的把先写的整个换掉还回 code: 0——那正是 #70 要挡的「静默覆盖别人"

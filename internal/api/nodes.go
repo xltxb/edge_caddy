@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/xltxb/edge_caddy/internal/model"
 	"github.com/xltxb/edge_caddy/internal/store"
 )
 
@@ -318,6 +319,15 @@ func (s *Server) handleIssueToken(c *gin.Context) {
 		Fail(c, CodeBadParam, err.Error())
 		return
 	}
+	// **格式先于一切。** node_id 会被写进隧道证书的 CN（ADR-0009）、
+	// 拼进九处 URL 路径、进 DNS 记录的比对键——一个带 `/` 或大写的 id
+	// 在其中任何一处上都会安静地走偏，而签发 Token 之后人就去跑安装脚本了，
+	// 那不是一个「再试一次」代价为零的操作。格式见契约 §0.7。
+	if !model.ValidResourceID(req.NodeID) {
+		Fail(c, CodeBadParam, "node_id "+model.ResourceIDHint)
+		return
+	}
+
 	// 已下线的节点不该拿到新 Token。挡在这里是为了把话说明白 ——
 	// 接入路径也会挡（tunnel.refuseIfDrained），但那时人已经跑完安装脚本了，
 	// 而错误只出现在那台机器的日志里。
@@ -332,10 +342,6 @@ func (s *Server) handleIssueToken(c *gin.Context) {
 			Fail(c, CodeStateConflict, "该节点已被下线，先「重新上线」再签发接入 Token")
 			return
 		}
-	}
-	if req.NodeID == "" {
-		Fail(c, CodeBadParam, "node_id 不能为空")
-		return
 	}
 	setAuditTarget(c, req.NodeID)
 

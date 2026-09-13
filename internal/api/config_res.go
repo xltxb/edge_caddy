@@ -289,6 +289,20 @@ func (s *Server) handleUpsertRule(c *gin.Context) {
 		Fail(c, CodeBadParam, err.Error())
 		return
 	}
+	// **这条路会创建规则**（PUT 是 upsert），所以 id 的形状要在这里挡住。
+	// 它会被拼进 URL 路径，而删除走的是同一个路径。格式见契约 §0.7。
+	//
+	// **排在 bindStrict 之后**：契约 §0.2.1 要求未知字段一律拒绝并点名，
+	// 而一个字段名写错、id 也不合格的请求，先该被告知字段名——
+	// 反过来会把人支到别处去查（TestEveryWriteEndpointRejectsUnknownFields
+	// 盯着这个顺序）。两者都在触碰数据库之前，排序没有别的代价。
+	//
+	// 校验放在 PUT 上，意味着库里一条历史遗留的坏 id 会变成只读——
+	// 那是对的：它本来就不该存在，而 DELETE 不校验，人仍然删得掉它。
+	if !model.ValidResourceID(id) {
+		Fail(c, CodeBadParam, "规则 id "+model.ResourceIDHint)
+		return
+	}
 	req.Rule.ID = id
 
 	ctx := c.Request.Context()

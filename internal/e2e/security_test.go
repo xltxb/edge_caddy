@@ -449,7 +449,10 @@ func TestFilterFieldsAreServedFromTheSameTableAsValidation(t *testing.T) {
 			if d.NeedName[field] {
 				f["name"] = "X-Test"
 			}
-			_, res := r.do("PUT", "/rules/ff-"+field+"-"+op, map[string]any{
+			// field 名带下划线（user_agent），而资源 id 不收下划线
+			// （契约 §0.7）—— 这条 id 是测试自己造的，不是被测对象。
+			id := "ff-" + strings.ReplaceAll(field, "_", "-") + "-" + op
+			_, res := r.do("PUT", "/rules/"+id, map[string]any{
 				"name": "特征", "type": "request_filter", "enabled": true,
 				"apply_to": []string{"ff.example.com"},
 				"spec":     map[string]any{"filters": []map[string]any{f}},
