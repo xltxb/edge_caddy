@@ -14,8 +14,6 @@ const issued = ref<NodeTokenWire | null>(null)
 const busy = ref(false)
 const error = ref('')
 
-
-
 async function submit(): Promise<void> {
   if (!RESOURCE_ID.test(form.value.node_id)) {
     // 提前拦住，而不是等后端拒：这一步之后会签出一张绑定这台机器身份的

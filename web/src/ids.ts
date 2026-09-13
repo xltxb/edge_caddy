@@ -13,8 +13,7 @@
  * 两道闸不重复：直改路（ops-bot、批量脚本）绕过控制台，而控制台这道
  * 拦得更早 —— 签发 Token 之后人就去跑安装脚本了，那不是代价为零的重来。
  */
-export const RESOURCE_ID = /^[a-z0-9][a-z0-9-]{1,39}$/;
+export const RESOURCE_ID = /^[a-z0-9][a-z0-9-]{1,39}$/
 
 /** 给人看的那句话。两处共用，免得同一条规矩有两种说法。 */
-export const RESOURCE_ID_HINT =
-  "只能用小写字母、数字和连字符，以字母或数字开头，2–40 个字符";
+export const RESOURCE_ID_HINT = '只能用小写字母、数字和连字符，以字母或数字开头，2–40 个字符'

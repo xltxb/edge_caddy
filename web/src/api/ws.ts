@@ -38,7 +38,7 @@ export interface EdgeSocketOptions {
  * 1001 Going Away 是另一回事（主控关停、这条订阅积压超限），那时该重连——
  * 把它也当成会话失效，一次主控重启就会把所有人踢到登录页。
  */
-const SESSION_LOST_REASON = '会话已失效' 
+const SESSION_LOST_REASON = '会话已失效'
 
 /**
  * 主控实时通道。
