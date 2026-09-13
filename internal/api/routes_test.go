@@ -326,9 +326,9 @@ func TestNodeListFieldsMatchContract(t *testing.T) {
 		"cfg_version": true, "drift": true, "dns_enabled": true,
 		"drained_at": true, "dns_reason": true, "dns_actor": true,
 		"dns_changed_at": true, "agent_version": true, "geo_db_ok": true,
-		"blocked_1h": true,
+		"blocked_1h":  true,
 		"in_rotation": true, "weight_set": true,
-		"routes":     true, "rules": true, "created_at": true,
+		"routes": true, "rules": true, "created_at": true,
 	}
 
 	b, err := json.Marshal(api.NodeRespForTest())

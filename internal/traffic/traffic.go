@@ -36,6 +36,17 @@ func Totals(nodes []store.Node, h Latester) (conns, req, origin uint64, reported
 		if !ok {
 			continue
 		}
+		// **样本要是当下的。**
+		//
+		// 这里原先只看条目在不在。一台掉线但还没被删除的节点，health 里那条
+		// Sample 会一直留着（Forget 的唯一调用点是删节点），于是 reported 照数
+		// 它、它一小时前的连接数被加进当下的汇总（issue #48）。
+		//
+		// 后果不在这一刻：sampleOnce 的「报数不齐就不记」被绕过去之后，
+		// 那个偏低的样本会入库，而 24 小时后它成为同比的分母。
+		if time.Since(m.At) > staleAfter {
+			continue
+		}
 		reported++
 		conns += uint64(m.Conns)
 		req += m.ReqTotal
@@ -43,6 +54,13 @@ func Totals(nodes []store.Node, h Latester) (conns, req, origin uint64, reported
 	}
 	return conns, req, origin, reported
 }
+
+// staleAfter 是一份样本还算不算「当下」的界线。
+//
+// 取 30 秒：心跳默认 3 秒一次，离线判定要连续错过 9 秒。30 秒给足了抖动的
+// 余量，又远短于一分钟一次的采样周期——一台真掉线的机器不会带着旧数字
+// 混进下一个采样点。
+const staleAfter = 30 * time.Second
 
 // warmup 是主控启动后不采样的那段。
 //

@@ -596,3 +596,34 @@ func TestOfflineAlertSaysWhyDNSWasNotDetached(t *testing.T) {
 		t.Errorf("要说清解析没被摘掉 —— 人被叫醒时流量还在往这台死机器上打：%q", got)
 	}
 }
+
+// TestWarnDoesNotStormWhenLoadHoversOnTheThreshold：抖在阈值上不该反复告警。
+//
+// classify 进出用的是同一个阈值，announce 只在状态**变化**时发——而「在阈值
+// 上抖」正是变化最频繁的那种：CPU 在 79.8 / 80.2 之间来回（负载略高于阈值的
+// 机器的常态），心跳周期 3 秒，于是每分钟最多 20 条事件 + 20 条 Lark，
+// 而且 ok 与 warn 交替（issue #47）。
+//
+// 离线那一档有 downSent 护着，证书那一档有 alertEvery 护着。**warn 是唯一
+// 没有的**，而这份代码在三处写着同一条理由：「一个重启就重复报警的系统会
+// 教会人忽略那一类告警」。
+//
+// 判据是**人收到几条**，不是「状态对不对」——状态每一次都是对的，
+// 那正是这个缺陷难被看见的原因。
+func TestWarnDoesNotStormWhenLoadHoversOnTheThreshold(t *testing.T) {
+	a := &recordingAlerter{}
+	m, _ := newMonitor(t, a, nil)
+
+	// 默认阈值是 80。在它上下各 0.2 来回抖十个来回。
+	for i := 0; i < 10; i++ {
+		m.Observe(hb(80.2))
+		m.Observe(hb(79.8))
+	}
+	// announce 是 go 起的，给它落定的时间。
+	time.Sleep(100 * time.Millisecond)
+
+	if got := len(a.all()); got > 2 {
+		t.Errorf("在阈值上抖了十个来回，发了 %d 条告警 —— "+
+			"一条天天亮着的告警，人两天就学会忽略它，连带忽略真出问题那天的那条", got)
+	}
+}

@@ -165,7 +165,7 @@ func (m *Monitor) Observe(hb tunnel.Heartbeat) string {
 	st.seen = true
 	st.misses = 0
 
-	status := m.classify(hb)
+	status := m.classify(hb, st.status)
 	if status != st.status {
 		st.status = status
 		go m.announce(hb.NodeID, status, hb)
@@ -183,12 +183,35 @@ func (m *Monitor) Observe(hb tunnel.Heartbeat) string {
 // **`warn` 是「连着但不健康」**，不是「快离线了」。把这样一台机器算进「在线」，
 // 会让 KPI 在一台 CPU 81%、内存快满的机器上仍然显示绿色——而巡检时最该被
 // 看见的恰恰是那台。
-func (m *Monitor) classify(hb tunnel.Heartbeat) string {
+func (m *Monitor) classify(hb tunnel.Heartbeat, prev string) string {
+	// **进出用不同的线（滞回）。**
+	//
+	// 同一个阈值进出的话，「在阈值上抖」会变成状态反复翻转——而那恰恰是
+	// 负载略高于阈值的机器的常态：CPU 在 79.8 / 80.2 之间来回，心跳 3 秒一次，
+	// 于是每分钟最多 20 条事件 + 20 条 Lark，ok 与 warn 交替（issue #47）。
+	//
+	// 离线那一档有 downSent 护着、证书那一档有 alertEvery 护着，warn 是唯一
+	// 没有的。而这份代码在三处写着同一条理由：**一个重启就重复报警的系统
+	// 会教会人忽略那一类告警**。
+	//
+	// 回落要比上去多退一截（warnExitMargin）：只有真的退下来才算恢复，
+	// 而不是「刚好压在线下面那一下」。
+	if prev == "warn" {
+		if hb.CPU >= m.WarnCPUPct-warnExitMargin || hb.Mem >= m.WarnMemPct-warnExitMargin {
+			return "warn"
+		}
+		return "ok"
+	}
 	if hb.CPU >= m.WarnCPUPct || hb.Mem >= m.WarnMemPct {
 		return "warn"
 	}
 	return "ok"
 }
+
+// warnExitMargin 是退出 warn 要多退的那一截（百分点）。
+//
+// 取 5：比心跳之间的正常波动大，比「负载真的降下来了」小。
+const warnExitMargin = 5.0
 
 // announce 在健康状态变化时写事件。只在**变化**时写，不是每个心跳都写——
 // 一台持续高负载的机器会把事件流刷满，而那条流的价值在于「有事发生了」。

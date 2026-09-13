@@ -77,6 +77,12 @@ func (s *Server) handleGetSettings(c *gin.Context) {
 		"dns_provider_requirements": store.ProviderRequirements(),
 
 		"ops_bot_token_configured": s.opsBotConfigured,
+		// **证书推送那条链路看的是 cert-bot，不是 ops-bot**（契约 §0.6）。
+		//
+		// 只回 ops-bot 那一格的话：正确配了 cert-bot 的人看到「未配置」会去补
+		// ops-bot；而配了 ops-bot 的人拿到绿灯，同时把整个控制面交给了外部平台
+		// ——「对方那边一次日志泄露就是我们整个控制面」（issue #51）。
+		"cert_bot_token_configured": s.certBotConfigured,
 	})
 }
 

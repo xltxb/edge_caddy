@@ -446,6 +446,39 @@ PROBES = [
         "./internal/api/", "TestExistenceChecksSayWhichStepFailed",
         "那是下一步的措辞",
     ),
+    Probe(
+        "告警-warn 档有滞回",
+        "进出用同一个阈值的话，「在阈值上抖」会让状态反复翻转——而那是负载略高于"
+        "阈值的机器的常态。每分钟最多 20 条事件 + 20 条 Lark，而一条天天亮着的"
+        "告警，人两天就学会忽略它（issue #47）",
+        "internal/health/health.go",
+        "\tif prev == \"warn\" {",
+        "\tif false {",
+        "./internal/health/", "TestWarnDoesNotStormWhenLoadHoversOnTheThreshold",
+        "发了 10 条告警",
+    ),
+    Probe(
+        "流量-样本要是当下的",
+        "只看条目在不在的话，一台掉线但还没被删除的节点会带着一小时前的数字"
+        "继续算进 reported，「报数不齐就不记」那道闸因此被绕过去——"
+        "而 24 小时后那个偏低的样本会成为同比的分母（issue #48）",
+        "internal/traffic/traffic.go",
+        "\t\tif time.Since(m.At) > staleAfter {\n\t\t\tcontinue\n\t\t}",
+        "",
+        "./internal/traffic/", "TestStaleSamplesDoNotCountAsReported",
+        "「报数不齐就不记」那道闸会被一份冻结的样本绕过去",
+    ),
+    Probe(
+        "设置-cert-bot 单独报",
+        "只回 ops_bot_token_configured 的话，证书页只能拿它当「推送链路通不通」"
+        "的指示灯：配对了 cert-bot 的人看到「未配置」，而配了 ops-bot 的人拿到"
+        "绿灯——同时把整个控制面交给了外部平台（issue #51）",
+        "internal/api/settings.go",
+        "\t\t\"cert_bot_token_configured\": s.certBotConfigured,",
+        "",
+        "./internal/api/", "TestSettingsReportsCertBotSeparately",
+        "没有 cert_bot_token_configured",
+    ),
 ]
 
 

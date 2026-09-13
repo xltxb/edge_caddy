@@ -1535,19 +1535,21 @@ Caddy 会**拒绝整份配置**——症状是「所有站点一起下发失败�
 | `http3` | bool | 开启需放行 443/udp | `true` |
 | `hsts` | bool | | `true` |
 | `hsts_max_age` | int | 秒，仅在 `hsts` 开启时有意义 | `63072000` |
-| `ocsp` | bool | OCSP Must-Staple | `false` |
 
-> `ca` / `email` / `key_type` 是**主控**签发证书时用的参数（DNS-01），
-> **不下发给节点**——节点跑官方 Caddy，不自己申请证书（ADR-0001）。设计稿里那句
-> 「Caddy 全生命周期自动申请与续期」是旧说法，前端已改文案。
+> **这张表里的每一项都真的渲染进节点配置。**
 >
-> 真正渲染进节点配置的是：`min_version` → `tls_connection_policies.protocol_min`；
+> `min_version` → `tls_connection_policies.protocol_min`；
 > `http3` → server 的 `protocols`（开它还需要部署脚本放行 443/udp）；
 > `hsts` → 响应头，**只在 TLS 那台 server 上发**（明文响应里发 HSTS 浏览器会忽略，
 > 而它会让人以为已经生效了）。
 >
-> `ocsp`（Must-Staple）是**签发时**写进 CSR 的属性，不是服务端设置——它属于
-> 主控的签发参数，节点侧无从体现。
+> 这里曾经还有 `ca` / `email` / `key_type` / `ocsp` 四项，它们是**主控签发证书**
+> 时用的参数。[ADR-0015](adr/0015-master-does-not-issue-certificates.md) 移除了
+> 主控签发，它们从此没有任何对象——而它们是**可编辑的**：人会在工作台里改一个
+> 值、按下发，每一步都成功，而什么也不会发生。四项都已删除（issue #52）。
+>
+> 库里旧的 spec 还带着那几个键，`ParsePolicies` 用非严格 Unmarshal 会静默忽略，
+> 不需要迁移。
 
 **`global:log`**
 
@@ -1997,14 +1999,21 @@ Cloudflare 的加权调度经 **Load Balancing**（独立付费产品）实现�
 > **控制台里没有上传表单，这是决定不是遗漏。**
 >
 > 证书由外部证书平台（签发 / 续期那一侧）在签好之后调这个端点推进来，
-> 用 `EC_OPS_BOT_TOKEN` 那个静态 Bearer 认证。
+> 用 **`EC_CERT_BOT_TOKEN`** 那个静态 Bearer 认证（见 §0.6）。
+>
+> **不是 ops-bot。** 这里曾经写的是 `EC_OPS_BOT_TOKEN`，而 §0.6 建 cert-bot
+> 的全部理由就是不能那么做：「把 ops-bot 交出去，等于对方那边一次日志泄露
+> 就是我们整个控制面」。ops-bot 能到达每一个需要登录的端点，cert-bot 只能到
+> `GET /routes` 与 `PUT /certs/:domain`（issue #51）。
 >
 > 界面上因此**不该出现「导入证书」按钮**，空态也不能说「要导入进来」
 > ——那句话暗示有个地方可以做，而没有。该说的是它从哪来、以及怎么确认那条链路通着：
 >
 > - **推送地址**：`GET /settings` 的 `master_endpoint`（只读）
-> - **认证配没配**：`GET /settings` 的 `ops_bot_token_configured`（只读回显；
->   它只从环境变量读，控制台改不了——所以那一栏是「看」，不是「配」）
+> - **认证配没配**：`GET /settings` 的 `cert_bot_token_configured`（只读回显；
+>   它只从环境变量读，控制台改不了——所以那一栏是「看」，不是「配」）。
+>   **看的是 cert-bot 那一格**：ops-bot 配着不代表证书推得进来，
+>   而它配着恰恰意味着有人把太大的钥匙交出去了
 >
 > 代价说在明处：**外部平台挂了、或者临时要换一张证书时，控制台里做不了**。
 > 那时候的路径是直接调这个端点（curl + token），而不是去数据库。

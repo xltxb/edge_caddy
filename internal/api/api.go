@@ -50,18 +50,19 @@ type Server struct {
 	sessionTTL   time.Duration
 	secureCookie bool
 
-	tunnel           Tunneler
-	health           Healther
-	dns              *dnsops.Orchestrator
-	alerts           *alert.Notifier
-	certs            *certs.Manager
-	sealer           *secret.Sealer
-	deployer         *deploy.Scheduler
-	masterAddr       string
-	caPin            string
-	opsBotConfigured bool
-	webRoot          string
-	version          string
+	tunnel            Tunneler
+	health            Healther
+	dns               *dnsops.Orchestrator
+	alerts            *alert.Notifier
+	certs             *certs.Manager
+	sealer            *secret.Sealer
+	deployer          *deploy.Scheduler
+	masterAddr        string
+	caPin             string
+	opsBotConfigured  bool
+	certBotConfigured bool
+	webRoot           string
+	version           string
 }
 
 type Options struct {
@@ -145,22 +146,23 @@ func New(o Options) *gin.Engine {
 	r.Use(Recover(o.Log))
 
 	s := &Server{
-		store:            o.Store,
-		log:              o.Log,
-		sessionTTL:       o.SessionTTL,
-		secureCookie:     o.SecureCookie,
-		tunnel:           o.Tunnel,
-		health:           o.Health,
-		dns:              o.DNS,
-		alerts:           o.Alerts,
-		certs:            o.Certs,
-		sealer:           o.Sealer,
-		deployer:         o.Deployer,
-		masterAddr:       o.MasterAddr,
-		caPin:            o.CAPin,
-		opsBotConfigured: o.OpsBotToken != "",
-		webRoot:          o.WebRoot,
-		version:          o.Version,
+		store:             o.Store,
+		log:               o.Log,
+		sessionTTL:        o.SessionTTL,
+		secureCookie:      o.SecureCookie,
+		tunnel:            o.Tunnel,
+		health:            o.Health,
+		dns:               o.DNS,
+		alerts:            o.Alerts,
+		certs:             o.Certs,
+		sealer:            o.Sealer,
+		deployer:          o.Deployer,
+		masterAddr:        o.MasterAddr,
+		caPin:             o.CAPin,
+		opsBotConfigured:  o.OpsBotToken != "",
+		certBotConfigured: o.CertBotToken != "",
+		webRoot:           o.WebRoot,
+		version:           o.Version,
 	}
 
 	v1 := r.Group("/api/v1")

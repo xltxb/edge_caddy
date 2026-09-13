@@ -13,7 +13,7 @@ import (
 var (
 	DefaultTLSPolicy = TLSPolicy{
 		MinVersion: "1.2",
-		HTTP3:      true, HSTS: true, HSTSMaxAge: 63072000, OCSP: false,
+		HTTP3:      true, HSTS: true, HSTSMaxAge: 63072000,
 	}
 	DefaultLogPolicy = LogPolicy{
 		Format: "json", Level: "INFO", RollSize: 50, RollKeep: 5,
@@ -30,14 +30,18 @@ var (
 // 人会在工作台里把 CA 从 letsencrypt 改成 zerossl、按下发，
 // 每一步都成功，而什么也不会发生。
 //
-// 库里旧的 spec 还带着那三个键——ParsePolicies 用非严格 Unmarshal，
+// **ocsp 是同一批里漏掉的第四项**，而且比那三项更像真的：它有 seed、进 diff、
+// 进 version、进基线。契约自己说清了它为什么不可能生效——「Must-Staple 是
+// **签发时**写进 CSR 的属性，不是服务端设置」，而签发已经不在主控这边了
+// （ADR-0015，issue #52）。
+//
+// 库里旧的 spec 还带着那四个键——ParsePolicies 用非严格 Unmarshal，
 // 它们会被静默忽略，不需要迁移。
 type TLSPolicy struct {
 	MinVersion string `json:"min_version,omitempty"`
 	HTTP3      bool   `json:"http3"`
 	HSTS       bool   `json:"hsts"`
 	HSTSMaxAge int    `json:"hsts_max_age,omitempty"`
-	OCSP       bool   `json:"ocsp"`
 }
 
 type LogPolicy struct {

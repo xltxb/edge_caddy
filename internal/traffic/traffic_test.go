@@ -18,6 +18,15 @@ func (f fakeHealth) Latest(id string) (health.Sample, bool) {
 	return s, ok
 }
 
+// fresh 把一份样本标成「刚报上来的」。
+//
+// Totals 现在看新鲜度（issue #48），而 At 的零值是很久以前——不标的话
+// 这些测试造的全是「冻结样本」，而它们想说的恰恰相反。
+func fresh(s health.Sample) health.Sample {
+	s.At = time.Now()
+	return s
+}
+
 func seedNode(t *testing.T, s *store.Store, id string) {
 	t.Helper()
 	if err := s.UpsertNode(context.Background(), store.NodeSpec{
@@ -32,7 +41,7 @@ func seedNode(t *testing.T, s *store.Store, id string) {
 // Totals 因此回报 reported —— 采样器靠它判断这一分钟的数字可不可信。
 func TestTotalsReportsHowManyNodesAnswered(t *testing.T) {
 	nodes := []store.Node{{ID: "a"}, {ID: "b"}}
-	h := fakeHealth{"a": {Conns: 3, ReqTotal: 100, OriginTotal: 40}}
+	h := fakeHealth{"a": fresh(health.Sample{Conns: 3, ReqTotal: 100, OriginTotal: 40})}
 
 	conns, req, origin, reported := traffic.Totals(nodes, h)
 	if conns != 3 || req != 100 || origin != 40 {
@@ -59,8 +68,8 @@ func TestDrainedNodeIsExcludedFromTotals(t *testing.T) {
 	at := time.Now()
 	nodes := []store.Node{{ID: "a"}, {ID: "b", DrainedAt: &at}}
 	h := fakeHealth{
-		"a": {Conns: 3},
-		"b": {Conns: 99}, // 它还在报，但它已经被人下线了
+		"a": fresh(health.Sample{Conns: 3}),
+		"b": fresh(health.Sample{Conns: 99}), // 它还在报，但它已经被人下线了
 	}
 	conns, _, _, reported := traffic.Totals(nodes, h)
 	if conns != 3 {
@@ -81,7 +90,7 @@ func TestSampleIsSkippedWhenNodesAreMissing(t *testing.T) {
 	seedNode(t, st, "a")
 	seedNode(t, st, "b")
 
-	s := &traffic.Sampler{Store: st, Health: fakeHealth{"a": {Conns: 5}},
+	s := &traffic.Sampler{Store: st, Health: fakeHealth{"a": fresh(health.Sample{Conns: 5})},
 		Interval: 10 * time.Millisecond, Warmup: time.Nanosecond}
 	runFor(t, s, 120*time.Millisecond)
 
@@ -91,7 +100,7 @@ func TestSampleIsSkippedWhenNodesAreMissing(t *testing.T) {
 
 	// 两台都报了就记。
 	s2 := &traffic.Sampler{Store: st,
-		Health:   fakeHealth{"a": {Conns: 5}, "b": {Conns: 7}},
+		Health:   fakeHealth{"a": fresh(health.Sample{Conns: 5}), "b": fresh(health.Sample{Conns: 7})},
 		Interval: 10 * time.Millisecond, Warmup: time.Nanosecond}
 	runFor(t, s2, 120*time.Millisecond)
 
@@ -121,7 +130,7 @@ func TestWarmupSkipsEarlySamples(t *testing.T) {
 	st := testdb.New(t)
 	seedNode(t, st, "a")
 
-	s := &traffic.Sampler{Store: st, Health: fakeHealth{"a": {Conns: 5}},
+	s := &traffic.Sampler{Store: st, Health: fakeHealth{"a": fresh(health.Sample{Conns: 5})},
 		Interval: 10 * time.Millisecond, Warmup: time.Hour}
 	runFor(t, s, 100*time.Millisecond)
 
@@ -375,4 +384,41 @@ func TestReasonValuesAreExactlyWhatTheContractLists(t *testing.T) {
 		t.Fatal(err)
 	}
 	check("那一分钟是 0")
+}
+
+// TestStaleSamplesDoNotCountAsReported：一份冻结的样本不算「报了数」。
+//
+// Totals 只看条目在不在，不看它有多旧（issue #48）。一台掉线但还没被删除的
+// 节点，health 里那条 Sample 会一直留着——于是：
+//
+//   - reported 照数它，`报数不齐就不记` 那道闸被绕过去了
+//   - 它一小时前的连接数被加进当下的汇总
+//
+// 而 sampleOnce 的注释把这道闸的理由说得很清楚：「放宽它会让偏低的样本进库，
+// 而 24 小时后那个样本会成为同比的分母」。这里不是放宽，是它**看的东西不对**
+// ——闸拦的是「节点数不够」，而不是「数据是不是当下的」。
+//
+// Forget 的唯一调用点是删节点（api/nodemeta.go），掉线不会清。
+func TestStaleSamplesDoNotCountAsReported(t *testing.T) {
+	now := time.Now()
+	h := fakeHealth{
+		"node-a": {Conns: 100, ReqTotal: 1000, At: now},
+		// b 一小时前掉线了，样本冻在那儿——**节点还没被删，所以条目还在**。
+		"node-b": {Conns: 900, ReqTotal: 9000, At: now.Add(-time.Hour)},
+	}
+	nodes := []store.Node{{ID: "node-a"}, {ID: "node-b"}}
+
+	conns, req, _, reported := traffic.Totals(nodes, h)
+
+	if reported != 1 {
+		t.Errorf("只有一台真的在报数，reported 是 %d —— "+
+			"「报数不齐就不记」那道闸会被一份冻结的样本绕过去", reported)
+	}
+	if conns != 100 {
+		t.Errorf("连接数是 %d，想要 100 —— "+
+			"一台机器一小时前的数字被加进了当下的汇总", conns)
+	}
+	if req != 1000 {
+		t.Errorf("请求数是 %d，想要 1000", req)
+	}
 }

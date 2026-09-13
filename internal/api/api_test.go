@@ -321,3 +321,38 @@ func TestLoginIsAudited(t *testing.T) {
 		}
 	}
 }
+
+// TestSettingsReportsCertBotSeparately：证书推送那条链路通不通，要看 cert-bot。
+//
+// GET /settings 原先只回 ops_bot_token_configured，而契约 §9 让证书页拿它当
+// 「证书推送链路通不通」的指示灯——于是（issue #51）：
+//
+//   - 按 §0.6 正确配了 EC_CERT_BOT_TOKEN 的人，证书页显示「未配置」，
+//     他会去补 ops-bot；
+//   - 照 §9 配了 ops-bot 的人拿到绿灯，而他刚把**整个控制面**交给了外部平台。
+//
+// §0.6 建 cert-bot 的全部理由就是这个：「把 ops-bot 交出去，等于对方那边
+// 一次日志泄露就是我们整个控制面」。而 §0.6 自己也写着「一份自相矛盾的契约，
+// 错的那一半会先被读到」。
+func TestSettingsReportsCertBotSeparately(t *testing.T) {
+	r, _ := newServer(t)
+	ck := login(t, r)
+
+	_, env := do(t, r, "GET", "/api/v1/settings", nil, func(req *http.Request) {
+		req.AddCookie(ck)
+	})
+	var got map[string]any
+	if err := json.Unmarshal(env.Data, &got); err != nil {
+		t.Fatal(err)
+	}
+
+	v, ok := got["cert_bot_token_configured"]
+	if !ok {
+		t.Fatal("GET /settings 没有 cert_bot_token_configured —— " +
+			"证书页因此只能拿 ops-bot 那一格当指示灯，而那两个 token 的区别" +
+			"正是这套东西的安全边界")
+	}
+	if v != true {
+		t.Errorf("这个装置配了 cert-bot，却报 %v", v)
+	}
+}
