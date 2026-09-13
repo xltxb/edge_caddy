@@ -27,25 +27,48 @@ const operator = ref('all')
  */
 const nextBeforeId = ref<number | null>(null)
 
-async function fetchPage(beforeID: number | null): Promise<Paged<AuditWire>> {
+/**
+ * inflight 是此刻还在飞的那次请求。切筛选时先把它掐掉。
+ *
+ * 不掐的话：先发的请求后返回时会把后发的结果覆盖掉——筛选条显示 A 而表格是
+ * B 的数据，**且不会自愈**（issue #76）。`http` 的 AbortSignal 形参此前五处
+ * 声明、零处传入，那个竞态因此一直没人挡。
+ *
+ * 切换筛选时不同的 operator 命中不同的索引，快慢本来就不一样，这不是极端场景。
+ */
+let inflight: AbortController | null = null
+
+async function fetchPage(beforeID: number | null, signal: AbortSignal): Promise<Paged<AuditWire>> {
   const q = new URLSearchParams()
   if (operator.value !== 'all') q.set('operator', operator.value)
   if (beforeID !== null) q.set('before_id', String(beforeID))
   const qs = q.toString()
-  return http.get<Paged<AuditWire>>(`/audit${qs ? `?${qs}` : ''}`)
+  return http.get<Paged<AuditWire>>(`/audit${qs ? `?${qs}` : ''}`, signal)
 }
 
 async function load(): Promise<void> {
+  inflight?.abort()
+  const ctl = new AbortController()
+  inflight = ctl
+
   loading.value = true
   error.value = null
   try {
-    const page = await fetchPage(null)
+    const page = await fetchPage(null, ctl.signal)
     items.value = page.items
     nextBeforeId.value = page.next_before_id
   } catch (e) {
+    // 被自己掐掉的那次不算错：它的结果已经不该被看见了，
+    // 把它显示成「加载失败」会在一次正常的切换之后留下一条红字。
+    if (ctl.signal.aborted) return
     error.value = errorText(e, '加载审计日志失败')
   } finally {
-    loading.value = false
+    // 只有仍然是「当前那一次」时才落 loading —— 否则一次旧请求的收尾
+    // 会把新请求的加载态抹掉。
+    if (inflight === ctl) {
+      loading.value = false
+      inflight = null
+    }
   }
 }
 
@@ -54,7 +77,7 @@ async function loadMore(): Promise<void> {
   loading.value = true
   error.value = null
   try {
-    const page = await fetchPage(nextBeforeId.value)
+    const page = await fetchPage(nextBeforeId.value, new AbortController().signal)
     items.value = [...items.value, ...page.items]
     nextBeforeId.value = page.next_before_id
   } catch (e) {

@@ -301,14 +301,15 @@ export const useConfigStore = defineStore('config', () => {
       if (t) clearTimeout(t)
       timers.delete(k)
       if (opts.keepalive) {
-        // 卸载途中不能 await，只能靠 keepalive 把它送出去
-        void fetch(`/api/v1/drafts/${encodeURIComponent(k)}`, {
-          method: 'PUT',
-          credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(patches.value[k] ?? {}),
-          keepalive: true,
-        }).catch(() => {})
+        // 卸载途中不能 await，只能靠 keepalive 把它送出去。
+        //
+        // **走 http 层，不是裸 fetch**：裸 fetch 写死了 /api/v1，不认
+        // VITE_API_BASE——一旦有人用那个开关，改完字段刷新的那次写会 404，
+        // 而 unsaved 里不会留下任何痕迹，人下次回来只看到改动没了。
+        // 它还逃出了 check-requests 的登记表（issue #69）。
+        void http
+          .putKeepalive(`/drafts/${encodeURIComponent(k)}`, patches.value[k] ?? {})
+          .catch(() => {})
       } else {
         pending.push(persist(k))
       }

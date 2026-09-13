@@ -83,6 +83,37 @@ describe('审计页的措辞与它拿到的数据', () => {
     expect(banner.text()).toContain('198.51.100.9')
   })
 
+  it('快速切换筛选时，先发的请求后返回不会盖掉后发的', async () => {
+    // 第一次请求慢，第二次快 —— 这正是切换筛选时的常态（不同的 operator
+    // 命中不同的索引），而 http 的 AbortSignal 形参五处声明零处传入，
+    // 于是先发的那次返回时把后发的结果覆盖掉（issue #76）。
+    //
+    // 症状是筛选条显示 A 而表格是 B 的数据，**且不会自愈**。
+    let call = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        call++
+        const slow = call === 1
+        await new Promise((r) => setTimeout(r, slow ? 60 : 0))
+        if (init?.signal?.aborted) throw new DOMException('aborted', 'AbortError')
+        return envelope({
+          items: [row(slow ? 1 : 2, { operator: url.includes('bob') ? 'bob' : 'abiu' })],
+          next_before_id: null,
+        })
+      }),
+    )
+
+    const w = mount(AuditView)
+    await flush()
+    // 切到 bob：第二次请求会先回来。
+    ;(w.vm as unknown as { operator: string }).operator = 'bob'
+    await new Promise((r) => setTimeout(r, 120))
+
+    expect(w.text()).toContain('bob')
+    expect(w.text()).not.toContain('abiu')
+  })
+
   it('到底之后不再给「加载更多」，措辞也不再含糊', async () => {
     vi.stubGlobal(
       'fetch',

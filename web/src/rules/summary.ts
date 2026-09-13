@@ -8,7 +8,7 @@
  * 跟 `@/nodes/flags` 同一条路子，理由见那里。
  */
 
-import type { RuleIssue, RuleWire } from '@/api/types'
+import type { RuleIssue, RuleWire, RuleType } from '@/api/types'
 
 export const TYPE_LABEL: Record<string, string> = {
   ip_whitelist: 'IP 白名单',
@@ -43,26 +43,46 @@ export const TYPE_LABEL: Record<string, string> = {
  * 多条特征之间是**或**，不是且。列表这一层只能提一句，说清是编辑器的事 ——
  * 但完全不提的话，人会按「且」去读这个数字。
  */
-export function ruleSummary(r: RuleWire): string {
-  const s = r.spec as Record<string, unknown>
-  const n = (k: string) => (s[k] as unknown[] | undefined)?.length ?? 0
-
-  if (r.type === 'ip_whitelist') return `只放这 ${n('ips')} 条来源`
-  if (r.type === 'ip_blacklist') return `拦这 ${n('ips')} 条来源`
-  if (r.type === 'request_filter') return `${n('filters')} 个特征，命中任一即拦`
-  if (r.type === 'rate_limit') {
+/**
+ * 每种类型的要点。**写成 `Record<RuleType, …>` 而不是 if 级联**：
+ *
+ * 级联的最后一支是兜底，于是加第八种类型时它会**静默地**拿到前一种的措辞，
+ * 或者像 jwt_bearer 那样落进一个 `String(s.iss ?? '')`——iss 没配时就是空串，
+ * 那一列在界面上一片空白，而没有任何东西会红（issue #68）。
+ *
+ * Record 少一个键编译器就红。加类型的人因此不必知道这张表存在。
+ */
+const SUMMARY: Record<RuleType, (s: Record<string, unknown>, n: (k: string) => number) => string> = {
+  ip_whitelist: (_s, n) => `只放这 ${n('ips')} 条来源`,
+  ip_blacklist: (_s, n) => `拦这 ${n('ips')} 条来源`,
+  request_filter: (_s, n) => `${n('filters')} 个特征，命中任一即拦`,
+  rate_limit: (s) => {
     const key = s.rate_key === 'ip_path' ? 'IP + 路径' : '按 IP'
     return `每 ${Number(s.window_s ?? 0)} 秒 ${Number(s.requests ?? 0)} 次 · ${key}`
-  }
-  if (r.type === 'geo_block') {
+  },
+  geo_block: (s) => {
     const list = (s.geo_countries as string[] | undefined) ?? []
     const head = s.geo_mode === 'allow' ? '只放' : '拦'
     // 国家多时截断 —— 一列摘要放不下二十个，而前几个足以认出这条规则
     const shown = list.slice(0, 6).join('、')
     return `${head} ${shown}${list.length > 6 ? ` 等 ${list.length} 个` : ''}`
-  }
-  if (r.type === 'service_secret') return `${String(s.header ?? '')} · ${String(s.algo ?? '')}`
-  return String(s.iss ?? '')
+  },
+  service_secret: (s) => `${String(s.header ?? '')} · ${String(s.algo ?? '')}`,
+  // **iss 没配时也要说点什么。** 空串会让这一列一片空白，
+  // 而人分不出「这条规则没有要点」和「这一列坏了」。
+  jwt_bearer: (s) => {
+    const iss = String(s.iss ?? '')
+    return iss === '' ? '尚未填签发者（iss）' : `签发者 ${iss}`
+  },
+}
+
+export function ruleSummary(r: RuleWire): string {
+  const s = r.spec as Record<string, unknown>
+  const n = (k: string) => (s[k] as unknown[] | undefined)?.length ?? 0
+  const f = SUMMARY[r.type]
+  // 主控报了一种控制台还不认识的类型（issue #67 同一条）：说出来，不装作认识。
+  if (!f) return `控制台还不认识这种类型（${String(r.type)}）`
+  return f(s, n)
 }
 
 export interface RuleStatus {

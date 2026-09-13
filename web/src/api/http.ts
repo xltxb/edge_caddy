@@ -78,10 +78,15 @@ interface RequestOptions {
    * 让后端在 id 已被占时拒绝而不是覆盖（契约 §6.2 / issue #70）。
    */
   headers?: Record<string, string>
+  /**
+   * 让请求能在页面卸载过程中继续发完。只有草稿的 flush 用得上——
+   * 卸载途中 await 不会有机会执行完，而那次写丢掉的是人刚敲进去的东西。
+   */
+  keepalive?: boolean
 }
 
 async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, signal, bypassAuthRedirect = false, headers } = opts
+  const { method = 'GET', body, signal, bypassAuthRedirect = false, headers, keepalive } = opts
 
   let res: Response
   try {
@@ -94,6 +99,7 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
       },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal,
+      keepalive,
     })
   } catch (e) {
     if (signal?.aborted) throw e
@@ -157,6 +163,14 @@ export const http = {
    */
   putIfAbsent: <T>(path: string, body?: unknown, signal?: AbortSignal) =>
     request<T>(path, { method: 'PUT', body, signal, headers: { 'If-None-Match': '*' } }),
+  /**
+   * 页面卸载途中也要发出去的 PUT（草稿的 flush）。
+   *
+   * **走这里而不是裸 fetch**：裸 fetch 写死了 /api/v1、不认 VITE_API_BASE，
+   * 而且逃出了 check-requests 的登记表（issue #69）。
+   */
+  putKeepalive: <T>(path: string, body?: unknown) =>
+    request<T>(path, { method: 'PUT', body, keepalive: true }),
   del: <T>(path: string, signal?: AbortSignal) => request<T>(path, { method: 'DELETE', signal }),
   /** 只给 `GET /auth/session` 用，见 RequestOptions.bypassAuthRedirect。 */
   getBypassingAuth: <T>(path: string, signal?: AbortSignal) =>

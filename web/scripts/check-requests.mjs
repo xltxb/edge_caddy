@@ -74,13 +74,20 @@ const keyOf = (k) => k.replace(/:[a-zA-Z_][a-zA-Z0-9_]*/g, ':x')
 // 而**漏掉一条写请求正是这个脚本存在的理由**——少一条比错一条难发现。
 // 第一版正则写的是 `(post|put|del)\(`，putIfAbsent 里 put 后面跟的是 I 不是括号，
 // 于是它静默地不在射程内，而计数从 25 变成 24 时才被看见。
-const CALL = /http\.(post|putIfAbsent|put|del)(?:<[^>]*>)?\(\s*(`[^`]*`|'[^']*'|"[^"]*")\s*(,)?/g
+// **`put` 要放在最后**：正则的分支是顺序匹配的，`put` 排在前面会先吃掉
+// `putIfAbsent` / `putKeepalive` 的前三个字母，然后卡在「后面不是括号」上，
+// 于是那条写请求静默地不在射程内。这个坑踩过两次（#70 与 #69），
+// 两次都是「计数没涨」才被看见。
+// `http\s*\.\s*` 而不是 `http\.`：调用被 prettier 拆成两行时
+// （`void http\n  .putKeepalive(...)`），按字面匹配就扫不到它——
+// **一条写请求因为换行而逃出登记表**，这个坑与上面那条是同一族。
+const CALL = /http\s*\.\s*(post|putIfAbsent|putKeepalive|put|del)(?:<[^>]*>)?\(\s*(`[^`]*`|'[^']*'|"[^"]*")\s*(,)?/g
 
 const found = []
 for (const file of walk(SRC)) {
   const text = stripComments(readFileSync(file, 'utf8'))
   for (const m of text.matchAll(CALL)) {
-    const method = { post: 'POST', put: 'PUT', putIfAbsent: 'PUT', del: 'DELETE' }[m[1]]
+    const method = { post: 'POST', put: 'PUT', putIfAbsent: 'PUT', putKeepalive: 'PUT', del: 'DELETE' }[m[1]]
     const line = text.slice(0, m.index).split('\n').length
     found.push({
       key: normalize(method, m[2]),

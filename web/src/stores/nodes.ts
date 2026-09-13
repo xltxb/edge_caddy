@@ -184,7 +184,7 @@ export const useNodesStore = defineStore('nodes', () => {
    */
   async function rejoin(id: string): Promise<RejoinWire> {
     const r = await withBusy(id, '重新上线中', () =>
-      http.post<RejoinWire>(`/nodes/${id}/rejoin`),
+      http.post<RejoinWire>(`/nodes/${encodeURIComponent(id)}/rejoin`),
     )
     await fetchAll().catch(() => {})
     return r
