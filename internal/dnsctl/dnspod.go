@@ -100,7 +100,7 @@ func (d *DNSPod) Sync(ctx context.Context, plan dnssched.Plan) error {
 	//
 	// **闸在 list 之前**：这一趟既然不打算改任何东西，连列都不必列。
 	if len(want) == 0 {
-		return capErr("没有任何节点在解析轮换里，本次不改动 DNS 记录")
+		return emptyRotationErr("没有任何节点在解析轮换里，本次不改动 DNS 记录")
 	}
 
 	existing, err := d.list(ctx)

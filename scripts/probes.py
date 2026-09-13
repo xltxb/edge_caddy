@@ -218,7 +218,7 @@ PROBES = [
         "而「没报错」正是这个 bug 当初能活下来的原因",
         "internal/dnsctl/dnspod.go",
         '\tif len(want) == 0 {\n'
-        '\t\treturn capErr("没有任何节点在解析轮换里，本次不改动 DNS 记录")\n'
+        '\t\treturn emptyRotationErr("没有任何节点在解析轮换里，本次不改动 DNS 记录")\n'
         "\t}\n",
         "",
         "./internal/dnsctl/", "TestDNSPodKeepsRecordsWhenNothingIsInRotation",
@@ -478,6 +478,28 @@ PROBES = [
         "",
         "./internal/api/", "TestSettingsReportsCertBotSeparately",
         "没有 cert_bot_token_configured",
+    ),
+    Probe(
+        "规则-新建不覆盖已有的",
+        "PUT 是 upsert，而前端的重名保护是本地那份可能为空或陈旧的列表。"
+        "后端不拒的话，它把已有那条整个换掉还回 code: 0——静默覆盖别人配好的"
+        "规则，两边都没有提示（issue #70）",
+        "internal/api/config_res.go",
+        "\tif c.GetHeader(\"If-None-Match\") == \"*\" {",
+        "\tif false {",
+        "./internal/api/", "TestPutRuleRefusesToOverwriteWhenAskedNotTo",
+        "原规则被覆盖了",
+    ),
+    Probe(
+        "权重-撤空轮换也存得下来",
+        "「全部退出轮换」是人可能真的想做的事（一次计划内的全网维护）。"
+        "先推后存、推不成就地 return 的话，这个意图既存不下来也没人告诉他"
+        "该怎么办，而同一个 handler 对「没配服务商」的处置是相反的（issue #81）",
+        "internal/api/dns.go",
+        "\tcase errors.As(err, &emptyRotation):",
+        "\tcase false:",
+        "./internal/e2e/", "TestAllZeroWeightsAreStillSaved",
+        "却被拒了",
     ),
 ]
 

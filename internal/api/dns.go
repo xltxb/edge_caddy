@@ -115,9 +115,19 @@ func (s *Server) handlePutDNSWeights(c *gin.Context) {
 	// 先推。没配服务商时跳过推送但仍然保存——权重是本地的意图，
 	// 没有服务商不代表不能先配好。
 	err := s.dns.Sync(ctx, weights)
+	var emptyRotation *dnsctl.ErrNothingInRotation
 	switch {
 	case errors.Is(err, dnsops.ErrNoProvider):
 		s.log.Warn("尚未配置 DNS 服务商，权重只保存在本地")
+	case errors.As(err, &emptyRotation):
+		// **撤空轮换是一个合法的意图**（一次计划内的全网维护），而这一趟
+		// 确实没什么可推——但那不是拒绝保存的理由。同一个 handler 对
+		// 「没配服务商」的处置就是这一条：权重是本地的意图，推不了不代表
+		// 存不了（issue #81）。
+		//
+		// 与 ErrCapability 分开：那一条说的是「这份安排这家服务商表达不了」，
+		// 权重本身无效，拒绝保存是对的。
+		s.log.Warn("没有任何节点在解析轮换里，权重已保存但未推送", "reason", emptyRotation.Reason)
 	case err != nil:
 		var capErr *dnsctl.ErrCapability
 		if errors.As(err, &capErr) {

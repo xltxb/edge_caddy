@@ -26,10 +26,17 @@ type weightsResp struct {
 		} `json:"entries"`
 	} `json:"lines"`
 	Capabilities struct {
-		Kind    string   `json:"kind"`
-		Lines   []string `json:"lines"`
-		Weights bool     `json:"weights"`
-		Notes   string   `json:"notes"`
+		Kind string `json:"kind"`
+		// **线路是对象，不是字符串**：每条带 code / name / covers。
+		// 这里原先声明成 []string，而那从来没有被发现——走到这个字段的
+		// 测试路径此前一条都没有，Unmarshal 之前就先失败在别处了。
+		Lines []struct {
+			Code   string   `json:"code"`
+			Name   string   `json:"name"`
+			Covers []string `json:"covers"`
+		} `json:"lines"`
+		Weights bool   `json:"weights"`
+		Notes   string `json:"notes"`
 	} `json:"capabilities"`
 }
 
@@ -1348,5 +1355,62 @@ func TestPlainDNSTakesNodesWithoutWeights(t *testing.T) {
 			t.Errorf("%s 没被写进解析（实际写了 %v）—— 没有权重的那台被挡在"+
 				"外面了，而这个模式下人根本没有地方给它填权重：那道闸永远关着", ip, got)
 		}
+	}
+}
+
+// TestAllZeroWeightsAreStillSaved：把所有节点的权重设成 0 是一个合法的意图。
+//
+// 「全部退出轮换」是人可能真的想做的事（一次计划内的全网维护）。而
+// handlePutDNSWeights 先推后存，推不成就地 return——空轮换护栏（#36）回的是
+// ErrCapability，于是这次写入被整个丢掉：**人既存不下这个意图，也没被告知
+// 该怎么办**（issue #81）。
+//
+// 同一个 handler 对「没配服务商」的处置是相反的，注释写着理由：
+// 「权重是**本地的意图**，没有服务商不代表不能先配好」。同一条理由适用于
+// 「此刻没有节点在轮换里」。
+//
+// 判据是**权重存下来了**，不是「接口回了 200」——后者在一个存不下来但报成功
+// 的实现下同样为真，而那比现在更坏。
+func TestAllZeroWeightsAreStillSaved(t *testing.T) {
+	r := newRig(t)
+	r.configureDNSProvider()
+	token, _ := r.issueToken("node-hk-01")
+	r.startAgent("node-hk-01", token, t.TempDir())
+	r.waitOnline("node-hk-01")
+	r.putInRotation("node-hk-01")
+
+	// 全网维护：把唯一一台机器撤出轮换。
+	_, e := r.do("PUT", "/dns/weights", map[string]any{
+		"lines": []map[string]any{{
+			"code": "ct", "entries": []map[string]any{{"node": "node-hk-01", "weight": 0}},
+		}},
+	})
+	if e.Code != 0 {
+		t.Fatalf("「全部退出轮换」是一个合法的意图，却被拒了：code=%d msg=%s", e.Code, e.Msg)
+	}
+
+	// 存下来了：再读一遍，权重是 0 而且 weight_set 是 true
+	//（「人看过、给了 0」与「从没有人过目」是两件事）。
+	w := r.weights()
+	var found bool
+	for _, l := range w.Lines {
+		if l.Code != "ct" {
+			continue
+		}
+		for _, en := range l.Entries {
+			if en.Node != "node-hk-01" {
+				continue
+			}
+			found = true
+			if en.Weight != 0 {
+				t.Errorf("权重没存下来，读回来是 %d", en.Weight)
+			}
+			if en.InRotation {
+				t.Error("权重是 0 却说在轮换里")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("读不到这台节点的权重")
 	}
 }

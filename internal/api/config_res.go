@@ -292,6 +292,30 @@ func (s *Server) handleUpsertRule(c *gin.Context) {
 	req.Rule.ID = id
 
 	ctx := c.Request.Context()
+
+	// **`If-None-Match: *` 表示「只建，不覆盖」**（RFC 9110 §13.1.2）。
+	//
+	// PUT 是 upsert——改一条已有规则正是这么走的，那是它该有的语义。
+	// 问题在**新建**：前端的重名保护是本地那份规则列表，而那份列表可能为空
+	// （/rules 那一支失败过）或陈旧（另一台机器上的人刚建了同名的）。
+	// 后端不拒的话，它把已有那条整个换掉还回 code: 0——静默覆盖别人配好的
+	// 规则，两边都没有提示（issue #70）。
+	//
+	// 用 HTTP 本来就有的这个头而不是请求体里加一个标志：加字段要连带改
+	// request-shapes.json 与严格绑定，而这件事不是载荷的一部分。
+	if c.GetHeader("If-None-Match") == "*" {
+		switch _, err := s.store.GetRule(ctx, id); {
+		case err == nil:
+			Fail(c, CodeConflict, "已经有一条 id 为 "+id+" 的访问规则。"+
+				"换一个 id，或者到规则页去改那一条")
+			return
+		case !errors.Is(err, store.ErrNotFound):
+			s.log.Error("查重失败", "err", err)
+			Fail(c, CodeDownstream, "读取访问规则失败")
+			return
+		}
+	}
+
 	// 校验时把已有的密钥算上：一条已经配好密钥的规则，前端提交时带不出原值，
 	// 不这么做的话每次保存都会报「尚未设置共享密钥」。
 	toValidate := req.Rule

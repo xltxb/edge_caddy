@@ -117,7 +117,7 @@ func (c *Cloudflare) Sync(ctx context.Context, plan dnssched.Plan) error {
 		// 把最后一条记录撤掉等于主动让域名解析不出来，而这多半是一次
 		// 短暂的全体离线。宁可让流量继续打到已知的机器上，也不要主动制造
 		// 一次 NXDOMAIN。
-		return capErr("没有任何节点在解析轮换里，本次不改动 Cloudflare 配置")
+		return emptyRotationErr("没有任何节点在解析轮换里，本次不改动 Cloudflare 配置")
 	}
 	return c.syncLoadBalancer(ctx, poolIDs)
 }

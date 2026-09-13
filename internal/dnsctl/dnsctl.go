@@ -73,3 +73,20 @@ func (e *ErrCapability) Error() string { return e.Reason }
 func capErr(format string, a ...any) error {
 	return &ErrCapability{Reason: fmt.Sprintf(format, a...)}
 }
+
+// ErrNothingInRotation 表示这一趟没有任何节点在解析轮换里。
+//
+// **它与 ErrCapability 性质不同，所以有自己的类型。** ErrCapability 说的是
+// 「这份安排这家服务商表达不了」——那时权重本身是无效的，拒绝保存是对的。
+// 这一条说的是「权重完全合法，只是推出来的安排是空的」：撤空轮换是一个人
+// 可能真的想做的事（一次计划内的全网维护），拒绝保存会让这个意图表达不出来
+// （issue #81）。
+//
+// 调用方按 ErrNoProvider 那条路处置：**存下来，不推，并说清没推**。
+type ErrNothingInRotation struct{ Reason string }
+
+func (e *ErrNothingInRotation) Error() string { return e.Reason }
+
+func emptyRotationErr(format string, a ...any) error {
+	return &ErrNothingInRotation{Reason: fmt.Sprintf(format, a...)}
+}

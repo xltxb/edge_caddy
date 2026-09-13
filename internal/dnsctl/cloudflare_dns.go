@@ -84,7 +84,7 @@ func (c *CloudflareDNS) Sync(ctx context.Context, plan dnssched.Plan) error {
 		// 而「一个节点都不在轮换里」多半是一次短暂的全体离线。
 		// 宁可让流量继续打到已知的机器上，也不要主动制造一次 NXDOMAIN。
 		// 与 Load Balancing 那个适配同一条规矩。
-		return capErr("没有任何节点在解析轮换里，本次不改动 DNS 记录")
+		return emptyRotationErr("没有任何节点在解析轮换里，本次不改动 DNS 记录")
 	}
 	return c.reconcile(ctx, want)
 }
