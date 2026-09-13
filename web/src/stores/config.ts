@@ -397,7 +397,9 @@ export const useConfigStore = defineStore('config', () => {
    * 所以重名必须在调用这里之前拦住（见 `NewRuleModal`）。
    */
   async function createRule(id: string, body: Record<string, unknown>): Promise<void> {
-    await http.put(`/rules/${id}`, body)
+    // **putIfAbsent，不是 put**：本地那份规则列表可能为空或陈旧，
+    // 只靠它查重会静默覆盖别人配好的规则（issue #70）。
+    await http.putIfAbsent(`/rules/${id}`, body)
     await fetchAll().catch(() => {})
   }
 

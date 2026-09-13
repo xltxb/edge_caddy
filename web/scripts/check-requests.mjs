@@ -70,13 +70,17 @@ function normalize(method, raw) {
 /** 登记表的键也归一，这样 `:id` 和 `:key` 都能对上 `:x`。 */
 const keyOf = (k) => k.replace(/:[a-zA-Z_][a-zA-Z0-9_]*/g, ':x')
 
-const CALL = /http\.(post|put|del)(?:<[^>]*>)?\(\s*(`[^`]*`|'[^']*'|"[^"]*")\s*(,)?/g
+// putIfAbsent 也要数进来：它是 PUT 的一种（只建不覆盖，契约 §6.2），
+// 而**漏掉一条写请求正是这个脚本存在的理由**——少一条比错一条难发现。
+// 第一版正则写的是 `(post|put|del)\(`，putIfAbsent 里 put 后面跟的是 I 不是括号，
+// 于是它静默地不在射程内，而计数从 25 变成 24 时才被看见。
+const CALL = /http\.(post|putIfAbsent|put|del)(?:<[^>]*>)?\(\s*(`[^`]*`|'[^']*'|"[^"]*")\s*(,)?/g
 
 const found = []
 for (const file of walk(SRC)) {
   const text = stripComments(readFileSync(file, 'utf8'))
   for (const m of text.matchAll(CALL)) {
-    const method = { post: 'POST', put: 'PUT', del: 'DELETE' }[m[1]]
+    const method = { post: 'POST', put: 'PUT', putIfAbsent: 'PUT', del: 'DELETE' }[m[1]]
     const line = text.slice(0, m.index).split('\n').length
     found.push({
       key: normalize(method, m[2]),

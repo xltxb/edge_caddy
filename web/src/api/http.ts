@@ -73,17 +73,25 @@ interface RequestOptions {
    * 是「还没登录」这个正常结果，不是会话过期，不该触发跳转。
    */
   bypassAuthRedirect?: boolean
+  /**
+   * 额外的请求头。目前只有一个用途：新建访问规则时带 `If-None-Match: *`，
+   * 让后端在 id 已被占时拒绝而不是覆盖（契约 §6.2 / issue #70）。
+   */
+  headers?: Record<string, string>
 }
 
 async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, signal, bypassAuthRedirect = false } = opts
+  const { method = 'GET', body, signal, bypassAuthRedirect = false, headers } = opts
 
   let res: Response
   try {
     res = await fetch(`${BASE}${path}`, {
       method,
       credentials: 'same-origin',
-      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      headers: {
+        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        ...headers,
+      },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal,
     })
@@ -142,6 +150,13 @@ export const http = {
     request<T>(path, { method: 'POST', body, signal }),
   put: <T>(path: string, body?: unknown, signal?: AbortSignal) =>
     request<T>(path, { method: 'PUT', body, signal }),
+  /**
+   * 只建、不覆盖：带 `If-None-Match: *`，id 已被占时后端回 1004 且一个字节
+   * 都不写（契约 §6.2）。**新建走它，修改走 put** —— 两者是同一个端点，
+   * 区别只在这一个头上。
+   */
+  putIfAbsent: <T>(path: string, body?: unknown, signal?: AbortSignal) =>
+    request<T>(path, { method: 'PUT', body, signal, headers: { 'If-None-Match': '*' } }),
   del: <T>(path: string, signal?: AbortSignal) => request<T>(path, { method: 'DELETE', signal }),
   /** 只给 `GET /auth/session` 用，见 RequestOptions.bypassAuthRedirect。 */
   getBypassingAuth: <T>(path: string, signal?: AbortSignal) =>
