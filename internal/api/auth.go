@@ -57,7 +57,8 @@ func (s *Server) handleLogin(c *gin.Context) {
 		return
 	}
 
-	s.logins.succeed(ipKey, userKey)
+	// 只清用户名维度：IP 那一份不能被一次成功登录中和掉（见 succeed）。
+	s.logins.succeed(userKey)
 
 	sid, err := s.store.CreateSession(ctx, req.Username, ip, s.sessionTTL)
 	if err != nil {

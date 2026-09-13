@@ -69,16 +69,26 @@ func (l *loginLimiter) fail(keys ...string) {
 	}
 }
 
-// succeed 把这个来源的失败记录清掉。
+// succeed 把**这个用户名**的失败记录清掉。
 //
-// **只在没被拦住时才会走到这里**：被拦之后连密码都不会去验，
-// 所以攻击者没法靠「在试错之间夹一次正确猜测」把计数清零。
-func (l *loginLimiter) succeed(keys ...string) {
+// **不清 IP 维度。** 清了的话，攻击者拿自己的账号夹在中间就能把它中和掉：
+// 对 B 试 4 次 → 用自己的账号成功登录一次 → ip 条目被删 → 对 C 再试 4 次……
+// 而 IP 维度存在的全部理由就是挡这个（「只按用户名：一个 IP 可以把所有已知
+// 用户名各试五次」）。这条路径不受 blocked 的前置判定保护——它走的是成功分支。
+//
+// 用户名维度该清：那个人证明了自己是他，他自己那几次输错不该继续算数。
+// IP 维度靠时间窗自然衰减。
+func (l *loginLimiter) succeed(userKey string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	for _, k := range keys {
-		delete(l.fails, k)
-	}
+	delete(l.fails, userKey)
+}
+
+// size 是表里还有多少个来源。供测试问「它有没有只增不减」。
+func (l *loginLimiter) size() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.fails)
 }
 
 // recent 丢掉窗口外的那些。调用方已持锁。
@@ -92,6 +102,16 @@ func (l *loginLimiter) recent(k string, cutoff time.Time) []time.Time {
 		if t.After(cutoff) {
 			kept = append(kept, t)
 		}
+	}
+	// **空了就把条目删掉，不是留一个空切片。**
+	//
+	// `l.fails[k] = kept` 赋值即创建——而 blocked() 对每个 key 都会调这里，
+	// 于是每试一个**从未失败过**的用户名就多一个条目，窗口过期后也只是把切片
+	// 裁空、条目留着。那是一个未鉴权端点上的无界增长，而下面那句「规模是
+	// 窗口内失败过的来源数」正是不做定时清理的全部理由。
+	if len(kept) == 0 {
+		delete(l.fails, k)
+		return nil
 	}
 	l.fails[k] = kept
 	return kept
