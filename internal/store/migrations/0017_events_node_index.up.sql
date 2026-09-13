@@ -5,7 +5,12 @@
 -- 只能 Seq Scan。而 events 是只写不清的表（#34），行数随时间线性涨，
 -- 节点列表页又是常驻轮询的（#59）。
 --
--- 列的顺序是 (node_id, created_at DESC)：node_id 是等值条件放在最前，
--- created_at 是范围条件放在后面。msg 不进索引——它只有两个取值，
--- 选择度太低，进去只会让索引变大而过滤不掉多少行。
+-- 列的顺序是 (node_id, created_at DESC)，按 CountReconnects 那个查询定的：
+-- 它的 WHERE 是 node_id = $1 —— 等值条件放在最前，范围条件 created_at
+-- 放在后面。msg 不进索引，它只有两个取值，选择度太低，进去只会让索引变大
+-- 而过滤不掉多少行。
+--
+-- CountReconnectsByNode 的形状不同：它是 node_id <> '' + GROUP BY node_id，
+-- 没有等值可定位。这个索引对它的帮助是**避开堆表**（只扫索引、且已按 node_id
+-- 有序，分组不必再排），不是把范围缩小——别照着上面那句话去推它的代价。
 CREATE INDEX IF NOT EXISTS idx_events_node_created ON events (node_id, created_at DESC);

@@ -381,6 +381,39 @@ PROBES = [
         "探活就一直没人回",
     ),
     Probe(
+        "只建不覆盖-要原子",
+        "先查再写的话两句之间有窗口：两个人同时新建同一个 id，两句查询都说没有，"
+        "后写的把先写的整个换掉还回 code: 0——那正是 #70 要挡的「静默覆盖别人"
+        "配好的规则」本身，而契约 §6.2 承诺的是「一个字节都不写」",
+        "internal/store/rules.go",
+        "\t\t ON CONFLICT (id) DO NOTHING`,",
+        "\t\t ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name`,",
+        "./internal/store/", "TestInsertRuleIfAbsentIsAtomic",
+        "一个字节都不写",
+    ),
+    Probe(
+        "解析同步-panic 不锁死编排器",
+        "手工配对的 Lock/Unlock 夹着 syncLocked 的话，那底下任何一次 panic 的"
+        "后果都是进程级的：gin 的 Recovery 把请求救回来、控制台一切正常，而 o.mu "
+        "永不释放——此后改权重、点开关、心跳摘挂、自愈全部永久阻塞，不超时也不报错",
+        "internal/dnsops/orchestrator.go",
+        "\to.mu.Lock()\n\tdefer o.mu.Unlock()\n\to.coalesceMu.Lock()\n\to.pending = nil\n\to.coalesceMu.Unlock()\n\n\treturn o.syncLocked(ctx, nil)",
+        "\to.mu.Lock()\n\to.coalesceMu.Lock()\n\to.pending = nil\n\to.coalesceMu.Unlock()\n\n\terr = o.syncLocked(ctx, nil)\n\to.mu.Unlock()\n\treturn err",
+        "./internal/dnsops/", "TestPanicDoesNotWedgeTheOrchestrator",
+        "再也不返回了",
+    ),
+    Probe(
+        "下发-全局策略也要落回 live",
+        "CommitDeploy 只合入路由和规则的话，`global:` 的版本照样推进、草稿照样删，"
+        "只有 live 那行 spec 没动——下一次任何下发把旧值推回去，而工作台上没有草稿、"
+        "版本是新的、基线是新的，没有一个页面会说这件事。issue #31 的形状",
+        "internal/store/commit.go",
+        "\t\tif err := upsertPolicy(ctx, tx, p); err != nil {",
+        "\t\tif err := error(nil); err != nil {",
+        "./internal/deploy/", "TestGlobalPolicyLandsInLive",
+        "这次改动从此哪儿都不在",
+    ),
+    Probe(
         "整批写草稿-非对象也要拦",
         "`[1,2]` / `null` 是合法 JSON，jsonb 列放行——而它们入库之后 mergeInto "
         "会失败，Deploy 与 Preview 双双 500，人在界面上找不到入口删它。"

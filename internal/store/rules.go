@@ -71,26 +71,37 @@ func (s *Store) UpsertRule(ctx context.Context, r model.Rule, plainSecret string
 }
 
 // upsertRule 是 UpsertRule 的事务内版本（同一条 SQL 只有这一份）。
-func upsertRule(ctx context.Context, q querier, r model.Rule, plainSecret string, sealer *secret.Sealer) error {
-	spec, err := json.Marshal(r.Spec)
+// ruleColumns 把一条规则备成可以直接塞进 SQL 的几列。
+//
+// 抽出来是因为 upsertRule 与 InsertRuleIfAbsent 只差 ON CONFLICT 那一句，
+// 而密钥密封那一段抄第二份的话，两处迟早对密钥的处置不一致——
+// 那种不一致的症状是「保存成功，而校验端点验不过」。
+func ruleColumns(r model.Rule, plainSecret string, sealer *secret.Sealer) (spec, applyTo []byte, sealed any, err error) {
+	spec, err = json.Marshal(r.Spec)
 	if err != nil {
-		return err
+		return nil, nil, nil, err
 	}
-	applyTo, err := json.Marshal(defaultSlice(r.ApplyTo))
+	applyTo, err = json.Marshal(defaultSlice(r.ApplyTo))
 	if err != nil {
-		return err
+		return nil, nil, nil, err
 	}
-
-	var sealed any
 	if plainSecret != "" {
 		if sealer == nil {
-			return errors.New("要写入共享密钥但没有可用的密封器")
+			return nil, nil, nil, errors.New("要写入共享密钥但没有可用的密封器")
 		}
-		b, err := sealer.Seal([]byte(plainSecret))
-		if err != nil {
-			return err
+		b, serr := sealer.Seal([]byte(plainSecret))
+		if serr != nil {
+			return nil, nil, nil, serr
 		}
 		sealed = b
+	}
+	return spec, applyTo, sealed, nil
+}
+
+func upsertRule(ctx context.Context, q querier, r model.Rule, plainSecret string, sealer *secret.Sealer) error {
+	spec, applyTo, sealed, err := ruleColumns(r, plainSecret, sealer)
+	if err != nil {
+		return err
 	}
 
 	_, err = q.Exec(ctx,
@@ -102,6 +113,31 @@ func upsertRule(ctx context.Context, q querier, r model.Rule, plainSecret string
 		   secret_sealed = COALESCE(EXCLUDED.secret_sealed, access_rules.secret_sealed)`,
 		r.ID, r.Name, r.Type, r.Enabled, spec, applyTo, sealed)
 	return err
+}
+
+// InsertRuleIfAbsent 只在这个 id 还没被占时写入，回 true 表示真的建了。
+//
+// **「只建不覆盖」必须由数据库来判，不能先查再写。** handler 原先是
+// GetRule 查一遍、没有就 UpsertRule，两句之间有窗口：两个人同时新建同一个
+// id 时两句查询都说没有，然后两次写都落地，后写的把先写的整个换掉还回
+// code: 0——那正是 #70 要挡的「静默覆盖别人配好的规则」本身。
+//
+// 契约 §6.2 承诺的是「撞上已有 id 时一个字节都不写」，而那是一句关于
+// 原子性的话，靠两条语句兑现不了。由 TestInsertRuleIfAbsentIsAtomic 守着。
+func (s *Store) InsertRuleIfAbsent(ctx context.Context, r model.Rule, plainSecret string, sealer *secret.Sealer) (bool, error) {
+	spec, applyTo, sealed, err := ruleColumns(r, plainSecret, sealer)
+	if err != nil {
+		return false, err
+	}
+	tag, err := s.Pool.Exec(ctx,
+		`INSERT INTO access_rules (id, name, type, enabled, spec, apply_to, secret_sealed)
+		 VALUES ($1,$2,$3::rule_type,$4,$5,$6,$7)
+		 ON CONFLICT (id) DO NOTHING`,
+		r.ID, r.Name, r.Type, r.Enabled, spec, applyTo, sealed)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 func (s *Store) BumpRuleVersions(ctx context.Context, ids []string) error {

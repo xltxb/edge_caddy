@@ -303,18 +303,11 @@ func (s *Server) handleUpsertRule(c *gin.Context) {
 	//
 	// 用 HTTP 本来就有的这个头而不是请求体里加一个标志：加字段要连带改
 	// request-shapes.json 与严格绑定，而这件事不是载荷的一部分。
-	if c.GetHeader("If-None-Match") == "*" {
-		switch _, err := s.store.GetRule(ctx, id); {
-		case err == nil:
-			Fail(c, CodeConflict, "已经有一条 id 为 "+id+" 的访问规则。"+
-				"换一个 id，或者到规则页去改那一条")
-			return
-		case !errors.Is(err, store.ErrNotFound):
-			s.log.Error("查重失败", "err", err)
-			Fail(c, CodeDownstream, "读取访问规则失败")
-			return
-		}
-	}
+	//
+	// **查重与写入是同一句 SQL**，见 InsertRuleIfAbsent。先 GetRule 再
+	// UpsertRule 的话两句之间有窗口，两个人同时新建同一个 id 时两句查询都说
+	// 没有——而契约承诺的「一个字节都不写」是一句关于原子性的话。
+	onlyCreate := c.GetHeader("If-None-Match") == "*"
 
 	// 校验时把已有的密钥算上：一条已经配好密钥的规则，前端提交时带不出原值，
 	// 不这么做的话每次保存都会报「尚未设置共享密钥」。
@@ -345,6 +338,21 @@ func (s *Server) handleUpsertRule(c *gin.Context) {
 		}
 	}
 
+	if onlyCreate {
+		created, err := s.store.InsertRuleIfAbsent(ctx, req.Rule, req.Secret, s.sealer)
+		if err != nil {
+			s.log.Error("新建访问规则失败", "err", err)
+			Fail(c, CodeDownstream, "保存访问规则失败")
+			return
+		}
+		if !created {
+			Fail(c, CodeConflict, "已经有一条 id 为 "+id+" 的访问规则。"+
+				"换一个 id，或者到规则页去改那一条")
+			return
+		}
+		OK(c, gin.H{"id": id})
+		return
+	}
 	if err := s.store.UpsertRule(ctx, req.Rule, req.Secret, s.sealer); err != nil {
 		s.log.Error("保存访问规则失败", "err", err)
 		Fail(c, CodeDownstream, "保存访问规则失败")

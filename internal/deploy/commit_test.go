@@ -143,3 +143,68 @@ func TestCommitIsAtomicAcrossRoutes(t *testing.T) {
 		}
 	}
 }
+
+// TestGlobalPolicyLandsInLive：全局策略的改动也要落回 live。
+//
+// CommitDeploy 合入的只有路由和规则。`global:` 这一类**版本被推进了、草稿被
+// 删了、基线指向了新的 cfg_version**——只有 live 那一行的 spec 没动。
+//
+// 症状与 issue #31 一模一样，而 deploy.go 那段注释已经把它写全了：
+//
+//	节点上跑着新配置，而真相源里还是旧值，下一次下发会把旧值推回去。
+//	而现象是「我明明改过、也下发成功了，怎么又变回去了」——中间没有任何报错。
+//
+// 全局策略更糟的地方在于它是全网生效的那一类：TLS 最低版本、HSTS、日志采样
+// 都在里面。一次静默回退把 min_version 退回旧值，**没有任何一个页面会说这件事**
+// ——工作台上没有草稿（被删了）、版本号是新的、基线是新的。
+func TestGlobalPolicyLandsInLive(t *testing.T) {
+	p := newFakePusher("node-1")
+	s, st := newSched(t, p)
+	ctx := context.Background()
+
+	// **按字段读，不按文本匹配。** jsonb 存回来的字节与写进去的不一样
+	// （键序、空格都由 PostgreSQL 决定），拿字符串比会在一个与本意无关的
+	// 地方红，而那种红看起来跟真的一样。
+	minVersion := func(spec json.RawMessage) string {
+		var m struct {
+			MinVersion string `json:"min_version"`
+		}
+		if err := json.Unmarshal(spec, &m); err != nil {
+			t.Fatalf("策略 spec 解不开：%s", spec)
+		}
+		return m.MinVersion
+	}
+
+	before, err := st.GetPolicy(ctx, model.PolicyTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if minVersion(before.Spec) == "1.3" {
+		t.Fatal("装置坏了：默认策略已经是 1.3，这次下发改不出差异")
+	}
+
+	const resKey = "global:" + model.PolicyTLS
+	if err := st.PutDraft(ctx, resKey,
+		// 草稿叠在整个 Policy 上，字段在 spec 里（前端的 liveByKey 存的就是
+		// 整条策略）——mergeInto 对嵌套对象逐键叠加，所以 spec 的其它键不会丢。
+		json.RawMessage(`{"spec":{"min_version":"1.3"}}`), "tester"); err != nil {
+		t.Fatal(err)
+	}
+
+	res, issues, err := s.Deploy(ctx, "tester", []string{resKey})
+	if err != nil || len(issues) > 0 {
+		t.Fatalf("下发失败：err=%v issues=%v", err, issues)
+	}
+	if res.OKCount != 1 {
+		t.Fatalf("装置坏了：节点该收到配置，ok=%d", res.OKCount)
+	}
+
+	after, err := st.GetPolicy(ctx, model.PolicyTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := minVersion(after.Spec); got != "1.3" {
+		t.Fatalf("下发成功了，live 里的 min_version 还是 %q（spec=%s）—— "+
+			"草稿已经删了，版本也推进了，这次改动从此哪儿都不在", got, after.Spec)
+	}
+}

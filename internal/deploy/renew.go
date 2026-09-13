@@ -97,11 +97,12 @@ func (s *Scheduler) renewUpstreamCerts(ctx context.Context) {
 	}
 
 	// 渲染一次，推给所有人——这一趟给每台机器的配置本来就是同一份基线。
-	routes, rules, pol, _, err := s.effective(ctx, nil)
+	eff, err := s.effective(ctx, nil)
 	if err != nil {
 		log.Error("续期回源证书时取有效配置失败", "err", err)
 		return
 	}
+	routes, rules, pol := eff.Routes, eff.Rules, eff.Rendered
 	certs, err := s.certsForRender(ctx)
 	if err != nil {
 		log.Error("续期回源证书时取证书失败", "err", err)

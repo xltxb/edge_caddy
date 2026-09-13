@@ -357,6 +357,16 @@ func (o *Orchestrator) syncOnce(ctx context.Context, weights dnssched.Weights) (
 		}
 		out = append(out, st)
 	}
+	// **firstErr 是「第一条」，不是「最该报的那条」。**
+	//
+	// 今天这两者重合，理由要说清楚：空轮换护栏的判据是 `len(want) == 0`，
+	// 而 want 来自同一份 nodes 与同一份权重——它对所有域名同时成立或同时
+	// 不成立。所以「第一个域名说轮换是空的、第二个域名真的推失败了」这个
+	// 组合到不了，调用方按 ErrNothingInRotation 分档不会漏报真故障。
+	//
+	// **这条推理挂在「所有目标是同一家服务商」上**，与上面 plan 那句同一个
+	// 前提。加第二家的那天它就断了：那时 firstErr 要改成「真故障优先于
+	// ErrNothingInRotation」，否则一次凭证错会被说成一次计划内的维护。
 	return out, firstErr
 }
 
@@ -392,7 +402,7 @@ func (o *Orchestrator) Attach(ctx context.Context, nodeID string) error {
 //
 // 等在后面的调用拿到的是那一次补跑的结果——它们要的本来就是「库里的现状
 // 被推上去了」，而那正是补跑做的事。
-func (o *Orchestrator) syncCoalesced(ctx context.Context) error {
+func (o *Orchestrator) syncCoalesced(ctx context.Context) (err error) {
 	o.coalesceMu.Lock()
 	if o.pending != nil {
 		// 已经有人排在后面了，跟着它一起等。
@@ -405,19 +415,39 @@ func (o *Orchestrator) syncCoalesced(ctx context.Context) error {
 	o.pending = done
 	o.coalesceMu.Unlock()
 
+	// **两件收尾事都必须 defer。**
+	//
+	// 下面那句 syncLocked 底下是服务商 SDK、渲染和落库，随便哪一处 panic
+	// 的后果都是**进程级**的，而不是「这个请求 500」：gin 的 Recovery 会把
+	// 那次请求救回来，控制台看起来一切正常，而
+	//
+	//   - o.mu 永不释放：此后每一次解析同步——人工改权重、节点开关、心跳
+	//     摘挂、自愈——永久阻塞，没有超时、没有报错，就是不返回；
+	//   - 排在 done 上的调用方连 500 都等不到，它们挂在 <-done.ready 上。
+	//
+	// 由 TestPanicDoesNotWedgeTheOrchestrator 守着。
+	defer func() {
+		if r := recover(); r != nil {
+			// **不吞掉它。** 等它的人得知道这一趟没成，而 panic 本身要继续
+			// 往上走——在这里咽下去，等于把一个进程级的 bug 变成一次
+			// 「解析同步偶尔失败」，那种东西没人查得动。
+			done.err = fmt.Errorf("同步解析时 panic：%v", r)
+			close(done.ready)
+			panic(r)
+		}
+		done.err = err
+		close(done.ready)
+	}()
+
 	// Sync 自己有一把锁，在飞的那次会把我们挡在这里——而挡住的这段时间里
 	// 来的请求都会挂到 done 上。
 	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.coalesceMu.Lock()
 	o.pending = nil
 	o.coalesceMu.Unlock()
 
-	err := o.syncLocked(ctx, nil)
-	o.mu.Unlock()
-
-	done.err = err
-	close(done.ready)
-	return err
+	return o.syncLocked(ctx, nil)
 }
 
 // coalesced 是「排在后面的那一次」：它的结果会被所有等它的人共用。

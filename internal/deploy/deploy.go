@@ -133,10 +133,11 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 		log = slog.Default()
 	}
 
-	routes, rules, pol, orphans, err := s.effective(ctx, resKeys)
+	eff, err := s.effective(ctx, resKeys)
 	if err != nil {
 		return Result{}, nil, err
 	}
+	routes, rules, pol, orphans := eff.Routes, eff.Rules, eff.Rendered, eff.Orphans
 	// **孤儿草稿要在触达任何东西之前就拦下来。**
 	// 让它走下去的话，这次下发会成功、而那份草稿会被 DeleteDrafts 删掉——
 	// 人写的东西没了，且他收到的是「成功」。
@@ -273,7 +274,7 @@ func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []strin
 		// 下一次下发会把旧值推回去。而现象是「我明明改过、也下发成功了，
 		// 怎么又变回去了」——中间没有任何报错。
 		if err := s.Store.CommitDeploy(ctx, store.CommitDeploy{
-			ResKeys: resKeys, Routes: routes, Rules: rules,
+			ResKeys: resKeys, Routes: routes, Rules: rules, Policies: eff.Policies,
 			CfgVersion: cfgVersion, DeployID: deployID,
 			Sealer: s.Sealer,
 			Fault:  s.commitFaultFn(),
@@ -346,25 +347,42 @@ func eventKind(ok, fail int) string {
 //
 // 也就是：写了一条新规则、预览说没问题、下发说成功，然后什么都没有、草稿也没了。
 // **成功的假象里最贵的一种：它同时是数据丢失。**
-func (s *Scheduler) effective(ctx context.Context, resKeys []string) ([]model.Route, []model.Rule, render.Policies, []render.Issue, error) {
+// effectiveConfig 是「勾了这些资源之后，配置应当长什么样」的全部结果。
+//
+// 打包成结构体而不是第六个返回值：Policies 是后加的（issue #31 的同一个形状
+// 在 global: 上原样成立），而五个位置返回值里再插一个，四个调用点都要数位置，
+// 数错一个的症状是拿到一份看起来合理的错配置。
+type effectiveConfig struct {
+	Routes []model.Route
+	Rules  []model.Rule
+	// Policies 是**合并了草稿之后**的全局策略，按 live 的行逐条给出。
+	// CommitDeploy 要靠它把改动落回 live——Rendered 是解析过的形状，
+	// 落不回库里那一列。
+	Policies []model.Policy
+	Rendered render.Policies
+	Orphans  []render.Issue
+}
+
+func (s *Scheduler) effective(ctx context.Context, resKeys []string) (effectiveConfig, error) {
+	var out effectiveConfig
 	var pol render.Policies
 	liveRoutes, err := s.Store.ListRoutes(ctx)
 	if err != nil {
-		return nil, nil, pol, nil, fmt.Errorf("读取路由: %w", err)
+		return out, fmt.Errorf("读取路由: %w", err)
 	}
 	// 渲染需要共享密钥的明文：校验端点要拿它验签。它只出现在下发的载荷里，
 	// 不经任何读接口回显。
 	liveRules, err := s.Store.ListRules(ctx, s.Sealer)
 	if err != nil {
-		return nil, nil, pol, nil, fmt.Errorf("读取访问规则: %w", err)
+		return out, fmt.Errorf("读取访问规则: %w", err)
 	}
 	livePolicies, err := s.Store.ListPolicies(ctx)
 	if err != nil {
-		return nil, nil, pol, nil, fmt.Errorf("读取全局策略: %w", err)
+		return out, fmt.Errorf("读取全局策略: %w", err)
 	}
 	drafts, err := s.Store.ListDrafts(ctx)
 	if err != nil {
-		return nil, nil, pol, nil, fmt.Errorf("读取草稿: %w", err)
+		return out, fmt.Errorf("读取草稿: %w", err)
 	}
 
 	selected := map[string]bool{}
@@ -386,7 +404,7 @@ func (s *Scheduler) effective(ctx context.Context, resKeys []string) ([]model.Ro
 			used["route:"+r.Domain] = true
 			merged, err := mergeInto(r, p)
 			if err != nil {
-				return nil, nil, pol, nil, fmt.Errorf("合并 %s 的草稿: %w", r.Domain, err)
+				return out, fmt.Errorf("合并 %s 的草稿: %w", r.Domain, err)
 			}
 			r = merged
 		}
@@ -400,7 +418,7 @@ func (s *Scheduler) effective(ctx context.Context, resKeys []string) ([]model.Ro
 			secretPlain := r.Secret // 草稿里不会有密钥，合并不能把它弄丢
 			merged, err := mergeRuleDraft(r, p)
 			if err != nil {
-				return nil, nil, pol, nil, fmt.Errorf("合并规则 %s 的草稿: %w", r.ID, err)
+				return out, fmt.Errorf("合并规则 %s 的草稿: %w", r.ID, err)
 			}
 			merged.Secret = secretPlain
 			r = merged
@@ -409,21 +427,22 @@ func (s *Scheduler) effective(ctx context.Context, resKeys []string) ([]model.Ro
 	}
 	// 全局策略也吃草稿：工作台里它们与路由、规则共用同一套草稿机制。
 	specs := map[string]json.RawMessage{}
+	policies := make([]model.Policy, 0, len(livePolicies))
 	for _, p := range livePolicies {
-		spec := p.Spec
 		if patch, ok := patches["global:"+p.ID]; ok {
 			used["global:"+p.ID] = true
 			merged, err := mergeInto(p, patch)
 			if err != nil {
-				return nil, nil, pol, nil, fmt.Errorf("合并策略 %s 的草稿: %w", p.ID, err)
+				return out, fmt.Errorf("合并策略 %s 的草稿: %w", p.ID, err)
 			}
-			spec = merged.Spec
+			p = merged
 		}
-		specs[p.ID] = spec
+		specs[p.ID] = p.Spec
+		policies = append(policies, p)
 	}
 	pol, err = render.ParsePolicies(specs[model.PolicyTLS], specs[model.PolicyLog])
 	if err != nil {
-		return nil, nil, pol, nil, err
+		return out, err
 	}
 
 	// **勾了、而底下没有资源的草稿，在这里被点名。**
@@ -446,7 +465,9 @@ func (s *Scheduler) effective(ctx context.Context, resKeys []string) ([]model.Ro
 		})
 	}
 
-	return routes, rules, pol, orphans, nil
+	out.Routes, out.Rules, out.Policies = routes, rules, policies
+	out.Rendered, out.Orphans = pol, orphans
+	return out, nil
 }
 
 func sortedKeys(m map[string]json.RawMessage) []string {
@@ -564,16 +585,6 @@ func countEffectiveRules(rules []model.Rule) int {
 	return n
 }
 
-func keysWithPrefix(resKeys []string, prefix string) []string {
-	var out []string
-	for _, k := range resKeys {
-		if id, ok := strings.CutPrefix(k, prefix); ok {
-			out = append(out, id)
-		}
-	}
-	return out
-}
-
 func (s *Scheduler) progress(deployID int64, cfgVersion, node, state, detail string, retrying bool) {
 	if s.Hub == nil {
 		return
@@ -645,10 +656,11 @@ func (s *Scheduler) Preview(ctx context.Context, resKeys []string) (Preview, err
 	if err != nil {
 		return p, fmt.Errorf("读取访问规则: %w", err)
 	}
-	afterRoutes, afterRules, afterPol, orphans, err := s.effective(ctx, resKeys)
+	eff, err := s.effective(ctx, resKeys)
 	if err != nil {
 		return p, err
 	}
+	afterRoutes, afterRules, afterPol, orphans := eff.Routes, eff.Rules, eff.Rendered, eff.Orphans
 	// orphans 在下面与渲染问题合并——**不能在这里赋值**，
 	// 那一段是 p.Validation.Errors = issues，会把这里写的整个盖掉。
 	livePolicies, err := s.Store.ListPolicies(ctx)
@@ -728,10 +740,12 @@ func (s *Scheduler) RepushNode(ctx context.Context, nodeID string) (string, stri
 		return "", "", nil, ErrNoBaseline
 	}
 
-	routes, rules, pol, _, err := s.effective(ctx, nil) // 不带草稿：基线就是不含草稿的那一份（因此不会有孤儿）
+	// 不带草稿：基线就是不含草稿的那一份（因此不会有孤儿）。
+	eff, err := s.effective(ctx, nil)
 	if err != nil {
 		return "", "", nil, err
 	}
+	routes, rules, pol := eff.Routes, eff.Rules, eff.Rendered
 	certs, err := s.certsForRender(ctx)
 	if err != nil {
 		return "", "", nil, err

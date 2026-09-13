@@ -2,6 +2,7 @@ package dnsops_test
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -94,5 +95,94 @@ func TestConcurrentDetachesCollapseIntoOneSync(t *testing.T) {
 	}
 	if syncs.Load() == 0 {
 		t.Error("一次都没推 —— 那是另一个方向的错")
+	}
+}
+
+// panicOnError 在收到一条 Error 日志时炸。
+//
+// 它替的是 syncLocked 里那句「记录解析同步结果失败」——生产里那一行下面
+// 就是服务商 SDK 与渲染，随便哪一处 panic 都会走到同一个地方。用 logger
+// 当注入点，是为了**不在生产结构体上为测试开一个口子**。
+type panicOnError struct{ slog.Handler }
+
+func (h panicOnError) Enabled(context.Context, slog.Level) bool { return true }
+func (h panicOnError) Handle(_ context.Context, r slog.Record) error {
+	if r.Level >= slog.LevelError {
+		panic("注入：记日志时炸了")
+	}
+	return nil
+}
+func (h panicOnError) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h panicOnError) WithGroup(string) slog.Handler      { return h }
+
+// TestPanicDoesNotWedgeTheOrchestrator：一次 panic 不该把解析编排器锁死。
+//
+// syncCoalesced 原先是手工配对的 `o.mu.Lock()` … `o.mu.Unlock()`，中间夹着
+// syncLocked；`close(done.ready)` 同样在最后一行。两者都不是 defer。
+//
+// 于是 syncLocked 里任何一次 panic 的后果是**进程级**的，而不是「这个请求
+// 500」：gin 的 Recovery 会把那次请求救回来，控制台看起来一切正常，而
+//
+//   - o.mu 永不释放 —— 此后每一次解析同步（人工改权重、节点开关、心跳摘挂、
+//     自愈）永久阻塞，没有超时、没有报错，就是不返回；
+//   - 排在 done 上的调用方连 500 都等不到，它们挂在 <-done.ready 上。
+//
+// **判据是「后面的人还走得动」**，不是「panic 有没有发生」——后者两种实现
+// 都一样。
+func TestPanicDoesNotWedgeTheOrchestrator(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":{"code":"1"},"records":[]}`))
+	}))
+	defer api.Close()
+
+	st := testdb.New(t)
+	ctx := context.Background()
+	sealer, err := secret.New([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutDNSProvider(ctx, store.DNSProviderSettings{
+		Kind: "dnspod", Domain: "example.com", SubName: "cdn", Credential: "12345,tok",
+	}, sealer); err != nil {
+		t.Fatal(err)
+	}
+
+	o := &dnsops.Orchestrator{
+		Store: st, Sealer: sealer, BaseOverride: api.URL,
+		Log: slog.New(panicOnError{}),
+	}
+
+	// 让 PutDNSSync 失败 —— 那一句失败会走 Error 日志，而这里的 handler 会炸。
+	// 这是 syncLocked 里**无论成败都会走到**的一步。
+	st.Pool.Close()
+
+	panicked := make(chan struct{})
+	go func() {
+		defer func() {
+			if recover() != nil {
+				close(panicked)
+			}
+		}()
+		_ = o.Detach(ctx, "node-a")
+	}()
+	select {
+	case <-panicked:
+	case <-time.After(3 * time.Second):
+		t.Fatal("装置坏了：注入的 panic 没炸起来")
+	}
+
+	// 编排器还得能用。这里不在乎它成不成功——池已经关了，它必然失败——
+	// 只在乎**它会返回**。
+	done := make(chan struct{})
+	go func() {
+		defer func() { _ = recover(); close(done) }()
+		_ = o.Attach(ctx, "node-a")
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("一次 panic 之后解析同步再也不返回了 —— o.mu 没人放，" +
+			"此后每一次改权重、点开关、心跳摘挂都会永久阻塞在这里")
 	}
 }

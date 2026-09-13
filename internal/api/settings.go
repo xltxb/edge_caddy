@@ -14,8 +14,6 @@ import (
 	"github.com/xltxb/edge_caddy/internal/store"
 )
 
-var ()
-
 func (s *Server) handleGetSettings(c *gin.Context) {
 	sys, err := s.store.GetSystemSettings(c.Request.Context())
 	if err != nil {

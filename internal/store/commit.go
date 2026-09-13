@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/xltxb/edge_caddy/internal/model"
 	"github.com/xltxb/edge_caddy/internal/secret"
@@ -34,6 +35,13 @@ type CommitDeploy struct {
 	ResKeys []string
 	Routes  []model.Route
 	Rules   []model.Rule
+	// Policies 是合并了草稿之后的全局策略。
+	//
+	// **它原先不在这里**，而 `global:` 的版本照样被推进、草稿照样被删——
+	// 只有 live 那一行的 spec 没动。下一次任何下发重新渲染时，全局策略
+	// 退回旧值，而工作台上没有草稿、版本号是新的、基线是新的，
+	// **没有任何一个页面会说这件事**。issue #31 的形状，在 global: 上原样成立。
+	Policies []model.Policy
 
 	CfgVersion string
 	DeployID   int64
@@ -78,6 +86,15 @@ func (s *Store) CommitDeploy(ctx context.Context, in CommitDeploy) error {
 		}
 	}
 
+	for _, p := range in.Policies {
+		if !selected["global:"+p.ID] {
+			continue
+		}
+		if err := upsertPolicy(ctx, tx, p); err != nil {
+			return fmt.Errorf("合入全局策略 %s: %w", p.ID, err)
+		}
+	}
+
 	if in.Fault != nil {
 		if err := in.Fault(); err != nil {
 			return err
@@ -110,13 +127,15 @@ func (s *Store) CommitDeploy(ctx context.Context, in CommitDeploy) error {
 
 // keysWithPrefix 把 "route:api.example.com" 这样的资源键剥成裸 id。
 //
-// 与 deploy 包里那个同名函数是同一件事。放在这里是因为事务内的三条 Bump
-// 需要它，而让 store 去依赖 deploy 是反的。
+// 放在 store 而不是 deploy：事务内的三条 Bump 需要它，而让 store 去依赖
+// deploy 是反的。deploy 里曾经有一份同名的副本，`CommitDeploy` 接手那三条
+// Bump 之后它就没有调用方了——私有函数没人用编译器不会说话，所以它在仓库里
+// 又活了一阵。
 func keysWithPrefix(resKeys []string, prefix string) []string {
 	var out []string
 	for _, k := range resKeys {
-		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
-			out = append(out, k[len(prefix):])
+		if id, ok := strings.CutPrefix(k, prefix); ok && id != "" {
+			out = append(out, id)
 		}
 	}
 	return out

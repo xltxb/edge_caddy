@@ -68,6 +68,12 @@ func (s *Store) GetPolicy(ctx context.Context, id string) (model.Policy, error) 
 }
 
 func (s *Store) UpsertPolicy(ctx context.Context, p model.Policy) error {
+	return upsertPolicy(ctx, s.Pool, p)
+}
+
+// upsertPolicy 是 UpsertPolicy 的事务内版本（同一条 SQL 只有这一份）——
+// CommitDeploy 要在自己那个事务里写它。
+func upsertPolicy(ctx context.Context, q querier, p model.Policy) error {
 	name := p.Name
 	if name == "" {
 		for _, d := range defaultPolicies {
@@ -76,7 +82,7 @@ func (s *Store) UpsertPolicy(ctx context.Context, p model.Policy) error {
 			}
 		}
 	}
-	_, err := s.Pool.Exec(ctx,
+	_, err := q.Exec(ctx,
 		`INSERT INTO global_policies (id, name, spec) VALUES ($1,$2,$3)
 		 ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, spec = EXCLUDED.spec`,
 		p.ID, name, p.Spec)
