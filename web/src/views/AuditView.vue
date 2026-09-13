@@ -74,16 +74,35 @@ async function load(): Promise<void> {
 
 async function loadMore(): Promise<void> {
   if (nextBeforeId.value === null || loading.value) return
+
+  // **翻页也走 inflight。**
+  //
+  // 这里原先用一次性的 `new AbortController()`，它不在 inflight 里——切筛选时
+  // `load()` 的 `inflight?.abort()` 掐不到它。它返回后会把**旧筛选**的旧页
+  // append 进新筛选的结果（表格里混着两个 operator），用旧游标覆盖
+  // nextBeforeId，并且无条件把 loading 抹掉。
+  //
+  // #76 的修复只覆盖了 load vs load 那条路，而这一条是同一个竞态。
+  inflight?.abort()
+  const ctl = new AbortController()
+  inflight = ctl
+
   loading.value = true
   error.value = null
   try {
-    const page = await fetchPage(nextBeforeId.value, new AbortController().signal)
+    const page = await fetchPage(nextBeforeId.value, ctl.signal)
+    // 掐掉之后就别再动共享状态了：这一页属于上一个筛选。
+    if (ctl.signal.aborted) return
     items.value = [...items.value, ...page.items]
     nextBeforeId.value = page.next_before_id
   } catch (e) {
+    if (ctl.signal.aborted) return
     error.value = errorText(e, '加载更多审计日志失败')
   } finally {
-    loading.value = false
+    if (inflight === ctl) {
+      loading.value = false
+      inflight = null
+    }
   }
 }
 
