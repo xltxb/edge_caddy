@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""扫「注释块的首句在讲一个已经不成立的东西」。
+"""注释里那些**别人改了、这边不会收到通知**的东西。
+
+五族，各查一件事（跑法见 scripts/README.md）：首句在不在讲已经不成立的事；
+陈述外部行为的理由有没有挂在会通知你的东西上；说「某条探针盯着这里」的那条
+探针在不在；引的契约小节与 ADR 还在不在、有没有被取代；这份索引还准不准。
+
+下面这段讲的是第一族。
+
+# 首句
+
+扫「注释块的首句在讲一个已经不成立的东西」。
 
 **一个从上往下读的人，第一句读到什么就先信什么。** 把复盘放在结论前面，
 等于让读者先装载一遍错的，然后指望他读到第三段时改回来。
@@ -177,105 +187,128 @@ def check_backlinks(paths):
 CITE_SECTION = re.compile(r"(?:契约|api-contract\.md)\s*§\s*(\d+(?:\.\d+)*)")
 CITE_ADR = re.compile(r"ADR-(\d{4})")
 
-# 同一句里的**具体数字**。引文比对试过，废掉了：仓库里「」不只用于引契约
-# 原文（任何强调都用它），照着扫 23 处里 20 处是误报——正是本文件开头
-# 那句「词表太贴近会撞上正常措辞」。
-#
-# 数字不会意译：说「契约 §0.7 拒 1001」就是 1001，对不上就是对不上。
-#
-# 只看三位以上的整数。两位数太容易撞上序号、倍数、版本号；而**前后挂着
-# 连字符的也要排掉** —— `0001-01-01` 里的 `0001` 不是一个值，是日期的一截
-# （第一版在这里误报了一次）。
-#
-# 反引号标识符那一层试过，去掉了：注释里写 `dns_actor`、契约里可能写在一张
-# 表的单元格里或者换了行，对不上的多半是排版而不是事实，吵得不值。
-NUMBER = re.compile(r"(?<![\d.\-])(\d{3,})(?![\d.\-])")
-
-def _norm(t):
-    """比对前把两边都磨平：强调符号、空白、以及换行造成的断字。"""
-    return re.sub(r"[\s*`＊]", "", t)
-
+# 被取代的 ADR 自己会在状态行上说是谁取代了它：
+#   - 状态：**已被 [ADR-0015](...) 取代**
+#   **推翻 [ADR-0001](...) 的核心决定。**
+# 两种写法都认 —— 只认一种的话，漏掉的那种会让整族检查对那几个 ADR 失明。
+SUPERSEDED_BY = re.compile(r"已被\s*\[?ADR-(\d{4})\]?.{0,80}?取代")
+SUPERSEDES = re.compile(r"(?:推翻|取代)\s*\[?ADR-(\d{4})\]?")
 
 def contract_sections():
-    """api-contract.md 的小节 -> 正文。
+    """api-contract.md 里有编号的小节标题，只要编号。
 
-    标题形如 `## 2. WebSocket` / `### 0.2.1 未知字段一律拒绝`，
-    编号后面跟点或空格都有，所以两种都认。
+    标题形如 `## 2. WebSocket` / `### 0.2.1 未知字段一律拒绝`，编号后面跟点
+    或空格都有，所以两种都认。
+
+    **只要编号，不要正文。** 这里曾经切出每一节的正文、还让父节吃下子节，
+    那是给数字比对用的；那一层撤掉之后正文就没人读了，留着等于养一段
+    没人验的代码。
     """
     doc = (ROOT / "docs/api-contract.md").read_text(encoding="utf-8")
-    lines = doc.split("\n")
-    heads = []  # (编号, 行号)
-    for i, ln in enumerate(lines):
-        m = re.match(r"#{2,4}\s+(\d+(?:\.\d+)*)\.?\s+\S", ln)
-        if m:
-            heads.append((m.group(1), i))
-    out = {}
-    for k, (num, i) in enumerate(heads):
-        end = heads[k + 1][1] if k + 1 < len(heads) else len(lines)
-        out[num] = "\n".join(lines[i:end])
+    out = set()
+    for ln in doc.split("\n"):
+        if m := re.match(r"#{2,4}\s+(\d+(?:\.\d+)*)\.?\s+\S", ln):
+            out.add(m.group(1))
+    return out
 
-    # **父节要包含子节。** 引 §0 说的是「§0 那一整章」，而 404 写在 §0.2 里
-    # —— 按标题切开之后 §0 的正文只到 §0.1 之前，于是一次正确的引用被报成
-    # 对不上（第一版在这里误报了一次）。
-    for num in list(out):
-        kids = [v for k, v in out.items() if k.startswith(num + ".")]
-        if kids:
-            out[num] = out[num] + "\n" + "\n".join(kids)
+
+def adr_index():
+    """ADR 编号 -> 取代它的那个编号（没被取代就是 None）。
+
+    **ADR 的失效方式是被取代，不是被删。** 只查文件在不在，等于对这一族
+    引用里最常见的那种过期视而不见 —— 而 185 处引用里绝大多数是 ADR。
+    """
+    out, superseded = {}, {}
+    for f in sorted((ROOT / "docs/adr").glob("*.md")):
+        num = f.name[:4]
+        out[num] = None
+        head = "\n".join(f.read_text(encoding="utf-8").split("\n")[:6])
+        if m := SUPERSEDED_BY.search(head):
+            superseded[num] = m.group(1)
+        for victim in SUPERSEDES.findall(head):
+            if victim != num:
+                superseded.setdefault(victim, num)
+    for victim, winner in superseded.items():
+        if victim in out:
+            out[victim] = winner
     return out
 
 
 def check_citations(paths):
-    """注释里引的契约小节与 ADR 必须存在；引号里的话必须真的在那儿。
+    """注释里引的契约小节要存在，引的 ADR 不能是已经被取代的那个。
 
-    **这一族是「对外的陈述没人能替你核对」的自动化版本。**
+    **被引的那一方变了，引用的这一方不会收到任何通知。** 这是这个仓库
+    反复栽的那一格（domain.md「对外的陈述没人能替你核对」）：
 
-    三次同型的事故促成了它：一句「后端目前不校验格式」在后端补上校验之后
-    仍留在注释里；一句「契约那张表承诺 detail 非空」引用了一张自己没去更新
-    的表；一句「契约 §0.7 说拒 1002」而实现回的是 1001。每一次那句话写下时
-    都是真的，而**被引的那一方变了，引用的这一方不会收到任何通知**。
+      · 一句「后端目前不校验格式」，在后端补上校验之后仍留在注释里
+      · 一句「契约那张表承诺 detail 非空」，引用了一张自己没去更新的表
+      · `render.go` 里「证书由主控集中签发（ADR-0001）」—— 而 ADR-0001 的
+        核心决定已被 ADR-0015 推翻，主控早就不签发了
 
-    存在性那一层零误报，直接报。引文那一层只在「引号里的话一个字都对不上
-    被引小节」时才报——意译和节选都放过，宁可漏也不要吵（一个天天误报的
-    检查等于没有检查）。
+    两层，各自的边界写在下面，因为**这个检查覆盖的比它看起来的少得多**：
+
+      小节存在  引的 §X.Y 必须在 api-contract.md 里有对应标题。
+                只认 `契约 §N` 与 `api-contract.md §N`；**`api-contract §N`
+                （不带 .md）那种写法有 23 处，一处也看不见**。
+      ADR 时效  引的 ADR 必须存在，且不能是已被取代的那个 —— 除非同一个
+                注释块里也提到了取代它的那个 ADR（那是知情地在讲历史，
+                `certs/manager.go` 就是这么写的）。
+
+    **它抓不住的**：不带 §号的引用（三次事故里有一次是这样）；前端目录
+    （web/ 有自己的 check-comments.mjs）；scripts/ 与 docs/ 下的同型引用；
+    以及**引对了小节号、而那一节里说的已经不是那回事**——这一层只证明
+    「这个编号指向的东西还在、还没过期」，不证明内容还对得上。
+
+    数字比对试过，撤掉了：77 处引用里只有 7 处真进了比对，而它会把
+    issue 号（`#260`）、年份、RFC 号都当成契约里的值来查。覆盖面小、
+    误报面大，留着不如不留。
     """
     secs = contract_sections()
-    adrs = {f.name[:4] for f in (ROOT / "docs/adr").glob("*.md")}
+    adrs = adr_index()
     bad = 0
+    seen_sec = seen_adr = 0
 
     for f in paths:
         for ln, text in blocks(f):
             where = f"{f.relative_to(ROOT)}:{ln}"
+            cited_adrs = set(CITE_ADR.findall(text))
 
             for num in set(CITE_SECTION.findall(text)):
+                seen_sec += 1
                 if num not in secs:
                     print(f"  ✗ {where}\n     引了契约 §{num}，而它不存在")
                     bad += 1
-                    continue
-                body = _norm(secs[num])
-                # 只查**同一句**里的数字：跨句的那个多半讲的是别的事。
-                #
-                # **分句不按换行切。** 注释里的换行是排版（一行 80 列），
-                # 不是句子边界——`契约 §0.7 写明拒的是` / `1001，……` 正好被
-                # 折成两行，于是第一版漏掉了我真正犯过的那个错：注释说 1001、
-                # 契约写 1002，而它一声不吭。先把换行压成空格再分句。
-                flat = re.sub(r"\s*\n\s*", "", text)
-                for sent in re.split(r"[。；]", flat):
-                    if not re.search(rf"§\s*{re.escape(num)}(?![\d.])", sent):
-                        continue
-                    for lit in NUMBER.findall(sent):
-                        if _norm(lit) not in body:
-                            print(f"  ✗ {where}\n     说契约 §{num} 里有 "
-                                  f"`{lit}`，而那一节里没有这个值"
-                                  f"\n     {sent.strip()[:80]}")
-                            bad += 1
 
-            for num in set(CITE_ADR.findall(text)):
+            for num in sorted(cited_adrs):
+                seen_adr += 1
                 if num not in adrs:
                     print(f"  ✗ {where}\n     引了 ADR-{num}，而 docs/adr/ 下没有它")
                     bad += 1
+                    continue
+                winner = adrs[num]
+                # 同块提到了取代者 = 知情地在讲历史，放过。
+                #
+                # **取代者不一定写成 ADR-00NN。** store.go 写的是
+                # 「见 docs/adr/0011-postgres-supersedes-sqlite.md（取代 ADR-0006）」
+                # —— 它比谁都知情，而只认 `ADR-` 前缀的判据会把它报成过期
+                # （第一版就是这么误报的）。文件名前缀那种写法也算数。
+                aware = winner and (
+                    winner in cited_adrs
+                    or re.search(rf"(?:ADR-|/){winner}[-\b]", text)
+                )
+                if winner and not aware:
+                    print(f"  ✗ {where}\n     把 ADR-{num} 当依据引，"
+                          f"而它已被 ADR-{winner} 取代"
+                          f"\n     要么改引 ADR-{winner}，要么在同一段里说清"
+                          f"这里讲的是被推翻之前的事")
+                    bad += 1
 
+    # **判词要说得出自己核了什么。** 一句「引用都对得上」在只验了编号存在
+    # 与时效的前提下，读起来像内容也有人担保了 —— 而读输出的人不会去读
+    # 这个函数的 docstring。
     if not bad:
-        print("  ✓ 注释里引的契约小节与 ADR 都在，引文也对得上")
+        print(f"  ✓ {seen_sec} 处契约小节引用指向存在的标题，"
+              f"{seen_adr} 处 ADR 引用没有引到被取代的（只验编号，不验内容）")
     else:
         print("\n  被引的那一方变了，引用的这一方不会收到通知 —— "
               "所以这件事得让脚本替你记着。")
@@ -374,34 +407,45 @@ def self_test():
 def _self_test_citations():
     """引用那一族也要自证不瞎。
 
-    **装置坏了看起来跟「全都对」一模一样**：contract_sections 要是解析不出
-    任何小节，每一处引用都会被判成「不存在」而全红；要是它把整篇当成一节，
-    每个数字都找得到而全绿。两种坏法都不该静默过去。
+    **装置坏了看起来跟「全都对」一模一样**，而这一族有两种坏法，方向相反：
+
+      解析不出东西  每处引用都判成「不存在」而全红 —— 吵，但看得见。
+      什么都说有    每处引用都判成「在」而全绿 —— **安静，因此更危险**。
+
+    第一版只防了前一种（`len(secs) < 20`），而那正是「破坏手段必须和断言
+    对称」说的事：把每节正文都换成整篇，自检照样全 ✓。所以下面每一条都
+    成对：既要认出该认的，也要认不出不该认的。
     """
     ok = True
+
     secs = contract_sections()
     if len(secs) < 20:
         print(f"  ✗ 只解析出 {len(secs)} 个契约小节 —— 引用检查的结果没有意义")
-        return False
-    print(f"  ✓ 解析出 {len(secs)} 个契约小节")
-
-    # 父节要吃到子节：§0 里应当找得到写在 §0.3 的错误码。
-    if "0" in secs and "0.3" in secs and "1002" not in secs["0"]:
-        print("  ✗ §0 没包含子节的正文 —— 引 §0 而值写在 §0.2 的会被误报")
+        ok = False
+    elif "0.2.1" not in secs or "7" not in secs:
+        print("  ✗ 解析漏掉了已知的小节编号（0.2.1 / 7）—— 引它们的地方会被误报")
+        ok = False
+    elif "0.99" in secs or "42" in secs:
+        print("  ✗ 解析认出了不存在的小节编号 —— 那意味着它对什么都点头，"
+              "引一个错编号也不会红")
         ok = False
     else:
-        print("  ✓ 父节包含子节")
+        print(f"  ✓ 契约小节：认出 {len(secs)} 个，且不认不存在的编号")
 
-    # 换行不当句子边界：被 80 列折行切开的引用与数字仍要算同一句。
-    folded = "契约 §0.7 写明拒的是\n1009，而不是别的"
-    flat = re.sub(r"\s*\n\s*", "", folded)
-    hit = [x for x in re.split(r"[。；]", flat)
-           if re.search(r"§\s*0\.7(?![\d.])", x) and "1009" in x]
-    if not hit:
-        print("  ✗ 折行把引用和数字切成了两句 —— 真正犯过的那个错会漏掉")
+    adrs = adr_index()
+    if len(adrs) < 10:
+        print(f"  ✗ 只找到 {len(adrs)} 个 ADR —— 时效检查的结果没有意义")
+        ok = False
+    elif adrs.get("0001") != "0015" or adrs.get("0006") != "0011":
+        print("  ✗ 没认出已知的取代关系（0001→0015、0006→0011）—— "
+              "引一个被推翻的 ADR 不会红")
+        ok = False
+    elif adrs.get("0010") is not None or adrs.get("0015") is not None:
+        print("  ✗ 把没被取代的 ADR 也当成过期的 —— 那会把每一处引用都报红")
         ok = False
     else:
-        print("  ✓ 排版折行不当句子边界")
+        print(f"  ✓ ADR 时效：{len(adrs)} 个，取代关系认得出也不乱认")
+
     return ok
 
 
@@ -446,7 +490,7 @@ def main():
     total = len(found) + bad
     print()
     if total:
-        print(f"  ✗ 共 {total} 处要改（首句讲历史 / 理由没锚 / 引文对不上 / 索引对不上）")
+        print(f"  ✗ 共 {total} 处要改（首句讲历史 / 理由没锚 / 引用过期 / 索引对不上）")
     else:
         print(f"  ✓ 全部通过（扫了 {len(files)} 个文件）")
     return 1 if total else 0

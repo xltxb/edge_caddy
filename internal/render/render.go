@@ -137,9 +137,11 @@ func Render(routes []model.Route, rules []model.Rule, certs []Cert, pol Policies
 			// access log 要在 server 上显式开启，只配 logging app 收不到
 			// 任何访问行。它落到哪个文件由 loggingApp 的 include 决定。
 			"logs": map[string]any{},
-			// 关掉自动 HTTPS：证书由主控集中签发并内联下发（ADR-0001 / ADR-0010），
-			// 开着会让节点自己去 ACME 申请——而它既没有 DNS 凭据，
-			// 也不该有。
+			// 关掉自动 HTTPS：证书由主控内联下发（ADR-0010），开着会让节点
+			// 自己去 ACME 申请——而它既没有 DNS 凭据，也不该有。
+			//
+			// （这里曾经写「由主控集中签发」并引 ADR-0001。签发那一半已经
+			// 移出这个系统了，见 ADR-0015；节点不自己申请这一半没变。）
 			"automatic_https": map[string]any{"disable": true},
 		},
 	}
