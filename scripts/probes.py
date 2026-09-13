@@ -543,6 +543,51 @@ PROBES = [
         "./internal/alert/", "TestDeliveryResultDoesNotComeFromWording",
         "记成了",
     ),
+    Probe(
+        "下发-一次只跑一次",
+        "两次下发同时往节点上写的话，每台机器的终态取决于它自己那一侧谁后到，"
+        "而两次下发的记录都会说成功。CancelAll 挡不住它——那一条管的是补推，"
+        "首轮推送不经过重试器（issue #32）",
+        "internal/deploy/deploy.go",
+        "\ts.deployMu.Lock()\n\tdefer s.deployMu.Unlock()",
+        "",
+        "./internal/deploy/", "TestConcurrentDeploysDoNotInterleave",
+        "的推送在时间上重叠了",
+    ),
+    Probe(
+        "登录-有上限，不只有 bcrypt",
+        "bcrypt 是一道按 CPU 计价的防线：它让每次尝试变慢，但没有上限。"
+        "而控制台的「只绑内网」是部署形态，代码里没有任何东西检查它"
+        "（ADR-0013 自己写着）——绑成 0.0.0.0 的主控上，这就是公网上一个"
+        "没有速率上限的口令接口（issue #33）",
+        "internal/api/auth.go",
+        "\tif s.logins.blocked(ipKey, userKey) {",
+        "\tif false {",
+        "./internal/api/", "TestLoginIsRateLimited",
+        "都没有被拦",
+    ),
+    Probe(
+        "GeoIP-超限报错不截断",
+        "ReadAll(LimitReader(...)) 超限时返回前 N 个字节且 err 为 nil，"
+        "于是被剪掉尾巴的库当成正常库落盘——而加载时报的是一个格式错误，"
+        "人会去查下载源而不是想到限额（issue #35）",
+        "internal/geoip/fetch.go",
+        "\tif int64(len(b)) > max {",
+        "\tif false {",
+        "./internal/geoip/", "TestOversizedDBIsRejectedNotTruncated",
+        "超限的库应当被拒",
+    ),
+    Probe(
+        "保留期-过期会话清掉、没过期的留着",
+        "三张只写不清的表原先没有任何删除路径。sessions 的判据与另两张不同："
+        "它删的是**已经过期的**，而不是「够老的」——删错方向的话，"
+        "人会在使用中途被踢出去（issue #34）",
+        "internal/store/retention.go",
+        "`DELETE FROM sessions WHERE expires_at <= now()`",
+        "`DELETE FROM sessions WHERE expires_at > now()`",
+        "./internal/store/", "TestPruneKeepsWhatIsStillUseful",
+        "没过期的会话被清掉了",
+    ),
 ]
 
 

@@ -212,13 +212,36 @@ func (c *CloudflareDNS) list(ctx context.Context) ([]cfDNSRecord, error) {
 		// 而不是直接给一个切片——给切片的话解不动，报的是一句
 		// 「cannot unmarshal object into Go value of type []...」，
 		// 而那句话不会让人想到「信封」两个字。
-		var page struct{ Result []cfDNSRecord }
-		if err := c.call(ctx, http.MethodGet,
-			"/zones/"+c.ZoneID+"/dns_records?type="+typ+"&name="+c.Hostname,
-			nil, &page); err != nil {
-			return nil, err
+		// **要翻页。** Cloudflare 的 list 默认每页 20 条，而这个域名上的
+		// A 记录数等于轮换里的节点数——超过一页时，第二页的记录会被当成
+		// 「不存在」而重新创建，于是同一个 IP 在服务商那边出现两遍
+		// （issue #35）。
+		//
+		// 判据取 result_info.total_pages，而不是「这一页不满就停」——
+		// 后者在「恰好整页」时会漏掉最后一页，而那是一个只在特定节点数上
+		// 才出现的 bug。
+		for pageNum := 1; ; pageNum++ {
+			var page struct {
+				Result     []cfDNSRecord
+				ResultInfo struct {
+					Page       int `json:"page"`
+					TotalPages int `json:"total_pages"`
+				} `json:"result_info"`
+			}
+			if err := c.call(ctx, http.MethodGet,
+				fmt.Sprintf("/zones/%s/dns_records?type=%s&name=%s&per_page=100&page=%d",
+					c.ZoneID, typ, c.Hostname, pageNum),
+				nil, &page); err != nil {
+				return nil, err
+			}
+			out = append(out, page.Result...)
+
+			// total_pages 缺失（老版本 API、或 stub）时按一页处理：
+			// 宁可少翻，也不要因为读不到分页信息而无限循环。
+			if page.ResultInfo.TotalPages <= pageNum {
+				break
+			}
 		}
-		out = append(out, page.Result...)
 	}
 	return out, nil
 }

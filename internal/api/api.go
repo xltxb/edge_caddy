@@ -59,6 +59,7 @@ type Server struct {
 	deployer          *deploy.Scheduler
 	masterAddr        string
 	caPin             string
+	logins            *loginLimiter
 	opsBotConfigured  bool
 	certBotConfigured bool
 	webRoot           string
@@ -159,6 +160,7 @@ func New(o Options) *gin.Engine {
 		deployer:          o.Deployer,
 		masterAddr:        o.MasterAddr,
 		caPin:             o.CAPin,
+		logins:            newLoginLimiter(),
 		opsBotConfigured:  o.OpsBotToken != "",
 		certBotConfigured: o.CertBotToken != "",
 		webRoot:           o.WebRoot,

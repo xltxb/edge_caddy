@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"errors"
+	"fmt"
 	"io"
 	"net/netip"
 	"os"
@@ -164,5 +165,17 @@ func gunzip(b []byte) ([]byte, error) {
 	}
 	defer zr.Close()
 	// 上限与主控那边一致：一条构造出来的消息不该让节点把内存吃光。
-	return io.ReadAll(io.LimitReader(zr, 32<<20))
+	//
+	// **超了要报错，不能静默截断**：`ReadAll(LimitReader(...))` 在超限时
+	// 返回前 N 个字节且 err 为 nil，于是一份被剪掉尾巴的库当成正常库落盘，
+	// 而加载时报的是一个与此无关的格式错误（issue #35）。
+	const max = 32 << 20
+	out, err := io.ReadAll(io.LimitReader(zr, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(out) > max {
+		return nil, fmt.Errorf("解压后的 GeoIP 库超过 %d MiB 的上限，已拒绝", max>>20)
+	}
+	return out, nil
 }

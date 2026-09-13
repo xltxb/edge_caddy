@@ -33,7 +33,23 @@ func (s *Server) handleLogin(c *gin.Context) {
 	setAuditOperator(c, req.Username)
 
 	ctx := c.Request.Context()
+
+	// **先看这个来源是不是已经被拦了，再去验密码。**
+	//
+	// 顺序要紧：验在前的话，被拦之后正确的猜测仍然会被验出来，攻击者只要
+	// 在试错之间夹一次正确猜测就绕过去了。而且 bcrypt 本身就贵——被拦的
+	// 请求不该还去跑它（issue #33）。
+	ip, user := clientIP(c), req.Username
+	ipKey, userKey := "ip:"+ip, "user:"+user
+	if s.logins.blocked(ipKey, userKey) {
+		// **措辞里不带用户名**：带上就等于回答了「这个用户名存不存在」，
+		// 而这个 handler 别处特意不区分「用户名不存在」与「口令错误」。
+		Fail(c, CodeRateLimited, "登录尝试过于频繁，请稍后再试")
+		return
+	}
+
 	if !s.store.VerifyPassword(ctx, req.Username, req.Password) {
+		s.logins.fail(ipKey, userKey)
 		// 不区分「用户名不存在」与「口令错误」。区分了就等于提供了一个
 		// 用户名枚举接口，而失败的登录尝试在审计页上是单独提示的，
 		// 攻击者的每一次试探都会留下痕迹。
@@ -41,7 +57,9 @@ func (s *Server) handleLogin(c *gin.Context) {
 		return
 	}
 
-	sid, err := s.store.CreateSession(ctx, req.Username, clientIP(c), s.sessionTTL)
+	s.logins.succeed(ipKey, userKey)
+
+	sid, err := s.store.CreateSession(ctx, req.Username, ip, s.sessionTTL)
 	if err != nil {
 		s.log.Error("创建会话失败", "err", err)
 		Fail(c, CodeDownstream, "登录失败，请重试")

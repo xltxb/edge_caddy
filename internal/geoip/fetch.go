@@ -93,6 +93,8 @@ func (f *Fetcher) Fetch(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("下载 GeoLite2 失败：HTTP %d", resp.StatusCode)
 	}
 
+	// 压缩包本身也设一道上限。**留出压缩比的余量**：限的是解压后的体积，
+	// 而这里读的是压缩流——同一个数字用在两处，含义不一样。
 	mmdb, err := extractMMDB(io.LimitReader(resp.Body, maxDBBytes))
 	if err != nil {
 		return false, err
@@ -141,7 +143,7 @@ func extractMMDB(r io.Reader) ([]byte, error) {
 		if h.Typeflag != tar.TypeReg || !strings.HasSuffix(h.Name, ".mmdb") {
 			continue
 		}
-		b, err := io.ReadAll(io.LimitReader(tr, maxDBBytes))
+		b, err := readCapped(tr, maxDBBytes)
 		if err != nil {
 			return nil, err
 		}
@@ -184,4 +186,25 @@ func (f *Fetcher) once(ctx context.Context) {
 	if !changed {
 		f.log().Debug("GeoIP 库没有变化")
 	}
+}
+
+// readCapped 读最多 max 字节，**超了就报错，不静默截断**。
+//
+// `io.ReadAll(io.LimitReader(r, max))` 在超限时返回前 max 个字节且 err 为 nil
+// ——于是一份超大的库被剪掉尾巴之后当成正常库落盘（issue #35）。症状离原因
+// 很远：截断的 mmdb 在加载时报的是一个**格式错误**，人会去查下载源、
+// 查 MaxMind 的账号，而不是想到限额把它剪了。
+//
+// 多读一个字节就能分清「刚好到上限」与「超了」——这是 LimitReader 自己
+// 分不出来的那一件事。
+func readCapped(r io.Reader, max int64) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > max {
+		return nil, fmt.Errorf("GeoIP 库超过 %d MiB 的上限，已拒绝——"+
+			"截断的库会在加载时报一个与此无关的格式错误", max>>20)
+	}
+	return b, nil
 }

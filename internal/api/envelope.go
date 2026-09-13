@@ -23,11 +23,16 @@ type Envelope struct {
 // 404 只表示「这个 URL 后端没实现」；混在一起前端就分不清
 // 「路由写错了」和「这条路由被别人删了」。
 const (
-	CodeOK              = 0
-	CodeBadParam        = 1001
-	CodeValidation      = 1002
-	CodeNotFound        = 1003
-	CodeConflict        = 1004
+	CodeOK         = 0
+	CodeBadParam   = 1001
+	CodeValidation = 1002
+	CodeNotFound   = 1003
+	CodeConflict   = 1004
+	// CodeRateLimited 是「这个来源此刻被限速了」。
+	//
+	// 单独一个码而不是复用 1001：前端据此把措辞写成「稍后再试」而不是
+	// 「用户名或密码错误」——后者会让一个密码没输错的人去反复改密码。
+	CodeRateLimited     = 1005
 	CodeStateConflict   = 2001
 	CodeDownstream      = 3001
 	CodeNodeUnreachable = 3002

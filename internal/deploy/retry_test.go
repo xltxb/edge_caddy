@@ -28,14 +28,31 @@ type fakePusher struct {
 	outcomes map[string][]tunnel.PushOutcome
 	// ups[node] 是这个节点收到过的回源证书，按收到的顺序。
 	ups map[string][]tunnel.UpstreamCert
+	// lastVersion[node] 是这个节点**最后**收到的那份配置的版本号。
+	// 「最后」才是节点上真正跑着的那一份。
+	lastVersion map[string]string
+
+	// delay 让每次推送慢一点。**没有它，两次并发下发根本不会重叠**——
+	// 而「不重叠」时任何互斥实现都是绿的，测试因此什么也没证明。
+	delay time.Duration
+
+	// windows 记每次推送的「哪一版、什么时候开始、什么时候结束」。
+	// 两次下发交错与否，看的就是不同版本的窗口有没有重叠。
+	windows []pushWindow
+}
+
+type pushWindow struct {
+	cfgVersion string
+	start, end time.Time
 }
 
 func newFakePusher(nodes ...string) *fakePusher {
 	return &fakePusher{
-		nodes:    nodes,
-		attempts: map[string]int{},
-		outcomes: map[string][]tunnel.PushOutcome{},
-		ups:      map[string][]tunnel.UpstreamCert{},
+		nodes:       nodes,
+		attempts:    map[string]int{},
+		outcomes:    map[string][]tunnel.PushOutcome{},
+		ups:         map[string][]tunnel.UpstreamCert{},
+		lastVersion: map[string]string{},
 	}
 }
 
@@ -47,12 +64,22 @@ func (f *fakePusher) plan(node string, outs ...tunnel.PushOutcome) {
 
 func (f *fakePusher) OnlineNodes() []string { return f.nodes }
 
-func (f *fakePusher) Push(_ context.Context, node, _ string, _, _ []byte, _ tunnel.ResourceCounts, up tunnel.UpstreamCert, _ time.Duration) tunnel.PushOutcome {
+func (f *fakePusher) Push(_ context.Context, node, cfgVersion string, _, _ []byte, _ tunnel.ResourceCounts, up tunnel.UpstreamCert, _ time.Duration) tunnel.PushOutcome {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	n := f.attempts[node]
 	f.attempts[node]++
 	f.ups[node] = append(f.ups[node], up)
+	f.lastVersion[node] = cfgVersion
+	d := f.delay
+	start := time.Now()
+	if d > 0 {
+		// 在锁外等：握着锁等于把并发变成串行，那正是要观察的东西。
+		f.mu.Unlock()
+		time.Sleep(d)
+		f.mu.Lock()
+	}
+	f.windows = append(f.windows, pushWindow{cfgVersion: cfgVersion, start: start, end: time.Now()})
 	outs := f.outcomes[node]
 	if len(outs) == 0 {
 		return tunnel.PushOutcome{OK: true, Detail: "1ms", Responded: true}
@@ -76,12 +103,41 @@ func (f *fakePusher) upstreamCertsFor(node string) []tunnel.UpstreamCert {
 	return append([]tunnel.UpstreamCert(nil), f.ups[node]...)
 }
 
+// overlappingVersions 找出「推送窗口在时间上重叠、而版本不同」的那一对。
+//
+// **这才是「交错」的定义**：两次下发同时在往节点上写。谁先谁后不要紧，
+// 同时在写才是问题——那时每台机器的终态取决于它自己那一侧谁后到。
+func (f *fakePusher) overlappingVersions() (string, string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.windows {
+		for j := i + 1; j < len(f.windows); j++ {
+			a, b := f.windows[i], f.windows[j]
+			if a.cfgVersion == b.cfgVersion {
+				continue
+			}
+			if a.start.Before(b.end) && b.start.Before(a.end) {
+				return a.cfgVersion, b.cfgVersion, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// lastVersionFor 是这个节点最后收到的那份配置——节点上真正跑着的那一份。
+func (f *fakePusher) lastVersionFor(node string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastVersion[node]
+}
+
 // forget 把已经发生过的推送清空，**让「从这一刻起」成为一个能断言的时刻**。
 func (f *fakePusher) forget() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.attempts = map[string]int{}
 	f.ups = map[string][]tunnel.UpstreamCert{}
+	f.lastVersion = map[string]string{}
 }
 
 func timeout() tunnel.PushOutcome {

@@ -64,6 +64,10 @@ type Scheduler struct {
 	// 做成字段只为让重试策略能被单独测——真跑 1+2+4+8+16 秒的测试不会有人跑。
 	RetryBackoff time.Duration
 
+	// deployMu 串行化下发。它握过一整次推送（首轮 + 落库），
+	// 所以不与任何别的锁合用。
+	deployMu sync.Mutex
+
 	retryOnce sync.Once
 	retrier   *Retrier
 
@@ -108,6 +112,22 @@ type Result struct {
 
 // Deploy 执行一次下发。issues 非空时表示校验未过，此时**一个节点都不会被触达**。
 func (s *Scheduler) Deploy(ctx context.Context, operator string, resKeys []string) (Result, []render.Issue, error) {
+	// **一次只跑一次下发。**
+	//
+	// 没有这把锁的话，两次下发会同时往各个节点上写——而每台机器的终态取决于
+	// 它自己那一侧谁后到，两次下发的记录却都会说成功（issue #32）。
+	// 「两个人同时点」只是其中一条路径：人点的同时证书导入触发一次重发、
+	// 或者一个人点两下，都是同一件事。
+	//
+	// Retries().CancelAll() 挡不住它：那一条管的是**补推**，而首轮推送不经过
+	// 重试器。两者要的东西也不同——CancelAll 是「旧的别再推了」，
+	// 这把锁是「新的等一等」。
+	//
+	// 等而不是拒：一次下发通常几秒，而「正忙，请稍后再试」会把一个本来能
+	// 自己排好队的事情变成人的负担。
+	s.deployMu.Lock()
+	defer s.deployMu.Unlock()
+
 	log := s.Log
 	if log == nil {
 		log = slog.Default()
