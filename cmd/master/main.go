@@ -217,6 +217,7 @@ func main() {
 				schedulerRef.NodeUp(context.Background(), nodeID, fresh)
 			}
 		},
+		OnHello: monitor.Alive,
 		OnHeartbeat: func(hb tunnel.Heartbeat) string {
 			status := monitor.Observe(hb)
 			hub.Broadcast(ws.TypeHeartbeat, ws.Heartbeat{

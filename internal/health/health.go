@@ -47,6 +47,10 @@ type nodeState struct {
 	downSent bool
 	status   string
 
+	// aliveAt 是最近一次「不带样本的存活证据」（隧道握手，见 Alive）。
+	// 与 last.At 分开：后者是样本的时间，采样拿它判新鲜度。
+	aliveAt time.Time
+
 	// 上一轮的累计计数，用来算窗口内的回源率。
 	prevReq, prevOrigin uint64
 	hasPrev             bool
@@ -176,6 +180,26 @@ func (m *Monitor) Observe(hb tunnel.Heartbeat) string {
 		go m.recover(hb.NodeID)
 	}
 	return status
+}
+
+// Alive 记下一次不带观测量的存活证据：节点刚完成隧道握手。
+//
+// **重连之后、第一个心跳之前，离线计数照样在走。** 灰度上撞到的：
+// Cloudflare 掐断隧道，重连穿过 CDN 要十来秒，计数已经攒到差一次；
+// 主控收到 Hello 1.3 秒后判了 down、摘了解析，3 秒后第一个心跳到了
+// 又恢复——一次凭证书完成的握手，本身就证明这台机器活着。
+//
+// 它只清计数，不碰样本（last）也不碰 downSent：已经判了 down 的，
+// 恢复仍交给心跳，因为恢复要写库、推解析、发告警，该由真的心跳触发。
+func (m *Monitor) Alive(nodeID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st := m.nodes[nodeID]
+	if st == nil {
+		return
+	}
+	st.aliveAt = time.Now()
+	st.misses = 0
 }
 
 // Classify 判断一次心跳代表的健康状态。
@@ -376,7 +400,7 @@ func (m *Monitor) tick(ctx context.Context) {
 		if !st.seen || st.downSent {
 			continue
 		}
-		if now.Sub(st.last.At) < deadline {
+		if now.Sub(st.last.At) < deadline || now.Sub(st.aliveAt) < deadline {
 			continue
 		}
 		st.misses++

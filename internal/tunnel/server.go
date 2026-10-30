@@ -119,6 +119,11 @@ type Options struct {
 	// OnHeartbeat 返回这次心跳代表的健康分档（ok / warn）。
 	OnHeartbeat func(Heartbeat) string
 
+	// OnHello 在节点完成握手、身份确认之后**同步**调用，早于任何写库。
+	// 用来让离线判定把这次握手算作一次存活（health.Monitor.Alive）：
+	// 重连到第一个心跳之间那几秒，计数不该接着往上攒。
+	OnHello func(nodeID string)
+
 	// OnNodeUp 在一条隧道建立、且**这条会话已经可以收发**之后调用。
 	// fresh 为真表示这是凭 Token 的首次接入。
 	//
@@ -318,6 +323,12 @@ func (s *Server) Channel(stream edgev1.EdgeTunnel_ChannelServer) error {
 
 	sess := s.register(nodeID, stream)
 	defer s.unregister(nodeID, sess)
+
+	// **放在写库之前。** 下面两次写库之后才开始读这条流，第一个心跳要等它们；
+	// 灰度上那次误判，Hello 与第一个心跳之间隔了 4 秒。
+	if s.opt.OnHello != nil {
+		s.opt.OnHello(nodeID)
+	}
 
 	// **「接入」和「重连」是两件事，记成同一句话会读出一个假事实。**
 	//

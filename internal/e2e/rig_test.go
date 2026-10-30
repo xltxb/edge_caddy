@@ -116,6 +116,11 @@ func newRig(t *testing.T, opts ...caddytest.Option) *rig {
 			}
 			return "ok"
 		},
+		OnHello: func(nodeID string) {
+			if monitorRef != nil {
+				monitorRef.Alive(nodeID)
+			}
+		},
 		// 与 cmd/master 同一份装配：隧道先于调度器建起来，所以这里也是
 		// 延迟绑定。生产和测试装的必须是同一条路径 ——
 		// 各写一份的话，这里验的就不是那边跑的东西。
