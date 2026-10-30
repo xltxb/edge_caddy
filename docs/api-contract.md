@@ -2596,8 +2596,13 @@ cursor 分页（§0.5），可选 `?operator=abiu`。倒序。
   > `EC_ADVERTISE`）。人改完看到「已保存」，节点的连接地址一个字没变。
   > 而 `GET` 回的是库里那一列——灰度上它一直是空的，于是设置页显示空白，
   > 而主控明明知道自己公布的是什么。
-- 「节点最长 N 秒后被摘除」= `heartbeat_interval_s × offline_threshold_count`，
-  由前端算出来实时显示（这是设置页的联动提示，不需要后端给）。
+- 「节点最长 N 秒后被摘除」= `max(heartbeat_interval_s, 3) + heartbeat_interval_s × offline_threshold_count`，
+  由前端算出来实时显示（这是设置页的联动提示，不需要后端给）。3 是节点 Agent 的心跳间隔（见下一条）；
+  前一项是「样本旧过那条线」，后一项是越线之后再错过阈值那么多个周期——tick 的相位与心跳到达无关，
+  最坏要多等一个周期。默认配置下是 18 秒。
+
+  > 此前写的是 `heartbeat_interval_s × offline_threshold_count`：默认配置下少说一个周期（15 而实际 18），
+  > 判定周期小于 3 秒时差得更多。
 - **`heartbeat_interval_s` / `offline_threshold_count` 在 `PUT` 成功后当场生效**，
   不必重启主控；下一次离线判定起就按新值走，样本新鲜度的判据（`StaleAfter`）跟着一起变。
 
@@ -2617,8 +2622,6 @@ cursor 分页（§0.5），可选 `?operator=abiu`。倒序。
   > 此前判定周期直接当那条线：设成 1 秒、阈值 2，两个心跳之间就攒满，
   > 全体节点同时被判 down、摘解析，下一个心跳又全部恢复。
 
-  因此上面那句「最长 N 秒」在判定周期小于 3 秒时偏乐观：实际是
-  `max(heartbeat_interval_s, 3) + heartbeat_interval_s × offline_threshold_count` 左右。
 - **凭证只写入不回显**。`dns_provider` 里永远没有明文，只有 `configured: true/false`
   与 `credential_mode`（`api_token` | `global_key`，两者字段不同，前端表单据此切换）。
   `PUT` 时不带凭证字段 = 保持不变；带了就是替换。
