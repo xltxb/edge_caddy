@@ -627,3 +627,36 @@ func TestWarnDoesNotStormWhenLoadHoversOnTheThreshold(t *testing.T) {
 			"一条天天亮着的告警，人两天就学会忽略它，连带忽略真出问题那天的那条", got)
 	}
 }
+
+// TestTimingChangeTakesEffectWithoutRestart：设置页改了间隔与阈值，离线判定立刻按新值走。
+//
+// 此前这两个数只在 cmd/master 启动时读一次：PUT /settings 存进库、回「已保存」，
+// 而跑着的判定照旧用旧值，直到下一次重启——与 master_endpoint 那次
+// 「存了而没有东西读」是同一类。
+//
+// 起始间隔给一小时：ticker 不跟着换的话，这个测试在超时之前一次 tick 都等不到。
+func TestTimingChangeTakesEffectWithoutRestart(t *testing.T) {
+	a := &recordingAlerter{}
+	st := testdb.New(t)
+	if err := st.UpsertNode(context.Background(), store.NodeSpec{
+		NodeID: "node-a", City: "香港", Vendor: "v", Line: "l", PublicIP: "203.0.113.7",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m := health.New(health.Config{
+		Store: st, Alert: a, DNS: &fakeDNS{},
+		Interval: time.Hour, Threshold: 20,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go m.Run(ctx)
+	m.Observe(hb(12))
+
+	m.SetTiming(10*time.Millisecond, 3)
+	waitFor(t, 3*time.Second, func() bool { return len(a.all()) > 0 })
+
+	if got, want := m.StaleAfter(), 40*time.Millisecond; got != want {
+		t.Fatalf("StaleAfter = %v，想要 %v —— 采样与离线判定必须同源", got, want)
+	}
+}

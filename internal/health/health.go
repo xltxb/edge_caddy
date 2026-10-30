@@ -97,6 +97,7 @@ type Config struct {
 
 	// Interval 与 Threshold 决定「多久没心跳算离线」。
 	// 界面上那句「节点最长 N 秒后被摘除」= Interval × Threshold。
+	// 这里给的是启动时的值；运行中改设置走 SetTiming，之后读它们要持锁。
 	Interval  time.Duration
 	Threshold int
 
@@ -112,6 +113,9 @@ type Monitor struct {
 
 	mu    sync.Mutex
 	nodes map[string]*nodeState
+
+	// retime 让 Run 里的 ticker 跟上 SetTiming 改过的间隔。
+	retime chan struct{}
 }
 
 func New(c Config) *Monitor {
@@ -122,7 +126,7 @@ func New(c Config) *Monitor {
 		c.Interval = 3 * time.Second
 	}
 	if c.Threshold <= 0 {
-		c.Threshold = 3
+		c.Threshold = 5
 	}
 	if c.WarnCPUPct <= 0 {
 		c.WarnCPUPct = 80
@@ -130,7 +134,38 @@ func New(c Config) *Monitor {
 	if c.WarnMemPct <= 0 {
 		c.WarnMemPct = 90
 	}
-	return &Monitor{Config: c, nodes: map[string]*nodeState{}}
+	return &Monitor{Config: c, nodes: map[string]*nodeState{}, retime: make(chan struct{}, 1)}
+}
+
+// SetTiming 在运行中换掉离线判定的间隔与阈值，下一次 tick 起生效。
+//
+// **此前这两个数只在 cmd/master 启动时读一次。** PUT /settings 存进库、
+// 回「已保存」，而跑着的判定照旧用旧值，直到下一次重启——人以为调大了
+// 阈值，CDN 一断线照样摘解析。与 master_endpoint 那次「存了而没有东西读」
+// 是同一类；那一个运行时改不了所以拒绝，这一个改得了，就该真的改。
+//
+// StaleAfter 跟着一起变，采样与离线判定仍然同源（issue #48）。
+// 非正值忽略，与 New 里的缺省同一条：0 间隔会让 ticker panic。
+func (m *Monitor) SetTiming(interval time.Duration, threshold int) {
+	m.mu.Lock()
+	if interval > 0 {
+		m.Interval = interval
+	}
+	if threshold > 0 {
+		m.Threshold = threshold
+	}
+	m.mu.Unlock()
+	select {
+	case m.retime <- struct{}{}:
+	default: // 已经有一个没取走的通知，Run 取到时读的是最新值
+	}
+}
+
+// timing 是持锁读出的当前间隔与阈值。
+func (m *Monitor) timing() (time.Duration, int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.Interval, m.Threshold
 }
 
 // Observe 记下一次心跳，返回它代表的健康分档（ok / warn）。
@@ -281,7 +316,8 @@ func (m *Monitor) CPUSeries(nodeID string) []int {
 // 由 TestStaleAfterCoversTheWorstCaseBeforeDown（它驱动真的 tick 去量）
 // 与 TestStaleAfterIsNotAbsurdlyLarge 一起守着。
 func (m *Monitor) StaleAfter() time.Duration {
-	return m.Interval * time.Duration(m.Threshold+1)
+	interval, threshold := m.timing()
+	return interval * time.Duration(threshold+1)
 }
 
 func (m *Monitor) Latest(nodeID string) (Sample, bool) {
@@ -309,12 +345,16 @@ func (m *Monitor) Run(ctx context.Context) {
 	// 「一台死了很久的机器永远显示在线」——那是最不该靠人记得的一步。
 	m.warm(ctx)
 
-	t := time.NewTicker(m.Interval)
+	interval, _ := m.timing()
+	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-m.retime:
+			interval, _ := m.timing()
+			t.Reset(interval)
 		case <-t.C:
 			m.tick(ctx)
 		}
@@ -391,10 +431,10 @@ func (m *Monitor) warm(ctx context.Context) {
 // 判定用「连续错过 N 个周期」而不是「距上次心跳超过 N×周期」：后者在主控刚启动、
 // 还没收到任何心跳时会把全部节点判成离线，而它们可能一直好好的。
 func (m *Monitor) tick(ctx context.Context) {
-	deadline := m.Interval
 	now := time.Now()
 
 	m.mu.Lock()
+	deadline := m.Interval
 	var down []string
 	for id, st := range m.nodes {
 		if !st.seen || st.downSent {
@@ -436,8 +476,9 @@ func (m *Monitor) markDown(ctx context.Context, nodeID string) {
 		return
 	}
 
+	interval, threshold := m.timing()
 	m.Log.Warn("节点心跳超时，判定离线", "node", nodeID,
-		"interval", m.Interval, "threshold", m.Threshold)
+		"interval", interval, "threshold", threshold)
 
 	if err := m.Store.SetNodeDown(ctx, nodeID); err != nil {
 		m.Log.Error("标记节点离线失败", "node", nodeID, "err", err)
@@ -469,7 +510,7 @@ func (m *Monitor) markDown(ctx context.Context, nodeID string) {
 
 	// 措辞必须与实际发生的事一致。解析没被摘掉时说「已自动暂停解析」
 	// 就是承诺一件没发生的事——和「ok 不等于已生效」是同一类问题。
-	msg := "心跳连续超时 " + itoa(m.Threshold) + " 次，已判定离线"
+	msg := "心跳连续超时 " + itoa(threshold) + " 次，已判定离线"
 	if detached {
 		msg += "，并已暂停 DNS 解析"
 	} else {

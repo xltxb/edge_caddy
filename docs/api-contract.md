@@ -758,7 +758,7 @@ Upgrade: websocket
 
 `status` / `online` / `hb_age_ms` 都是**瞬时值**。隧道断开到重连只要 1–2 秒，
 而离线判定要连续错过 `heartbeat_interval_s × offline_threshold_count`
-（默认 9 秒）才翻 `down` —— 所以
+（默认 15 秒）才翻 `down` —— 所以
 
 > **一条每十分钟断一次的隧道，在那三个字段上全部是健康的。**
 
@@ -2324,7 +2324,7 @@ cursor 分页（§0.5），可选 `?operator=abiu`。倒序。
 {
   "master_endpoint": "ec.internal:9000",
   "heartbeat_interval_s": 3,
-  "offline_threshold_count": 3,
+  "offline_threshold_count": 5,
   "auto_drop_dns": true,
   "warn_cpu_pct": 80,
   "warn_mem_pct": 90,
@@ -2598,6 +2598,15 @@ cursor 分页（§0.5），可选 `?operator=abiu`。倒序。
   > 而主控明明知道自己公布的是什么。
 - 「节点最长 N 秒后被摘除」= `heartbeat_interval_s × offline_threshold_count`，
   由前端算出来实时显示（这是设置页的联动提示，不需要后端给）。
+- **`heartbeat_interval_s` / `offline_threshold_count` 在 `PUT` 成功后当场生效**，
+  不必重启主控；下一次离线判定起就按新值走，样本新鲜度的判据（`StaleAfter`）跟着一起变。
+
+  > 此前这两个数只在主控启动时读一次：`PUT` 存进库、回「已保存」，跑着的判定
+  > 照旧用旧值。灰度上为了扛 CDN 断线去调阈值，调完照样被摘解析。
+
+  > 默认阈值从 3 次（9 秒）调到 5 次（15 秒）：经 CDN（`wss://`）的隧道被掐断后，
+  > 重连到第一个心跳实测要十来秒，9 秒的窗口会把每一次 CDN 断线都判成离线、
+  > 摘一次解析。只影响**库里还没存过系统设置**的装置——存过的按存的值走。
 - **凭证只写入不回显**。`dns_provider` 里永远没有明文，只有 `configured: true/false`
   与 `credential_mode`（`api_token` | `global_key`，两者字段不同，前端表单据此切换）。
   `PUT` 时不带凭证字段 = 保持不变；带了就是替换。

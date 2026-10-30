@@ -44,7 +44,7 @@ type nodeResp struct {
 	// Reconnects1h 是**过去一小时这条隧道断了又接上几次**。
 	//
 	// 它存在的理由是**去抖会把真故障吃掉**：断开到重连只要 1–2 秒，
-	// 而离线判定要连续错过 heartbeat_interval × offline_threshold（默认 9 秒）
+	// 而离线判定要连续错过 heartbeat_interval × offline_threshold（默认 15 秒）
 	// 才翻 down —— 所以一条每十分钟断一次的隧道，
 	// 在 status / online / hb_age_ms 三个瞬时值上**全部是健康的**。
 	//

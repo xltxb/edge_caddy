@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -181,6 +182,13 @@ func (s *Server) handlePutSettings(c *gin.Context) {
 		s.log.Error("保存系统设置失败", "err", err)
 		Fail(c, CodeDownstream, "保存失败")
 		return
+	}
+
+	// **存进库之后立刻交给离线判定。** 不交的话这两个数要等下一次重启才生效，
+	// 而响应说的是「已保存」——master_endpoint 那次就是这么读岔的。
+	// 两个都从 cur 取：只改阈值时，间隔用库里那个，不是零值。
+	if s.health != nil && (req.HeartbeatSeconds != nil || req.OfflineThreshold != nil) {
+		s.health.SetTiming(time.Duration(cur.HeartbeatInterval)*time.Second, cur.OfflineThreshold)
 	}
 
 	// **detail 必须在与 DNS 无关时保持空串**（契约 §0.4）：

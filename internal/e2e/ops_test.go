@@ -1169,7 +1169,7 @@ func TestKnownNodeReconnectingWithCertIsAllowed(t *testing.T) {
 // **反复抖动必须能被数出来，因为去抖把它吃掉了。**
 //
 // 灰度上真发生过：CDN 每隔十几分钟切一次长连接，Agent 1–2 秒就重连上。
-// 而离线判定要连续错过 heartbeat_interval × offline_threshold（默认 9 秒）
+// 而离线判定要连续错过 heartbeat_interval × offline_threshold（默认 15 秒）
 // 才翻 down —— 所以 status / online / hb_age_ms **三个瞬时值全部是健康的**，
 // 界面上看不出任何异常，唯一的痕迹在那台机器的 Agent 日志里。
 //

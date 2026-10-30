@@ -48,7 +48,7 @@ type SystemSettings struct {
 func DefaultSystemSettings() SystemSettings {
 	return SystemSettings{
 		HeartbeatInterval: 3,
-		OfflineThreshold:  3,
+		OfflineThreshold:  5,
 		AutoDropDNS:       true,
 		WarnCPUPct:        80,
 		WarnMemPct:        90,

@@ -45,6 +45,10 @@ type Healther interface {
 	// 第二个返回值说这个数有没有意义 —— 没有可比的两次心跳时它是 false，
 	// 而那时回 0 会被读成「一个都没拦」。
 	BlockedLastHour(nodeID string) (uint64, bool)
+
+	// SetTiming 让 PUT /settings 改的心跳间隔与离线阈值当场生效，
+	// 而不是存进库、等下一次重启。
+	SetTiming(interval time.Duration, threshold int)
 }
 
 type Server struct {

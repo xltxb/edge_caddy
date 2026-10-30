@@ -32,7 +32,7 @@ const (
 // CountReconnects 数一个节点最近一段时间里重连了几次。
 //
 // **它存在的理由是去抖会把真故障吃掉。** 隧道断开到重连只要 1–2 秒，
-// 而离线判定要连续错过 heartbeat_interval × offline_threshold（默认 9 秒）
+// 而离线判定要连续错过 heartbeat_interval × offline_threshold（默认 15 秒）
 // 才翻 down —— 所以一条每十分钟断一次的隧道，在所有徽标上都是健康的。
 //
 // 契约 §4 那句「短暂不一致是正常的，那是判定的去抖窗口」是对的，
