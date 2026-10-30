@@ -156,6 +156,8 @@ func newRig(t *testing.T, opts ...caddytest.Option) *rig {
 
 	monitor := health.New(health.Config{
 		Store: st, Hub: hub, Interval: 200 * time.Millisecond, Threshold: 3,
+		// 与下面 Agent 的 Heartbeat 同一个数：生产里两边都是 3 秒。
+		AssumedHeartbeat: 200 * time.Millisecond,
 	})
 	monitorRef = monitor
 	notifier := alert.New(st, sealer, nil)

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -46,6 +47,11 @@ type nodeState struct {
 	misses   int
 	downSent bool
 	status   string
+
+	// prevHBAt / gaps 量的是**这台节点实际多久报一次到**（见 gapOf）。
+	// prevHBAt 为零表示下一个心跳不构成一个间隔（还没来过，或刚重连）。
+	prevHBAt time.Time
+	gaps     []time.Duration
 
 	// aliveAt 是最近一次「不带样本的存活证据」（隧道握手，见 Alive）。
 	// 与 last.At 分开：后者是样本的时间，采样拿它判新鲜度。
@@ -101,6 +107,10 @@ type Config struct {
 	Interval  time.Duration
 	Threshold int
 
+	// AssumedHeartbeat 是还没量出心跳间隔的节点按多少算（见 gapOf）。
+	// 为 0 时用 DefaultAssumedHeartbeat。测试里节点心跳是毫秒级的，要跟着给小。
+	AssumedHeartbeat time.Duration
+
 	// WarnCPUPct / WarnMemPct 决定「连着但不健康」的界线。
 	// 为 0 时用默认值——不设阈值会让 warn 永远不被写入，
 	// 而界面上「异常 N 个」那个桶就恒为 0。
@@ -127,6 +137,9 @@ func New(c Config) *Monitor {
 	}
 	if c.Threshold <= 0 {
 		c.Threshold = 5
+	}
+	if c.AssumedHeartbeat <= 0 {
+		c.AssumedHeartbeat = DefaultAssumedHeartbeat
 	}
 	if c.WarnCPUPct <= 0 {
 		c.WarnCPUPct = 80
@@ -161,6 +174,46 @@ func (m *Monitor) SetTiming(interval time.Duration, threshold int) {
 	}
 }
 
+// DefaultAssumedHeartbeat 是还没量出间隔的节点按多少算（见 gapOf）。
+// 与 agent.DefaultHeartbeat 同一个数，由 TestAssumedHeartbeatMatchesAgentDefault 守着。
+const DefaultAssumedHeartbeat = 3 * time.Second
+
+// gapSamples 是估心跳间隔时看最近几个。取中位数，所以一次停顿、
+// 一阵扎堆都带不走它；5 个是「三个心跳周期内跟上真的变化」与「抗得住两个离群」之间的折中。
+const gapSamples = 5
+
+// gapOf 是一台节点**实际**多久报一次到。
+//
+// **设置页的 heartbeat_interval_s 到不了节点（#82）。** 它只是主控的判定周期；
+// 节点的间隔写在 Agent 本地（agent.DefaultHeartbeat）。tick 原先拿判定周期当
+// 「这一周期有没有心跳」的线，于是周期设得比 3 秒小时，两个心跳之间就攒满阈值，
+// 全体节点同时被判 down、摘解析，下一个心跳又全部恢复。
+//
+// 量出来而不是读配置：不靠任何人把两边填对，Agent 那边改了这里自己跟上。
+// 没量出来时（刚接入、主控刚启动 warm 进来的）按 AssumedHeartbeat 算——
+// 按判定周期算的话，周期设成 1 秒时它们在重连回来之前就全体被判 down。
+func (m *Monitor) gapOf(nodeID string) time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.gapLocked(m.nodes[nodeID])
+}
+
+func (m *Monitor) gapLocked(st *nodeState) time.Duration {
+	if st == nil || len(st.gaps) == 0 {
+		return m.AssumedHeartbeat
+	}
+	sorted := append([]time.Duration(nil), st.gaps...)
+	slices.Sort(sorted)
+	return sorted[len(sorted)/2]
+}
+
+// deadlineLocked 是这台节点「一个周期没报到」的那条线：判定周期与它实际的
+// 心跳间隔取大的。判定周期更长时与此前完全一样；更短时 tick 照样跑得勤，
+// 只是不再把「心跳还没到它该到的时候」记成一次错过。
+func (m *Monitor) deadlineLocked(st *nodeState) time.Duration {
+	return max(m.Interval, m.gapLocked(st))
+}
+
 // timing 是持锁读出的当前间隔与阈值。
 func (m *Monitor) timing() (time.Duration, int) {
 	m.mu.Lock()
@@ -170,6 +223,11 @@ func (m *Monitor) timing() (time.Duration, int) {
 
 // Observe 记下一次心跳，返回它代表的健康分档（ok / warn）。
 func (m *Monitor) Observe(hb tunnel.Heartbeat) string {
+	return m.observeAt(hb, time.Now())
+}
+
+// observeAt 是 Observe 的本体，到达时刻由调用方给——测试要能指定它。
+func (m *Monitor) observeAt(hb tunnel.Heartbeat, now time.Time) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -187,7 +245,7 @@ func (m *Monitor) Observe(hb tunnel.Heartbeat) string {
 		CPU: hb.CPU, Mem: hb.Mem, Conns: hb.Conns,
 		Routes: hb.Routes, Rules: hb.Rules,
 		ReqTotal: hb.ReqTotal, OriginTotal: hb.OriginTotal,
-		At: time.Now(),
+		At: now,
 	}
 
 	// **累计值转成「这一段拦了多少」。**
@@ -196,13 +254,23 @@ func (m *Monitor) Observe(hb tunnel.Heartbeat) string {
 	// 天文数字。判据是「新值比旧值小」：那只可能是重启，把这一段记 0。
 	if st.hasBlocked && hb.BlockedTotal >= st.prevBlocked {
 		if d := hb.BlockedTotal - st.prevBlocked; d > 0 {
-			st.blocked = append(st.blocked, blockSample{at: time.Now(), n: d})
+			st.blocked = append(st.blocked, blockSample{at: now, n: d})
 		}
 	}
 	st.prevBlocked, st.hasBlocked = hb.BlockedTotal, true
 	st.blocked = trimOlderThan(st.blocked, time.Hour)
 	st.seen = true
 	st.misses = 0
+
+	if !st.prevHBAt.IsZero() {
+		if g := now.Sub(st.prevHBAt); g > 0 {
+			st.gaps = append(st.gaps, g)
+			if len(st.gaps) > gapSamples {
+				st.gaps = st.gaps[len(st.gaps)-gapSamples:]
+			}
+		}
+	}
+	st.prevHBAt = now
 
 	status := m.classify(hb, st.status)
 	if status != st.status {
@@ -235,6 +303,8 @@ func (m *Monitor) Alive(nodeID string) {
 	}
 	st.aliveAt = time.Now()
 	st.misses = 0
+	// 断开那一段不是心跳间隔：重连后的第一个心跳不构成一个间隔。
+	st.prevHBAt = time.Time{}
 }
 
 // Classify 判断一次心跳代表的健康状态。
@@ -309,15 +379,25 @@ func (m *Monitor) CPUSeries(nodeID string) []int {
 // 改完设置到主控重启之间必然分叉（这份配置只在 cmd/master 启动时读一次），
 // 而分叉的方向正是 issue #48：样本还算数、节点已经被判 down。
 //
-// 取 Interval×(Threshold+1)：tick 每 Interval 跑一次、misses 满 Threshold 才判
-// down，而 **tick 的相位与心跳到达的时刻无关**——心跳刚落地就 tick 的话，
-// 那一次看到的间隔不够一个周期，misses 不增，最坏要多等一个周期。
+// 取 deadline + Interval×Threshold：样本年龄越过 deadline 之后的 tick 才记 miss，
+// 而 **tick 的相位与心跳到达的时刻无关**——第一次越线的 tick 最坏落在
+// deadline 之后差一点不到一个周期，此后每 Interval 记一次，满 Threshold 判 down。
+// deadline 是判定周期与节点实际心跳间隔取大（deadlineLocked，#82）；
+// 两者相等时就是原来的 Interval×(Threshold+1)。
+//
+// deadline 按节点各不相同，而这里只给一个数，所以取全体里最大的那个——
+// 对心跳更勤的节点略松。所有 Agent 用同一个默认间隔，实践中它们相等。
 //
 // 由 TestStaleAfterCoversTheWorstCaseBeforeDown（它驱动真的 tick 去量）
 // 与 TestStaleAfterIsNotAbsurdlyLarge 一起守着。
 func (m *Monitor) StaleAfter() time.Duration {
-	interval, threshold := m.timing()
-	return interval * time.Duration(threshold+1)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	deadline := m.deadlineLocked(nil)
+	for _, st := range m.nodes {
+		deadline = max(deadline, m.deadlineLocked(st))
+	}
+	return deadline + m.Interval*time.Duration(m.Threshold)
 }
 
 func (m *Monitor) Latest(nodeID string) (Sample, bool) {
@@ -431,15 +511,19 @@ func (m *Monitor) warm(ctx context.Context) {
 // 判定用「连续错过 N 个周期」而不是「距上次心跳超过 N×周期」：后者在主控刚启动、
 // 还没收到任何心跳时会把全部节点判成离线，而它们可能一直好好的。
 func (m *Monitor) tick(ctx context.Context) {
-	now := time.Now()
+	m.tickAt(ctx, time.Now())
+}
+
+// tickAt 是 tick 的本体，「此刻」由调用方给——测试要能指定相位。
+func (m *Monitor) tickAt(ctx context.Context, now time.Time) {
 
 	m.mu.Lock()
-	deadline := m.Interval
 	var down []string
 	for id, st := range m.nodes {
 		if !st.seen || st.downSent {
 			continue
 		}
+		deadline := m.deadlineLocked(st)
 		if now.Sub(st.last.At) < deadline || now.Sub(st.aliveAt) < deadline {
 			continue
 		}

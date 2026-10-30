@@ -69,12 +69,19 @@ type Agent struct {
 	rules  uint32
 }
 
+// DefaultHeartbeat 是 Agent 的心跳间隔（Config.Heartbeat 留空时）。
+//
+// **主控那边没有任何东西设它**：设置页的 heartbeat_interval_s 只是主控的判定周期，
+// 到不了这里。主控对还没量出间隔的节点按这个数判（health.DefaultAssumedHeartbeat，
+// 两边由 health 的 TestAssumedHeartbeatMatchesAgentDefault 对齐，#82）。
+const DefaultHeartbeat = 3 * time.Second
+
 func New(cfg Config) *Agent {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
 	if cfg.Heartbeat == 0 {
-		cfg.Heartbeat = 3 * time.Second
+		cfg.Heartbeat = DefaultHeartbeat
 	}
 	caddy := NewCaddyClient(cfg.CaddyAdmin)
 	verify := NewVerifyServer(cfg.Log)

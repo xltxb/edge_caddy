@@ -39,7 +39,9 @@ func TestStaleAfterIsTheTightBoundOnGoingDown(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	m := New(Config{Store: st, Interval: interval, Threshold: threshold})
+	// AssumedHeartbeat 与周期相等：这条量的是 deadline = Interval 那一档，
+	// 节点心跳比周期慢的那一档由 TestSlowHeartbeatStillGoesDown 量。
+	m := New(Config{Store: st, Interval: interval, Threshold: threshold, AssumedHeartbeat: interval})
 
 	m.mu.Lock()
 	m.nodes[id] = &nodeState{seen: true, last: Sample{At: time.Now()}}

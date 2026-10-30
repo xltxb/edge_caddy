@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xltxb/edge_caddy/internal/agent"
 	"github.com/xltxb/edge_caddy/internal/health"
 	"github.com/xltxb/edge_caddy/internal/store"
 	"github.com/xltxb/edge_caddy/internal/testdb"
@@ -86,6 +87,9 @@ func newMonitor(t *testing.T, a health.Alerter, d health.DNSDetacher) (*health.M
 	return health.New(health.Config{
 		Store: st, Alert: a, DNS: d,
 		Interval: 10 * time.Millisecond, Threshold: 3,
+		// 这里的「节点」是测试自己，没有固定的心跳间隔；按默认的 3 秒算的话
+		// 每条判 down 的测试都要等 3 秒以上。
+		AssumedHeartbeat: 10 * time.Millisecond,
 	}), st
 }
 
@@ -646,6 +650,7 @@ func TestTimingChangeTakesEffectWithoutRestart(t *testing.T) {
 	m := health.New(health.Config{
 		Store: st, Alert: a, DNS: &fakeDNS{},
 		Interval: time.Hour, Threshold: 20,
+		AssumedHeartbeat: 10 * time.Millisecond,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -658,5 +663,16 @@ func TestTimingChangeTakesEffectWithoutRestart(t *testing.T) {
 
 	if got, want := m.StaleAfter(), 40*time.Millisecond; got != want {
 		t.Fatalf("StaleAfter = %v，想要 %v —— 采样与离线判定必须同源", got, want)
+	}
+}
+
+// TestAssumedHeartbeatMatchesAgentDefault：主控「没量过时按多少算」与 Agent 真正的默认间隔是同一个数。
+//
+// 两边各写一个 3 的话，Agent 那边改了，主控对新启动、还没量出间隔的节点
+// 就按错的间隔判——而那恰好是主控刚重启、全体节点都在重连的那几秒。
+func TestAssumedHeartbeatMatchesAgentDefault(t *testing.T) {
+	if health.DefaultAssumedHeartbeat != agent.DefaultHeartbeat {
+		t.Fatalf("health.DefaultAssumedHeartbeat = %v，agent.DefaultHeartbeat = %v",
+			health.DefaultAssumedHeartbeat, agent.DefaultHeartbeat)
 	}
 }
