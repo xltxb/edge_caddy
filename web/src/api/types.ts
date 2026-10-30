@@ -190,7 +190,7 @@ export interface NodeWire {
    *
    * `status` / `online` / `hb_age_ms` 都是**瞬时值**。隧道断开到重连只要 1–2 秒，
    * 而离线判定要连续错过 `heartbeat_interval_s × offline_threshold_count`
-   * （默认 9 秒）才翻 down —— 所以**一条每十分钟断一次的隧道，在那三个字段上
+   * （默认 15 秒）才翻 down —— 所以**一条每十分钟断一次的隧道，在那三个字段上
    * 全部是健康的**。灰度上真发生过：CDN 每隔十几分钟切一次长连接，界面上看不出
    * 任何异常，唯一的痕迹在那台机器的 Agent 日志里。
    *

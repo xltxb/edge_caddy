@@ -457,7 +457,7 @@ export const settings: SettingsWire & Record<string, unknown> = {
   master_endpoint: 'ec.internal:9000',
   master_endpoint_readonly: true,
   heartbeat_interval_s: 3,
-  offline_threshold_count: 3,
+  offline_threshold_count: 5,
   auto_drop_dns: true,
   // 契约 §11：决定一台节点什么时候进 warn。真主控回这两个，mock 原先漏了
   warn_cpu_pct: 80,

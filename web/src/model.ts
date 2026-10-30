@@ -51,7 +51,7 @@ export interface EdgeNode {
    * 措辞的理由见 `@/nodes/flags` 的 `reconnectNote`（契约 §4）。
    *
    * 它是唯一一个能在徽标全绿时指出问题的字段 —— 隧道断开到重连只要 1–2 秒，
-   * 而离线判定要 9 秒才翻 down，所以一条每十分钟断一次的隧道，在 status /
+   * 而离线判定默认要 15 秒才翻 down，所以一条每十分钟断一次的隧道，在 status /
    * online / hbAgeMs 上全部是健康的。判断留给人，这里只把数摆出来。
    */
   reconnects1h: number | null
