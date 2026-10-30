@@ -4,6 +4,7 @@ import { http, errorText } from '@/api/http'
 import type { DnsProviderFields, SettingsUpdateWire, SettingsWire } from '@/api/types'
 import type { SettingsPutBody } from '@/api/requests'
 import { useUiStore } from '@/stores/ui'
+import { maxSecondsUntilOffline } from '@/nodes/offline'
 
 /**
  * 系统设置。
@@ -44,9 +45,11 @@ const dirty = computed(
     (JSON.stringify(form.value) !== JSON.stringify(saved.value) || dnsDirty.value),
 )
 
-/** 「节点最长 N 秒后被摘除」—— 前端算，不需要后端给（契约 §11）。 */
+/** 「节点最长 N 秒后被摘除」—— 前端算，不需要后端给（契约 §11）。算法见 `maxSecondsUntilOffline`。 */
 const dropAfter = computed(() =>
-  form.value ? form.value.heartbeat_interval_s * form.value.offline_threshold_count : 0,
+  form.value
+    ? maxSecondsUntilOffline(form.value.heartbeat_interval_s, form.value.offline_threshold_count)
+    : 0,
 )
 
 
